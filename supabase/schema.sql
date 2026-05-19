@@ -148,11 +148,89 @@ create table alerts (
   acknowledged_at timestamptz
 );
 
+create table contacts (
+  id uuid primary key default gen_random_uuid(),
+  target_kind entity_kind not null,
+  target_id uuid not null,
+  contact_type text not null,
+  value_masked text not null,
+  source_name text not null,
+  source_document_id uuid references documents(id),
+  legal_basis text not null default 'public_or_licensed_source',
+  confidence_score numeric(5, 4) not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create table domains (
+  id uuid primary key default gen_random_uuid(),
+  target_kind entity_kind not null,
+  target_id uuid not null,
+  domain_name text not null,
+  dns_snapshot jsonb not null default '{}'::jsonb,
+  source_name text not null,
+  confidence_score numeric(5, 4) not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create table news_items (
+  id uuid primary key default gen_random_uuid(),
+  source_name text not null,
+  source_url text,
+  published_at timestamptz,
+  title text not null,
+  summary text,
+  extracted_entities jsonb not null default '[]'::jsonb,
+  relevance_score numeric(5, 4) not null default 0,
+  embedding vector(1536),
+  created_at timestamptz not null default now()
+);
+
+create table rss_feeds (
+  id uuid primary key default gen_random_uuid(),
+  source_name text not null,
+  feed_url text not null unique,
+  agency_id uuid references agencies(id),
+  status text not null default 'pending',
+  last_checked_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create table bank_accounts_metadata (
+  id uuid primary key default gen_random_uuid(),
+  target_kind entity_kind not null,
+  target_id uuid not null,
+  label text not null,
+  value_masked text not null,
+  source_name text not null,
+  legal_basis text not null,
+  source_document_id uuid references documents(id),
+  confidence_score numeric(5, 4) not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create table company_movements (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid not null references companies(id),
+  movement_date date,
+  movement_type text not null,
+  description text not null,
+  source_name text not null,
+  source_document_id uuid references documents(id),
+  confidence_score numeric(5, 4) not null default 0,
+  created_at timestamptz not null default now()
+);
+
 create index documents_embedding_idx on documents using ivfflat (embedding vector_cosine_ops);
 create index deliberations_embedding_idx on deliberations using ivfflat (embedding vector_cosine_ops);
 create index votes_embedding_idx on votes using ivfflat (embedding vector_cosine_ops);
+create index news_items_embedding_idx on news_items using ivfflat (embedding vector_cosine_ops);
 create index documents_source_idx on documents (source_name, published_at);
 create index deliberations_process_idx on deliberations (process_number);
 create index companies_cnpj_idx on companies (cnpj);
 create index relationships_from_idx on relationships (from_kind, from_id);
 create index relationships_to_idx on relationships (to_kind, to_id);
+create index contacts_target_idx on contacts (target_kind, target_id);
+create index domains_target_idx on domains (target_kind, target_id);
+create index news_items_source_idx on news_items (source_name, published_at);
+create index bank_accounts_metadata_target_idx on bank_accounts_metadata (target_kind, target_id);
+create index company_movements_company_idx on company_movements (company_id, movement_date);

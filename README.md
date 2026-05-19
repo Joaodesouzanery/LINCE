@@ -4,14 +4,13 @@ LINCE is a regulatory intelligence operating system for Brazil. It combines comp
 
 ## What Is Implemented
 
-- Dark operational dashboard that opens directly as a system, not a landing page.
-- Sidebar modules: Overview, Investigar, Empresas, Diretores, Deliberações, Votos, Fontes, Red Flags, Dossiês and Alertas.
-- Investigative search across companies, directors, agencies, deliberations, processes and themes.
-- Interactive regulatory graph connecting companies, directors, agencies, votes, sanctions, QSA, DOU and DataJud.
-- Red flag queue for recurrence, sanctions, judicialization, director vote patterns, QSA updates and institutional changes.
-- Evidence panel with source, document type, date, confidence score and cited-data framing.
-- Codex-generated dossier draft with executive summary, red flags, connections, decision pattern and next steps.
-- Supabase/Postgres schema for agencies, people, companies, documents, meetings, deliberations, votes, relationships, dossiers and alerts.
+- Dark investigative canvas inspired by graph-first investigation products.
+- Search entrypoints for CNPJ, CPF/name, process, agency and theme.
+- Connected entity cards for company, partners, contacts, agency, director, process, debt, domains and regulatory news.
+- Rich dossier tabs for basic information, CNAEs, partners, movements, addresses, phones, emails, social networks, documents, processes, debts, bank-account metadata, irregularities, alerts, domains, news/RSS, regulatory history and decision pattern.
+- Sensitive-data policy in the UI: phones, emails, social networks and bank-account metadata are only shown when sourced from public data, licensed data or client-provided material.
+- Sources/RSS module showing data capabilities, collection method and connection status.
+- Supabase/Postgres schema for the current core plus future contacts, domains, news items, RSS feeds, bank-account metadata and company movements.
 
 ## Open The Demo
 

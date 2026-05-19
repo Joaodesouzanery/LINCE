@@ -3,324 +3,153 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>LINCE | Sistema de Inteligência Regulatória</title>
+    <title>LINCE | Inteligência Regulatória</title>
     <meta
       name="description"
-      content="Dashboard operacional de inteligência regulatória para investigar empresas, diretores, votos, deliberações e red flags."
+      content="Canvas investigativo e dossiês regulatórios com grafos, fontes públicas, notícias e alertas."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar" aria-label="Módulos do LINCE">
-        <div class="workspace-brand">
-          <span class="brand-mark" aria-hidden="true">L</span>
+      <aside class="side-rail" aria-label="Navegação do LINCE">
+        <div class="brand">
+          <span class="brand-badge">L</span>
           <div>
             <strong>LINCE</strong>
-            <small>Regulatory Intelligence</small>
+            <small>Inteligência Regulatória</small>
           </div>
         </div>
 
-        <nav class="module-nav" id="module-nav" aria-label="Navegação principal">
-          <button class="nav-item active" type="button" data-module="overview">
-            <span class="nav-icon">01</span>
-            <span>Overview</span>
+        <nav class="nav-stack" id="view-nav">
+          <button class="nav-item active" type="button" data-view="investigate">
+            <span>01</span>
+            Investigar
           </button>
-          <button class="nav-item" type="button" data-module="investigate">
-            <span class="nav-icon">02</span>
-            <span>Investigar</span>
+          <button class="nav-item" type="button" data-view="dossier">
+            <span>02</span>
+            Dossiê
           </button>
-          <button class="nav-item" type="button" data-module="companies">
-            <span class="nav-icon">03</span>
-            <span>Empresas</span>
-          </button>
-          <button class="nav-item" type="button" data-module="directors">
-            <span class="nav-icon">04</span>
-            <span>Diretores</span>
-          </button>
-          <button class="nav-item" type="button" data-module="deliberations">
-            <span class="nav-icon">05</span>
-            <span>Deliberações</span>
-          </button>
-          <button class="nav-item" type="button" data-module="votes">
-            <span class="nav-icon">06</span>
-            <span>Votos</span>
-          </button>
-          <button class="nav-item" type="button" data-module="sources">
-            <span class="nav-icon">07</span>
-            <span>Fontes</span>
-          </button>
-          <button class="nav-item" type="button" data-module="redflags">
-            <span class="nav-icon">08</span>
-            <span>Red Flags</span>
-          </button>
-          <button class="nav-item" type="button" data-module="dossiers">
-            <span class="nav-icon">09</span>
-            <span>Dossiês</span>
-          </button>
-          <button class="nav-item" type="button" data-module="alerts">
-            <span class="nav-icon">10</span>
-            <span>Alertas</span>
+          <button class="nav-item" type="button" data-view="sources">
+            <span>03</span>
+            Fontes & RSS
           </button>
         </nav>
 
-        <div class="source-summary">
-          <p>Fontes críticas</p>
-          <div class="source-pills">
-            <span class="dot connected"></span>
-            <span>37 conectadas</span>
-          </div>
-          <div class="source-pills">
-            <span class="dot pending"></span>
-            <span>11 pendentes</span>
-          </div>
-          <div class="source-pills">
-            <span class="dot error"></span>
-            <span>4 com falha</span>
-          </div>
+        <div class="rail-card">
+          <p>Monitoramento</p>
+          <strong>52 fontes</strong>
+          <span>37 conectadas · 11 pendentes · 4 restritas</span>
         </div>
 
-        <div class="user-card">
-          <span class="avatar">RI</span>
-          <div>
-            <strong>Analista Regulatório</strong>
-            <small>ops@lince.ai</small>
-          </div>
+        <div class="rail-card muted">
+          <p>Política LGPD</p>
+          <span>Dados sensíveis só aparecem quando vierem de fonte pública, base licenciada ou dado fornecido pelo cliente.</span>
         </div>
       </aside>
 
-      <main class="main-shell">
+      <main class="main-workspace">
         <header class="topbar">
-          <div class="view-switch" aria-label="Modo de visualização">
-            <button type="button" class="square-button active" title="Dashboard">▦</button>
-            <button type="button" class="square-button" title="Tabela">▤</button>
+          <div>
+            <p class="kicker">Fluxo mental</p>
+            <h1>Investigação regulatória</h1>
           </div>
-          <div class="top-title">
-            <p id="module-kicker">Inteligência operacional</p>
-            <h1 id="module-title">Overview</h1>
-          </div>
-          <div class="global-search">
-            <input
-              id="global-search"
-              type="search"
-              placeholder="Buscar CNPJ, empresa, diretor, agência, processo ou tema"
-              autocomplete="off"
-            />
-            <button type="button" id="clear-search" aria-label="Limpar busca">×</button>
-          </div>
-          <div class="header-actions">
-            <button type="button" class="ghost-button" id="mark-reviewed">Revisar alerta</button>
-            <button type="button" class="action-button" id="generate-dossier">Gerar dossiê</button>
-          </div>
+
+          <form class="search-console" id="search-form">
+            <div class="search-tabs" role="tablist" aria-label="Tipo de busca">
+              <button class="search-tab active" type="button" data-search-type="cnpj">CNPJ</button>
+              <button class="search-tab" type="button" data-search-type="name">CPF/Nome</button>
+              <button class="search-tab" type="button" data-search-type="process">Processo</button>
+              <button class="search-tab" type="button" data-search-type="agency">Agência</button>
+              <button class="search-tab" type="button" data-search-type="theme">Tema</button>
+            </div>
+            <div class="search-row">
+              <input
+                id="global-search"
+                type="search"
+                placeholder="Busque por empresa, diretor, processo, agência ou tema"
+                autocomplete="off"
+              />
+              <button type="submit">Buscar</button>
+            </div>
+          </form>
+
+          <button class="primary-action" type="button" id="generate-dossier">Gerar dossiê</button>
         </header>
 
-        <section class="metric-grid" aria-label="Indicadores principais">
-          <article class="metric-card">
-            <div class="spark-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-            <span>Investigações ativas</span>
-            <strong id="metric-investigations">0</strong>
-            <small>6 novas nas últimas 24h</small>
-          </article>
-          <article class="metric-card">
-            <div class="spark-bars warm" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-            <span>Red flags abertas</span>
-            <strong id="metric-redflags">0</strong>
-            <small>8 críticas aguardam revisão</small>
-          </article>
-          <article class="metric-card">
-            <div class="spark-bars green" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-            <span>Votos estruturados</span>
-            <strong id="metric-votes">0</strong>
-            <small>ARTESP e ANEEL priorizadas</small>
-          </article>
-          <article class="metric-card">
-            <div class="spark-bars blue" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-            <span>Fontes monitoradas</span>
-            <strong id="metric-sources">0</strong>
-            <small>50+ conectáveis no roadmap</small>
-          </article>
-        </section>
-
-        <section class="module-view active" id="view-overview">
-          <div class="overview-grid">
-            <section class="panel investigation-panel">
-              <div class="panel-header">
-                <div>
-                  <small>INVESTIGAÇÃO EM FOCO</small>
-                  <h2 id="focus-name">Alvo selecionado</h2>
-                </div>
-                <button type="button" class="ghost-button" data-module-jump="investigate">Abrir investigação</button>
+        <section class="view active" id="view-investigate" aria-label="Canvas investigativo">
+          <div class="investigation-layout">
+            <section class="canvas-panel">
+              <div class="canvas-toolbar" aria-label="Ferramentas do grafo">
+                <button type="button" title="Adicionar nó">+</button>
+                <button type="button" title="Centralizar">◎</button>
+                <button type="button" title="Expandir vínculos">⇄</button>
+                <button type="button" title="Reprocessar IA">↻</button>
               </div>
-              <div class="focus-layout">
-                <div class="focus-map">
-                  <svg id="overview-graph" viewBox="0 0 780 430" role="img" aria-label="Grafo resumido"></svg>
-                </div>
-                <aside class="focus-side">
-                  <h3>Red flags principais</h3>
-                  <div id="focus-redflags" class="flag-list"></div>
-                </aside>
+
+              <div class="canvas-tabs">
+                <button class="canvas-tab active" type="button">Fluxo mental</button>
+                <button class="canvas-tab" type="button">Mapa grafo</button>
+                <button class="canvas-tab" type="button">Evidências</button>
+              </div>
+
+              <div class="graph-canvas" id="graph-canvas">
+                <svg class="edge-layer" id="edge-layer" viewBox="0 0 1160 720" aria-hidden="true"></svg>
+                <div class="node-layer" id="node-layer"></div>
               </div>
             </section>
 
-            <section class="panel live-panel">
+            <aside class="inspector-panel">
               <div class="panel-header">
-                <div>
-                  <small>RADAR DE FONTES</small>
-                  <h2>Publicações recentes</h2>
-                </div>
+                <p class="kicker">Nó selecionado</p>
+                <h2 id="inspector-title">Selecione um vínculo</h2>
               </div>
-              <div id="live-feed" class="feed-list"></div>
-            </section>
-          </div>
-        </section>
-
-        <section class="module-view" id="view-investigate">
-          <div class="investigation-grid">
-            <section class="panel target-panel">
-              <div class="panel-header">
-                <div>
-                  <small>BUSCA INVESTIGATIVA</small>
-                  <h2>Alvos encontrados</h2>
-                </div>
-                <span id="result-count" class="count-chip">0 itens</span>
-              </div>
-              <div class="filter-row" id="type-filters" aria-label="Filtros de alvo">
-                <button class="filter-chip active" type="button" data-type="all">Tudo</button>
-                <button class="filter-chip" type="button" data-type="company">Empresas</button>
-                <button class="filter-chip" type="button" data-type="person">Diretores</button>
-                <button class="filter-chip" type="button" data-type="agency">Agências</button>
-                <button class="filter-chip" type="button" data-type="case">Deliberações</button>
-              </div>
-              <div id="target-list" class="target-list"></div>
-            </section>
-
-            <section class="panel graph-panel">
-              <div class="panel-header">
-                <div>
-                  <small>GRAFO DE CONEXÕES</small>
-                  <h2 id="target-title">Selecione um alvo</h2>
-                </div>
-                <div class="view-tabs">
-                  <button class="tab-button active" type="button" data-detail-tab="graph">Grafo</button>
-                  <button class="tab-button" type="button" data-detail-tab="timeline">Timeline</button>
-                  <button class="tab-button" type="button" data-detail-tab="evidence">Evidências</button>
-                </div>
-              </div>
-              <p id="target-summary" class="target-summary"></p>
-              <div class="detail-view active" id="detail-graph">
-                <svg id="connection-graph" viewBox="0 0 900 500" role="img" aria-label="Grafo de conexões"></svg>
-              </div>
-              <div class="detail-view" id="detail-timeline">
-                <ol id="timeline-list" class="timeline-list"></ol>
-              </div>
-              <div class="detail-view" id="detail-evidence">
-                <div id="evidence-list" class="evidence-list"></div>
-              </div>
-            </section>
-
-            <aside class="panel right-rail">
-              <div class="panel-header compact">
-                <div>
-                  <small>RAIO-X DO ALVO</small>
-                  <h2>Achados</h2>
-                </div>
-              </div>
-              <div id="target-facts" class="fact-grid"></div>
-              <div class="dossier-box" id="dossier-output">
-                <h3>Dossiê pronto</h3>
-                <p>Use “Gerar dossiê” para montar o resumo executivo com evidências.</p>
+              <div id="inspector-body" class="inspector-body"></div>
+              <div class="quick-actions">
+                <button type="button" id="open-dossier">Abrir dossiê</button>
+                <button type="button" id="expand-node">Expandir conexões</button>
               </div>
             </aside>
           </div>
         </section>
 
-        <section class="module-view" id="view-companies">
-          <div class="module-grid two-col">
-            <section class="panel">
-              <div class="panel-header">
-                <div><small>DOSSIÊ EMPRESARIAL</small><h2>Empresas reguladas</h2></div>
+        <section class="view" id="view-dossier" aria-label="Dossiê regulatório">
+          <div class="dossier-shell">
+            <section class="report-cover">
+              <div>
+                <p class="kicker">Relatório do alvo</p>
+                <h2 id="dossier-title">Dossiê LINCE</h2>
+                <p id="dossier-summary"></p>
               </div>
-              <div id="company-table" class="data-table"></div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <div><small>CONTEXTO</small><h2>Dados conectados</h2></div>
+              <div class="report-score">
+                <span>Risco</span>
+                <strong id="risk-score">82</strong>
               </div>
-              <div id="company-context" class="context-list"></div>
             </section>
+
+            <div class="dossier-tabs" id="dossier-tabs"></div>
+            <section class="dossier-content" id="dossier-content"></section>
           </div>
         </section>
 
-        <section class="module-view" id="view-directors">
-          <div class="module-grid two-col">
-            <section class="panel">
+        <section class="view" id="view-sources" aria-label="Fontes e RSS">
+          <div class="sources-layout">
+            <section class="source-panel">
               <div class="panel-header">
-                <div><small>PERFIL + VOTO</small><h2>Diretores e conselheiros</h2></div>
+                <p class="kicker">Capacidades de coleta</p>
+                <h2>Fontes públicas, licenciadas e futuras</h2>
               </div>
-              <div id="director-list" class="record-list"></div>
+              <div class="source-grid" id="source-grid"></div>
             </section>
-            <section class="panel">
+
+            <section class="source-panel">
               <div class="panel-header">
-                <div><small>PADRÃO DECISÓRIO</small><h2>Matriz de tendência</h2></div>
+                <p class="kicker">Notícias / RSS regulatório</p>
+                <h2>Publicações que viram conexões</h2>
               </div>
-              <div id="director-matrix" class="matrix"></div>
+              <div class="rss-feed" id="rss-feed"></div>
             </section>
           </div>
-        </section>
-
-        <section class="module-view" id="view-deliberations">
-          <section class="panel">
-            <div class="panel-header">
-              <div><small>REUNIÕES, ATAS E DOCUMENTOS</small><h2>Deliberações monitoradas</h2></div>
-            </div>
-            <div id="deliberation-table" class="data-table wide"></div>
-          </section>
-        </section>
-
-        <section class="module-view" id="view-votes">
-          <section class="panel">
-            <div class="panel-header">
-              <div><small>COMO CADA DIRETOR DECIDE</small><h2>Matriz de votos</h2></div>
-            </div>
-            <div id="vote-grid" class="vote-grid"></div>
-          </section>
-        </section>
-
-        <section class="module-view" id="view-sources">
-          <section class="panel">
-            <div class="panel-header">
-              <div><small>50+ FONTES PÚBLICAS E LICENCIADAS</small><h2>Status das conexões</h2></div>
-            </div>
-            <div id="source-grid" class="source-grid"></div>
-          </section>
-        </section>
-
-        <section class="module-view" id="view-redflags">
-          <section class="panel">
-            <div class="panel-header">
-              <div><small>ACHADOS PRIORIZADOS</small><h2>Fila de red flags</h2></div>
-            </div>
-            <div id="redflag-board" class="redflag-board"></div>
-          </section>
-        </section>
-
-        <section class="module-view" id="view-dossiers">
-          <section class="panel">
-            <div class="panel-header">
-              <div><small>RELATÓRIOS VENDÁVEIS</small><h2>Dossiês prontos</h2></div>
-              <button type="button" class="action-button" id="generate-dossier-secondary">Novo dossiê</button>
-            </div>
-            <div id="dossier-list" class="dossier-list"></div>
-          </section>
-        </section>
-
-        <section class="module-view" id="view-alerts">
-          <section class="panel">
-            <div class="panel-header">
-              <div><small>MONITORAMENTO CONTÍNUO</small><h2>Alertas regulatórios</h2></div>
-            </div>
-            <div id="alert-list" class="alert-list"></div>
-          </section>
         </section>
       </main>
     </div>
