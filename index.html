@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LINCE | Inteligência Regulatória</title>
+    <meta
+      name="description"
+      content="LINCE combina investigação de pessoas e empresas com análise de decisões regulatórias."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="LINCE">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>LINCE</span>
+      </a>
+      <nav class="nav-links" aria-label="Navegação principal">
+        <a href="#intelligence">Inteligência</a>
+        <a href="#dossiers">Dossiês</a>
+        <a href="#sources">Fontes</a>
+        <a href="#pipeline">Pipeline</a>
+      </nav>
+      <div class="top-actions">
+        <a href="#workspace" class="login-link">Entrar</a>
+        <a href="#dossiers" class="primary-action">Ver demo</a>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="control-band" id="intelligence" aria-labelledby="main-title">
+        <div class="control-copy">
+          <p class="eyebrow"><span></span> Powered by Codex</p>
+          <h1 id="main-title">A camada de controle da inteligência regulatória.</h1>
+          <p class="lead">
+            Pesquise empresas, diretores, processos e deliberações para entender quem está
+            conectado, onde aparece e como cada regulador decide.
+          </p>
+          <div class="search-shell" id="workspace">
+            <label class="search-label" for="global-search">Busca principal</label>
+            <div class="search-row">
+              <input
+                id="global-search"
+                type="search"
+                placeholder="Empresa, CNPJ, diretor, agência, processo ou tema"
+                autocomplete="off"
+              />
+              <button type="button" id="clear-search" title="Limpar busca" aria-label="Limpar busca">
+                ×
+              </button>
+            </div>
+            <div class="filter-row" aria-label="Filtros de busca">
+              <button class="filter-chip active" data-filter="all" type="button">Tudo</button>
+              <button class="filter-chip" data-filter="company" type="button">Empresas</button>
+              <button class="filter-chip" data-filter="person" type="button">Diretores</button>
+              <button class="filter-chip" data-filter="agency" type="button">Agências</button>
+              <button class="filter-chip" data-filter="case" type="button">Deliberações</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="isometric-visual" aria-label="Mapa visual de documentos, agentes e alertas">
+          <div class="iso-grid"></div>
+          <div class="iso-base iso-base-left">
+            <div class="doc-stack flag">
+              <span>ARTESP</span>
+              <i></i>
+              <i></i>
+            </div>
+          </div>
+          <div class="iso-core">
+            <span class="core-mark"></span>
+            <span class="core-line one"></span>
+            <span class="core-line two"></span>
+            <span class="core-line three"></span>
+          </div>
+          <div class="iso-base iso-base-right">
+            <div class="doc-stack ok">
+              <span>ANEEL</span>
+              <i></i>
+              <i></i>
+            </div>
+          </div>
+          <div class="signal signal-a"></div>
+          <div class="signal signal-b"></div>
+          <div class="signal signal-c"></div>
+        </div>
+      </section>
+
+      <section class="metrics-strip" aria-label="Indicadores da plataforma">
+        <div>
+          <strong id="metric-docs">0</strong>
+          <span>documentos monitorados</span>
+        </div>
+        <div>
+          <strong id="metric-votes">0</strong>
+          <span>votos estruturados</span>
+        </div>
+        <div>
+          <strong id="metric-links">0</strong>
+          <span>conexões mapeadas</span>
+        </div>
+        <div>
+          <strong>12</strong>
+          <span>fontes prioritárias</span>
+        </div>
+      </section>
+
+      <section class="workspace-grid" id="dossiers" aria-label="Área de análise">
+        <aside class="results-panel">
+          <div class="panel-heading">
+            <p>Resultados</p>
+            <span id="result-count">0 itens</span>
+          </div>
+          <div class="result-list" id="result-list"></div>
+        </aside>
+
+        <section class="profile-panel" aria-live="polite">
+          <div class="profile-header">
+            <div>
+              <p class="eyebrow compact" id="profile-kind"><span></span>Dossiê</p>
+              <h2 id="profile-title">Selecione um alvo</h2>
+              <p id="profile-summary"></p>
+            </div>
+            <div class="risk-badge" id="profile-risk">Risco médio</div>
+          </div>
+
+          <div class="profile-tabs" role="tablist" aria-label="Visualizações do dossiê">
+            <button class="tab-button active" data-tab="overview" type="button">Visão geral</button>
+            <button class="tab-button" data-tab="graph" type="button">Grafo</button>
+            <button class="tab-button" data-tab="timeline" type="button">Linha do tempo</button>
+            <button class="tab-button" data-tab="sources" type="button">Evidências</button>
+          </div>
+
+          <div class="tab-content active" id="tab-overview">
+            <div class="insight-grid" id="insight-grid"></div>
+            <div class="analysis-band">
+              <div>
+                <p class="section-kicker">Leitura Codex</p>
+                <h3 id="ai-title">Padrão decisório e contexto regulatório</h3>
+                <p id="ai-analysis"></p>
+              </div>
+              <button type="button" id="generate-dossier">Gerar dossiê</button>
+            </div>
+            <div class="dossier-output" id="dossier-output"></div>
+          </div>
+
+          <div class="tab-content" id="tab-graph">
+            <div class="graph-wrap">
+              <svg id="connection-graph" viewBox="0 0 760 430" role="img" aria-label="Grafo de conexões"></svg>
+            </div>
+          </div>
+
+          <div class="tab-content" id="tab-timeline">
+            <ol class="timeline" id="timeline-list"></ol>
+          </div>
+
+          <div class="tab-content" id="tab-sources">
+            <div class="evidence-list" id="evidence-list"></div>
+          </div>
+        </section>
+      </section>
+
+      <section class="source-band" id="sources" aria-labelledby="sources-title">
+        <div class="section-heading">
+          <p class="section-kicker">Fontes conectáveis</p>
+          <h2 id="sources-title">O LINCE começa com bases públicas e trilha auditável.</h2>
+        </div>
+        <div class="source-grid" id="source-grid"></div>
+      </section>
+
+      <section class="pipeline-band" id="pipeline" aria-labelledby="pipeline-title">
+        <div class="section-heading">
+          <p class="section-kicker">Pipeline</p>
+          <h2 id="pipeline-title">Da publicação oficial ao dossiê vendável.</h2>
+        </div>
+        <div class="pipeline-steps">
+          <article>
+            <span>01</span>
+            <h3>Ingestão</h3>
+            <p>CKAN, XML, CSV, PDF, páginas públicas e APIs oficiais por fonte.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Normalização</h3>
+            <p>Texto extraído, hash, origem, versão, metadados e arquivo preservado.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>Extração</h3>
+            <p>CNPJ, diretor, processo, voto, tema, resultado e fundamento.</p>
+          </article>
+          <article>
+            <span>04</span>
+            <h3>Dossiê</h3>
+            <p>Relatório com evidências, grafo, linha do tempo, alertas e revisão humana.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>LINCE</span>
+      <p>Inteligência regulatória com dados públicos, IA e evidência rastreável.</p>
+    </footer>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

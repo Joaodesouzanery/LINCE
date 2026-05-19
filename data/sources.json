@@ -1,0 +1,50 @@
+[
+  {
+    "name": "ARTESP",
+    "priority": 1,
+    "method": "scraping_pdf",
+    "cadence": "weekly",
+    "entities": ["meeting", "document", "deliberation", "person"],
+    "url": "https://www.artesp.sp.gov.br/artesp/transparencia/reunioes-diretoria/"
+  },
+  {
+    "name": "ANEEL",
+    "priority": 1,
+    "method": "ckan_csv_pdf",
+    "cadence": "per_meeting",
+    "entities": ["meeting", "document", "deliberation", "vote", "company"],
+    "url": "https://dadosabertos.aneel.gov.br/"
+  },
+  {
+    "name": "DOU",
+    "priority": 2,
+    "method": "inlabs_xml_zip",
+    "cadence": "daily",
+    "entities": ["document", "person", "agency"],
+    "url": "https://github.com/Imprensa-Nacional/inlabs"
+  },
+  {
+    "name": "Receita Federal CNPJ",
+    "priority": 2,
+    "method": "public_csv_dump",
+    "cadence": "monthly",
+    "entities": ["company", "relationship"],
+    "url": "https://www.gov.br/receitafederal/pt-br/assuntos/orientacao-tributaria/cadastros/cnpj"
+  },
+  {
+    "name": "Portal da Transparencia CGU",
+    "priority": 2,
+    "method": "rest_api",
+    "cadence": "daily_monthly",
+    "entities": ["company", "person", "relationship", "alert"],
+    "url": "https://api.portaldatransparencia.gov.br/swagger-ui/index.html"
+  },
+  {
+    "name": "CNJ DataJud",
+    "priority": 3,
+    "method": "public_elasticsearch_api",
+    "cadence": "continuous",
+    "entities": ["company", "document", "relationship"],
+    "url": "https://www.cnj.jus.br/sistemas/datajud/api-publica/"
+  }
+]
