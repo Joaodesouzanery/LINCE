@@ -1,17 +1,19 @@
 # LINCE
 
-LINCE is a regulatory intelligence MVP for Brazil. It combines company/person investigation with regulatory decision analysis: who the actor is, where they appear, how they connect, and how regulators decide when they are involved.
+LINCE is a regulatory intelligence operating system for Brazil. It combines company/person investigation with regulatory decision analysis: who the actor is, where they appear, how they connect, and how regulators decide when they are involved.
 
 ## What Is Implemented
 
-- Static product app with the visual direction from the reference: light background, strong black typography, orange accent, minimal navigation, and an isometric regulatory control visual.
-- Main search across companies, directors, agencies, and deliberations.
-- Interactive dossier workspace with overview, graph, timeline, evidence, and Codex-generated report draft.
-- Source catalog for ARTESP, ANEEL, ANATEL, ANVISA, DOU, Receita Federal, CGU, DataJud, PGFN, PNCP, CVM, and Senado.
-- Supabase/Postgres schema for agencies, people, companies, documents, meetings, deliberations, votes, relationships, dossiers, and alerts.
-- Source roadmap in `data/sources.json`.
+- Dark operational dashboard that opens directly as a system, not a landing page.
+- Sidebar modules: Overview, Investigar, Empresas, Diretores, Deliberações, Votos, Fontes, Red Flags, Dossiês and Alertas.
+- Investigative search across companies, directors, agencies, deliberations, processes and themes.
+- Interactive regulatory graph connecting companies, directors, agencies, votes, sanctions, QSA, DOU and DataJud.
+- Red flag queue for recurrence, sanctions, judicialization, director vote patterns, QSA updates and institutional changes.
+- Evidence panel with source, document type, date, confidence score and cited-data framing.
+- Codex-generated dossier draft with executive summary, red flags, connections, decision pattern and next steps.
+- Supabase/Postgres schema for agencies, people, companies, documents, meetings, deliberations, votes, relationships, dossiers and alerts.
 
-## Open The MVP
+## Open The Demo
 
 Open `index.html` directly in a browser. No install step is required.
 
