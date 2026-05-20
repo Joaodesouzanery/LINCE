@@ -3,151 +3,230 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>LINCE | Inteligência Regulatória</title>
+    <title>LINCE | Inteligencia Regulatoria</title>
     <meta
       name="description"
-      content="Canvas investigativo e dossiês regulatórios com grafos, fontes públicas, notícias e alertas."
+      content="LINCE consulta fontes reais por CNPJ, monta grafo interativo e gera dossies sem dados ficticios."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app-shell">
-      <aside class="side-rail" aria-label="Navegação do LINCE">
+      <aside class="sidebar">
         <div class="brand">
-          <span class="brand-badge">L</span>
+          <span class="brand-icon">L</span>
           <div>
             <strong>LINCE</strong>
-            <small>Inteligência Regulatória</small>
+            <small>Inteligencia Regulatoria</small>
           </div>
         </div>
 
-        <nav class="nav-stack" id="view-nav">
-          <button class="nav-item active" type="button" data-view="investigate">
+        <nav class="nav-list" id="view-nav" aria-label="Navegacao principal">
+          <button class="nav-item active" type="button" data-view="overview">
             <span>01</span>
+            Overview
+          </button>
+          <button class="nav-item" type="button" data-view="investigate">
+            <span>02</span>
             Investigar
           </button>
           <button class="nav-item" type="button" data-view="dossier">
-            <span>02</span>
-            Dossiê
+            <span>03</span>
+            Dossie
           </button>
           <button class="nav-item" type="button" data-view="sources">
-            <span>03</span>
-            Fontes & RSS
+            <span>04</span>
+            Fontes reais
           </button>
         </nav>
 
-        <div class="rail-card">
-          <p>Monitoramento</p>
-          <strong>52 fontes</strong>
-          <span>37 conectadas · 11 pendentes · 4 restritas</span>
+        <div class="sidebar-section">
+          <p>Fontes no MVP</p>
+          <div class="mini-status"><i class="ok"></i>CNPJ.ws proxy</div>
+          <div class="mini-status"><i class="ok"></i>Registro.br RDAP</div>
+          <div class="mini-status"><i class="ok"></i>Google News RSS</div>
+          <div class="mini-status"><i class="warn"></i>DataJud com chave</div>
+          <div class="mini-status"><i class="wait"></i>PGFN dump</div>
         </div>
 
-        <div class="rail-card muted">
-          <p>Política LGPD</p>
-          <span>Dados sensíveis só aparecem quando vierem de fonte pública, base licenciada ou dado fornecido pelo cliente.</span>
+        <div class="user-card">
+          <span class="avatar">RI</span>
+          <div>
+            <strong>Real-only mode</strong>
+            <small>Sem dados ficticios</small>
+          </div>
         </div>
       </aside>
 
-      <main class="main-workspace">
+      <main class="workspace">
         <header class="topbar">
-          <div>
-            <p class="kicker">Fluxo mental</p>
-            <h1>Investigação regulatória</h1>
+          <div class="top-left">
+            <button class="icon-button active" type="button" aria-label="Dashboard">▦</button>
+            <button class="icon-button" type="button" aria-label="Lista">▤</button>
+            <div>
+              <p class="kicker" id="view-kicker">Dados reais</p>
+              <h1 id="view-title">Overview</h1>
+            </div>
           </div>
 
-          <form class="search-console" id="search-form">
-            <div class="search-tabs" role="tablist" aria-label="Tipo de busca">
-              <button class="search-tab active" type="button" data-search-type="cnpj">CNPJ</button>
-              <button class="search-tab" type="button" data-search-type="name">CPF/Nome</button>
-              <button class="search-tab" type="button" data-search-type="process">Processo</button>
-              <button class="search-tab" type="button" data-search-type="agency">Agência</button>
-              <button class="search-tab" type="button" data-search-type="theme">Tema</button>
-            </div>
-            <div class="search-row">
-              <input
-                id="global-search"
-                type="search"
-                placeholder="Busque por empresa, diretor, processo, agência ou tema"
-                autocomplete="off"
-              />
-              <button type="submit">Buscar</button>
-            </div>
+          <form class="search-box" id="search-form">
+            <input
+              id="global-search"
+              inputmode="numeric"
+              placeholder="Digite um CNPJ real. Ex: 00000000000191"
+              autocomplete="off"
+            />
+            <button type="submit">Consultar</button>
           </form>
 
-          <button class="primary-action" type="button" id="generate-dossier">Gerar dossiê</button>
+          <div class="top-actions">
+            <button class="ghost-button" type="button" id="center-graph">Centralizar</button>
+            <button class="primary-button" type="button" id="open-dossier">Gerar dossie</button>
+          </div>
         </header>
 
-        <section class="view active" id="view-investigate" aria-label="Canvas investigativo">
-          <div class="investigation-layout">
-            <section class="canvas-panel">
-              <div class="canvas-toolbar" aria-label="Ferramentas do grafo">
-                <button type="button" title="Adicionar nó">+</button>
-                <button type="button" title="Centralizar">◎</button>
-                <button type="button" title="Expandir vínculos">⇄</button>
-                <button type="button" title="Reprocessar IA">↻</button>
-              </div>
+        <section class="view active" id="view-overview">
+          <div class="metric-grid">
+            <article class="metric-card">
+              <span>Fonte real ativa</span>
+              <strong id="metric-connected">3</strong>
+              <small>CNPJ.ws, RDAP, News RSS</small>
+            </article>
+            <article class="metric-card">
+              <span>Exigem chave</span>
+              <strong id="metric-keys">2</strong>
+              <small>DataJud e Portal da Transparencia</small>
+            </article>
+            <article class="metric-card">
+              <span>Pendente ingestao</span>
+              <strong id="metric-pending">3</strong>
+              <small>PGFN, ANEEL/ARTESP, DOU</small>
+            </article>
+            <article class="metric-card">
+              <span>Ultima consulta</span>
+              <strong id="metric-last">-</strong>
+              <small id="metric-last-label">Nenhum CNPJ consultado</small>
+            </article>
+          </div>
 
-              <div class="canvas-tabs">
-                <button class="canvas-tab active" type="button">Fluxo mental</button>
-                <button class="canvas-tab" type="button">Mapa grafo</button>
-                <button class="canvas-tab" type="button">Evidências</button>
+          <div class="overview-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Como usar</p>
+                  <h2>Comece por um CNPJ real</h2>
+                </div>
               </div>
-
-              <div class="graph-canvas" id="graph-canvas">
-                <svg class="edge-layer" id="edge-layer" viewBox="0 0 1160 720" aria-hidden="true"></svg>
-                <div class="node-layer" id="node-layer"></div>
+              <div class="empty-guide">
+                <p>
+                  O LINCE agora nao carrega dados ficticios. Informe um CNPJ e o sistema consulta
+                  fontes reais. O que nao estiver conectado aparece como pendente, sem inventar resultado.
+                </p>
+                <div class="guide-row">
+                  <span>1</span>
+                  <p>CNPJ.ws preenche informacoes basicas, CNAEs, socios, endereco, telefone e email quando a fonte retornar.</p>
+                </div>
+                <div class="guide-row">
+                  <span>2</span>
+                  <p>Registro.br RDAP tenta encontrar dominios .br vinculados ao CNPJ.</p>
+                </div>
+                <div class="guide-row">
+                  <span>3</span>
+                  <p>RSS de noticias busca publicacoes recentes sobre o alvo para alimentar alertas.</p>
+                </div>
               </div>
             </section>
 
-            <aside class="inspector-panel">
+            <section class="panel">
               <div class="panel-header">
-                <p class="kicker">Nó selecionado</p>
-                <h2 id="inspector-title">Selecione um vínculo</h2>
+                <div>
+                  <p class="kicker">Status por fonte</p>
+                  <h2>O que esta conectado</h2>
+                </div>
               </div>
-              <div id="inspector-body" class="inspector-body"></div>
-              <div class="quick-actions">
-                <button type="button" id="open-dossier">Abrir dossiê</button>
-                <button type="button" id="expand-node">Expandir conexões</button>
+              <div class="status-list" id="overview-source-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-investigate">
+          <div class="investigation-grid">
+            <section class="panel graph-panel">
+              <div class="panel-header graph-header">
+                <div>
+                  <p class="kicker">Grafo de vinculos</p>
+                  <h2 id="graph-title">Aguardando CNPJ</h2>
+                </div>
+                <div class="graph-tools">
+                  <button type="button" id="zoom-out">-</button>
+                  <button type="button" id="zoom-in">+</button>
+                  <button type="button" id="reset-graph">Reset</button>
+                </div>
               </div>
+
+              <div class="graph-canvas" id="graph-canvas">
+                <div class="graph-stage" id="graph-stage">
+                  <svg id="edge-layer" class="edge-layer"></svg>
+                  <div id="node-layer" class="node-layer"></div>
+                </div>
+                <div class="graph-empty" id="graph-empty">
+                  <strong>Nenhum dado carregado</strong>
+                  <p>Digite um CNPJ real para montar o grafo com dados retornados pelas fontes.</p>
+                </div>
+              </div>
+            </section>
+
+            <aside class="panel inspector">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Detalhes</p>
+                  <h2 id="inspector-title">Sem selecao</h2>
+                </div>
+              </div>
+              <div class="inspector-body" id="inspector-body"></div>
             </aside>
           </div>
         </section>
 
-        <section class="view" id="view-dossier" aria-label="Dossiê regulatório">
-          <div class="dossier-shell">
-            <section class="report-cover">
+        <section class="view" id="view-dossier">
+          <section class="panel dossier-panel">
+            <div class="dossier-cover">
               <div>
-                <p class="kicker">Relatório do alvo</p>
-                <h2 id="dossier-title">Dossiê LINCE</h2>
-                <p id="dossier-summary"></p>
+                <p class="kicker">Dossie real-only</p>
+                <h2 id="dossier-title">Nenhum alvo consultado</h2>
+                <p id="dossier-summary">
+                  As secoes abaixo so serao preenchidas quando houver dado retornado por fonte real.
+                </p>
               </div>
-              <div class="report-score">
-                <span>Risco</span>
-                <strong id="risk-score">82</strong>
+              <div class="dossier-badge">
+                <span>Origem</span>
+                <strong>Real</strong>
               </div>
-            </section>
-
+            </div>
             <div class="dossier-tabs" id="dossier-tabs"></div>
-            <section class="dossier-content" id="dossier-content"></section>
-          </div>
+            <div class="dossier-content" id="dossier-content"></div>
+          </section>
         </section>
 
-        <section class="view" id="view-sources" aria-label="Fontes e RSS">
-          <div class="sources-layout">
-            <section class="source-panel">
+        <section class="view" id="view-sources">
+          <div class="sources-grid">
+            <section class="panel">
               <div class="panel-header">
-                <p class="kicker">Capacidades de coleta</p>
-                <h2>Fontes públicas, licenciadas e futuras</h2>
+                <div>
+                  <p class="kicker">Conectores</p>
+                  <h2>Fontes reais e lacunas</h2>
+                </div>
               </div>
               <div class="source-grid" id="source-grid"></div>
             </section>
-
-            <section class="source-panel">
+            <section class="panel">
               <div class="panel-header">
-                <p class="kicker">Notícias / RSS regulatório</p>
-                <h2>Publicações que viram conexões</h2>
+                <div>
+                  <p class="kicker">Noticias reais</p>
+                  <h2>RSS por consulta</h2>
+                </div>
               </div>
-              <div class="rss-feed" id="rss-feed"></div>
+              <div class="news-list" id="news-list"></div>
             </section>
           </div>
         </section>

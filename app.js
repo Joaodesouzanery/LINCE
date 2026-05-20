@@ -1,397 +1,166 @@
-const target = {
-  id: "barraca-aceu",
-  title: "Barraca do Alceu",
-  subtitle: "CNPJ 24.598.038/0001-76",
-  summary:
-    "Alvo demonstrativo com dados cadastrais, vínculos societários, contatos, documentos, processos, dívida, notícias regulatórias e padrão decisório relacionado a uma agência.",
-  riskScore: 82
-};
-
-const graphNodes = [
+const sourceStatus = [
   {
-    id: "company",
-    type: "company",
-    title: "Barraca do Alceu",
-    subtitle: "24.598.038/0001-76",
-    x: 150,
-    y: 210,
-    central: true,
-    status: "Inativo",
-    fields: [
-      ["Status CNPJ", "Inativo"],
-      ["Cap. social", "R$ 230.000,00"],
-      ["Data abertura", "08/02/2013"],
-      ["Situação", "Ativa ICMS/PR"],
-      ["Cidade/Estado", "Porto Alegre/RS"],
-      ["CNAE princ.", "47.81-4-00"]
-    ],
-    body: "Empresa usada como alvo central da investigação. O LINCE cruza cadastro, fontes regulatórias, notícias, processos e vínculos."
+    id: "cnpj",
+    name: "CNPJ.ws",
+    data: "Informacoes basicas, CNAEs, socios, enderecos, telefones e emails",
+    method: "/api/cnpj -> publica.cnpj.ws",
+    status: "connected",
+    help: "Conectado para consulta sob demanda. Limite publico: 3 req/min."
   },
   {
-    id: "partner-renata",
-    type: "partner",
-    title: "Renata Araújo da Silva",
-    subtitle: "687.***.***-08",
-    x: 560,
-    y: 128,
-    status: "Inativo",
-    fields: [["Situação cadastral", "Inativo"]],
-    body: "Sócia vinculada ao QSA. CPF sempre mascarado e tratado conforme fonte pública ou licenciada."
-  },
-  {
-    id: "partner-alceu",
-    type: "partner",
-    title: "Alceu da Silva",
-    subtitle: "123.***.***-02",
-    x: 560,
-    y: 268,
-    status: "Inativo",
-    fields: [["Situação cadastral", "Inativo"]],
-    body: "Sócio/administrador identificado no quadro societário."
-  },
-  {
-    id: "phone",
-    type: "contact",
-    title: "Telefone",
-    subtitle: "(21) 9999-8887",
-    x: 600,
-    y: 428,
-    status: "Restrito",
-    fields: [["Origem", "Base licenciada ou cliente"]],
-    body: "Campo demonstrativo. O sistema só deve preencher contatos quando houver fonte pública, licenciada ou dado fornecido pelo cliente."
-  },
-  {
-    id: "email",
-    type: "contact",
-    title: "E-mail",
-    subtitle: "alceu.2024@gmail.com",
-    x: 600,
-    y: 548,
-    status: "Restrito",
-    fields: [["Origem", "Base licenciada ou cliente"]],
-    body: "E-mail tratado como dado sensível. Exibir apenas com base legal e trilha de origem."
-  },
-  {
-    id: "agency",
-    type: "regulatory",
-    title: "ARTESP",
-    subtitle: "Agência reguladora",
-    x: 875,
-    y: 100,
-    status: "Conectado",
-    fields: [["Fonte", "Pautas, atas e deliberações"], ["Coleta", "Scraping + PDF"]],
-    body: "Fonte regulatória prioritária para deliberações, atas, documentos SEI e histórico decisório."
-  },
-  {
-    id: "director",
-    type: "person",
-    title: "Diretor de Regulação",
-    subtitle: "Padrão decisório",
-    x: 900,
-    y: 248,
-    status: "Monitorado",
-    fields: [["Votos mapeados", "42"], ["Tendência", "Rigor moderado"]],
-    body: "Perfil de voto usado para prever sensibilidade a temas, sanções e argumentos técnicos."
-  },
-  {
-    id: "process",
-    type: "process",
-    title: "Processo regulatório",
-    subtitle: "SEI 134.00048923/2025-48",
-    x: 890,
-    y: 405,
-    status: "Publicado",
-    fields: [["Tema", "Governança / sanção"], ["Confiança", "91%"]],
-    body: "Documento regulatório estruturado por IA do LINCE a partir de PDF/SEI."
-  },
-  {
-    id: "debt",
-    type: "debt",
-    title: "Dívida / PGFN",
-    subtitle: "Checagem pendente",
-    x: 870,
-    y: 555,
-    status: "Alerta",
-    fields: [["Origem", "PGFN"], ["Status", "Requer sync"]],
-    body: "Indicação de enriquecimento financeiro-fiscal. Deve apontar para fonte oficial ou base licenciada."
-  },
-  {
-    id: "domain",
-    type: "domain",
-    title: "dominio-alvo.com.br",
-    subtitle: "Domínio",
-    x: 330,
-    y: 565,
-    status: "Monitorado",
-    fields: [["DNS", "Aguardando crawler"], ["Relação", "Possível ativo digital"]],
-    body: "Domínios entram como ativos digitais conectáveis ao alvo quando a fonte for pública."
+    id: "rdap",
+    name: "Registro.br RDAP",
+    data: "Dominios .br vinculados ao CNPJ quando a entidade existir no RDAP",
+    method: "/api/rdap -> rdap.registro.br",
+    status: "connected",
+    help: "Conectado sem chave. Retorno depende de disponibilidade no RDAP."
   },
   {
     id: "news",
-    type: "news",
-    title: "Notícia regulatória",
-    subtitle: "RSS / Scraper",
-    x: 330,
-    y: 75,
-    status: "Novo",
-    fields: [["Fonte", "RSS agência"], ["Score", "87%"]],
-    body: "Notícias e publicações de agência geram conexões automáticas com empresa, diretor, tema ou processo."
+    name: "Google News RSS",
+    data: "Noticias recentes por consulta de razao social ou nome fantasia",
+    method: "/api/news -> news.google.com/rss",
+    status: "connected",
+    help: "Conectado via RSS publico para triagem inicial."
+  },
+  {
+    id: "datajud",
+    name: "CNJ DataJud",
+    data: "Metadados de processos judiciais",
+    method: "/api/datajud",
+    status: "key",
+    help: "Endpoint preparado. Requer DATAJUD_API_KEY no ambiente da Vercel."
+  },
+  {
+    id: "transparency",
+    name: "Portal da Transparencia",
+    data: "Contratos, pagamentos, servidores e sancoes",
+    method: "/api/transparency",
+    status: "key",
+    help: "Endpoint preparado. Requer PORTAL_TRANSPARENCIA_API_KEY."
+  },
+  {
+    id: "pgfn",
+    name: "PGFN Divida Ativa",
+    data: "Divida ativa da Uniao e FGTS",
+    method: "Dump trimestral -> Supabase",
+    status: "pending",
+    help: "Precisa ingestao do arquivo aberto trimestral. Nao ha consulta ficticia."
+  },
+  {
+    id: "regulatory",
+    name: "ANEEL / ARTESP / DOU",
+    data: "Deliberacoes, votos, atas, pautas e atos oficiais",
+    method: "Scrapers + ingestao documental",
+    status: "pending",
+    help: "Proxima fase. Requer pipeline de PDFs, OCR/extracao e normalizacao."
   }
 ];
 
-const graphEdges = [
-  ["company", "partner-renata", "Sócio"],
-  ["company", "partner-alceu", "Sócio"],
-  ["company", "phone", "Contato"],
-  ["company", "email", "Contato"],
-  ["company", "agency", "Regulado por"],
-  ["agency", "director", "Diretor"],
-  ["director", "process", "Votou em"],
-  ["company", "process", "Empresa afetada"],
-  ["company", "debt", "Aparece em dívida"],
-  ["company", "domain", "Domínio"],
-  ["news", "company", "Citado em notícia"],
-  ["news", "agency", "Publicado por"]
-];
-
-const dossierSections = [
-  {
-    id: "basic",
-    label: "Informações Básicas",
-    items: [
-      ["Razão social", "Barraca do Alceu Ltda.", "Receita Federal / CNPJ"],
-      ["CNPJ", "24.598.038/0001-76", "Receita Federal / CNPJ"],
-      ["Situação cadastral", "Inativa na demo, validar na base mensal", "Receita Federal / CNPJ"],
-      ["Capital social", "R$ 230.000,00", "Receita Federal / CNPJ"],
-      ["Cidade/UF", "Porto Alegre/RS", "Cadastro público"]
-    ]
-  },
-  {
-    id: "cnaes",
-    label: "CNAEs",
-    items: [
-      ["CNAE principal", "47.81-4-00 - Comércio varejista demonstrativo", "Receita Federal"],
-      ["CNAEs secundários", "Lista enriquecida quando disponível no dump CNPJ", "Receita Federal"]
-    ]
-  },
-  {
-    id: "partners",
-    label: "Sócios",
-    items: [
-      ["Renata Araújo da Silva", "Sócia - CPF mascarado", "QSA / Receita Federal"],
-      ["Alceu da Silva", "Sócio administrador - CPF mascarado", "QSA / Receita Federal"],
-      ["Grupo econômico provável", "Inferido por QSA, endereços e participação cruzada", "LINCE"]
-    ]
-  },
-  {
-    id: "movements",
-    label: "Movimentações",
-    items: [
-      ["Alteração contratual", "Pendente de integração JUCESP/REDESIM", "Junta comercial / REDESIM"],
-      ["Mudança cadastral", "Detectável no dump mensal da Receita", "Receita Federal"]
-    ]
-  },
-  {
-    id: "addresses",
-    label: "Endereços",
-    items: [
-      ["Endereço fiscal", "Rua demonstrativa, Porto Alegre/RS", "Receita Federal"],
-      ["Endereços relacionados", "Cruzamento por QSA e documentos públicos", "LINCE"]
-    ]
-  },
-  {
-    id: "phones",
-    label: "Telefones",
-    restricted: true,
-    items: [
-      ["Telefone principal", "Disponível apenas por fonte pública, base licenciada ou dado fornecido pelo cliente.", "Política LGPD"],
-      ["Histórico de telefones", "Não preencher sem origem auditável.", "Política LINCE"]
-    ]
-  },
-  {
-    id: "emails",
-    label: "Emails",
-    restricted: true,
-    items: [
-      ["E-mail encontrado", "Disponível apenas por fonte pública, base licenciada ou dado fornecido pelo cliente.", "Política LGPD"],
-      ["Validação", "Exibir origem, data e confiança antes de uso comercial.", "LINCE"]
-    ]
-  },
-  {
-    id: "social",
-    label: "Redes Sociais",
-    restricted: true,
-    items: [
-      ["Perfis sociais", "Coleta somente de fontes abertas e permitidas pelos termos aplicáveis.", "OSINT permitido"],
-      ["Risco reputacional", "Conexões são sinalizadas, não tratadas como prova isolada.", "LINCE"]
-    ]
-  },
-  {
-    id: "documents",
-    label: "Documentos",
-    items: [
-      ["Deliberação ARTESP nº 04/2025", "PDF/SEI estruturado por IA do LINCE", "ARTESP"],
-      ["Pauta/ata de reunião", "Download, hash, texto extraído e evidência citável", "Agência reguladora"],
-      ["DOU/DOE", "Atos normativos, portarias, nomeações e resoluções", "Diários oficiais"]
-    ]
-  },
-  {
-    id: "processes",
-    label: "Processos",
-    items: [
-      ["Processo regulatório", "SEI 134.00048923/2025-48", "ARTESP"],
-      ["Processos judiciais", "Metadados públicos por CPF/CNPJ quando disponíveis", "CNJ DataJud / bureaus"]
-    ]
-  },
-  {
-    id: "debts",
-    label: "Dívidas",
-    items: [
-      ["Dívida ativa", "Checagem em PGFN por CNPJ", "PGFN"],
-      ["Execução fiscal", "Metadados judiciais quando houver correspondência", "DataJud / tribunais"]
-    ]
-  },
-  {
-    id: "bank",
-    label: "Contas Bancárias",
-    restricted: true,
-    items: [
-      ["Dados bancários", "Disponível apenas se fornecido pelo cliente, ordem legal ou base licenciada compatível.", "Política LGPD"],
-      ["Uso no dossiê", "Nunca inferir conta bancária por OSINT frágil.", "Governança LINCE"]
-    ]
-  },
-  {
-    id: "irregularities",
-    label: "Irregularidades e Alertas",
-    items: [
-      ["Reincidência regulatória", "Aparições repetidas em processos de sanção ou obrigação", "LINCE"],
-      ["Conflito potencial", "Diretor com vínculo histórico votando em empresa relacionada", "LINCE"],
-      ["Voto-vista recorrente", "Padrão comportamental por diretor e empresa", "LINCE"]
-    ]
-  },
-  {
-    id: "alerts",
-    label: "Alertas",
-    items: [
-      ["Nova pauta", "Agência publicou item que cita empresa monitorada", "Scraper/RSS"],
-      ["Nova ata", "Documento pronto para extração de votos", "Agência reguladora"],
-      ["Mudança societária", "QSA mudou no dump mensal", "Receita Federal"]
-    ]
-  },
-  {
-    id: "domains",
-    label: "Domínios",
-    items: [
-      ["dominio-alvo.com.br", "Ativo digital demonstrativo conectado ao alvo", "DNS/OSINT permitido"],
-      ["WHOIS/DNS", "Coletar somente dados públicos e permitidos", "Fonte aberta"]
-    ]
-  },
-  {
-    id: "news",
-    label: "Notícias / RSS regulatório",
-    items: [
-      ["ARTESP publica nova ata", "Notícia gera conexão com agência, processo e empresa", "RSS/Scraper"],
-      ["DOU traz ato normativo", "Publicação alimenta monitoramento por tema", "DOU/InLabs"],
-      ["Consulta pública aberta", "Entidades extraídas e score de relevância calculado", "Agência reguladora"]
-    ]
-  },
-  {
-    id: "history",
-    label: "Histórico Regulatório",
-    items: [
-      ["Aparições em deliberações", "18 registros demonstrativos", "LINCE"],
-      ["Temas dominantes", "Sanção, concessão, governança e reajuste", "LINCE"],
-      ["Diretores envolvidos", "Mapa por voto, relator e divergência", "LINCE"]
-    ]
-  },
-  {
-    id: "decision",
-    label: "Padrão Decisório",
-    items: [
-      ["Tendência do diretor", "Rigor moderado em sanções; abertura a dosimetria com prova técnica", "IA do LINCE"],
-      ["Precedentes similares", "Comparação por agência, tema, relator e resultado", "IA do LINCE"],
-      ["Resumo executivo", "Gerado por Codex/OpenAI com evidências citáveis", "IA do LINCE"]
-    ]
-  }
-];
-
-const sourceCapabilities = [
-  ["Receita Federal", "CNPJ, CNAE, QSA, situação e endereço", "CSV público mensal", "Conectada"],
-  ["JUCESP / REDESIM", "Movimentações societárias e alterações contratuais", "API/bureau", "Pendente"],
-  ["ARTESP", "Pautas, atas, deliberações e SEI", "Scraping + PDF", "Conectada"],
-  ["ANEEL", "Pautas, atas e votos", "CKAN + PDF", "Conectada"],
-  ["DOU / INLABS", "Nomeações, atos, portarias e resoluções", "XML/ZIP/API", "Conectada"],
-  ["DOE-SP", "Atos estaduais e SEI/GESP", "Scraping", "Pendente"],
-  ["Portal da Transparência", "Servidores, vínculos, CEIS/CNEP", "API REST", "Conectada"],
-  ["CNJ DataJud", "Metadados de processos judiciais", "API pública", "Conectada"],
-  ["PGFN", "Dívida ativa e FGTS", "CSV trimestral", "Conectada"],
-  ["PNCP", "Contratos, editais e fornecedores", "API/portal", "Conectada"],
-  ["RSS Agências", "Notícias, consultas e publicações recentes", "RSS/Scraper", "Pendente"],
-  ["Contatos / Bancos", "Telefones, e-mails e contas", "Pública/licenciada/cliente", "Restrita"]
-];
-
-const rssItems = [
-  {
-    source: "ARTESP",
-    title: "Ata de reunião publicada com novo processo SEI",
-    date: "2026-05-19",
-    summary: "Publicação gera conexão entre agência, processo, empresa citada e possível deliberação futura.",
-    entities: ["ARTESP", "SEI", "Empresa monitorada"],
-    score: 91
-  },
-  {
-    source: "DOU",
-    title: "Ato normativo cita setor regulado",
-    date: "2026-05-18",
-    summary: "Item alimenta alertas por tema e histórico normativo do setor.",
-    entities: ["DOU", "Portaria", "Tema regulatório"],
-    score: 84
-  },
-  {
-    source: "ANEEL",
-    title: "Pauta antecipada inclui matéria tarifária",
-    date: "2026-05-17",
-    summary: "Pauta permite briefing antes da reunião e comparação com padrão decisório dos diretores.",
-    entities: ["ANEEL", "Tarifa", "Diretoria"],
-    score: 88
-  }
+const dossierTabs = [
+  ["basic", "Informacoes Basicas"],
+  ["cnaes", "CNAEs"],
+  ["partners", "Socios"],
+  ["movements", "Movimentacoes"],
+  ["addresses", "Enderecos"],
+  ["phones", "Telefones"],
+  ["emails", "Emails"],
+  ["social", "Redes Sociais"],
+  ["documents", "Documentos"],
+  ["processes", "Processos"],
+  ["debts", "Dividas"],
+  ["publicPayments", "Recebimentos Publicos"],
+  ["irregularities", "Irregularidades e Alertas"],
+  ["alerts", "Alertas"],
+  ["domains", "Dominios"],
+  ["news", "Noticias / RSS"],
+  ["regulatoryHistory", "Historico Regulatorio"],
+  ["decisionPattern", "Padrao Decisorio"]
 ];
 
 const state = {
-  selectedNodeId: "company",
-  activeView: "investigate",
-  searchType: "cnpj",
-  activeDossierTab: "basic"
+  activeView: "overview",
+  activeDossierTab: "basic",
+  selectedNodeId: null,
+  target: null,
+  graphNodes: [],
+  graphEdges: [],
+  dossier: {},
+  news: [],
+  sources: {},
+  transform: { x: 80, y: 60, scale: 1 },
+  drag: null,
+  pan: null
 };
 
 const $ = (selector) => document.querySelector(selector);
 
-function getNode(id = state.selectedNodeId) {
-  return graphNodes.find((node) => node.id === id) || graphNodes[0];
-}
-
-function statusClass(status) {
-  const normalized = status.toLowerCase();
-  if (normalized.includes("ativo") || normalized.includes("conectado") || normalized.includes("monitorado") || normalized.includes("novo")) {
-    return "status-active";
+const realDataProvider = {
+  async fetchCnpj(cnpj) {
+    return requestJson(`/api/cnpj?cnpj=${onlyDigits(cnpj)}`);
+  },
+  async fetchDomains(cnpj) {
+    return requestJson(`/api/rdap?cnpj=${onlyDigits(cnpj)}`);
+  },
+  async fetchNews(query) {
+    return requestJson(`/api/news?q=${encodeURIComponent(query)}`);
+  },
+  async fetchProcesses(nameOrCnpj) {
+    return requestJson(`/api/datajud?q=${encodeURIComponent(nameOrCnpj)}`);
+  },
+  async fetchTransparency(cnpj) {
+    return requestJson(`/api/transparency?cnpj=${onlyDigits(cnpj)}`);
   }
-  if (normalized.includes("alerta")) return "status-alert";
-  return "status-restricted";
+};
+
+async function requestJson(url) {
+  const response = await fetch(url);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload.error || payload.message || `Falha HTTP ${response.status}`;
+    throw Object.assign(new Error(message), { status: response.status, payload });
+  }
+  return payload;
 }
 
-function iconFor(type) {
+function onlyDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function formatCnpj(value) {
+  const digits = onlyDigits(value);
+  if (digits.length !== 14) return value || "-";
+  return digits.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+}
+
+function money(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return value || "Sem dado encontrado";
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(number);
+}
+
+function text(value, fallback = "Sem dado encontrado") {
+  return value === null || value === undefined || value === "" ? fallback : String(value);
+}
+
+function sourceClass(status) {
   return {
-    company: "▣",
-    partner: "♙",
-    person: "♙",
-    contact: "☎",
-    process: "!",
-    debt: "!",
-    document: "◫",
-    news: "◆",
-    domain: "⌁",
-    regulatory: "⚖"
-  }[type] || "•";
+    connected: "status-ok",
+    key: "status-key",
+    pending: "status-pending",
+    empty: "status-empty",
+    error: "status-error"
+  }[status] || "status-empty";
+}
+
+function sourceLabel(status) {
+  return {
+    connected: "Conectado",
+    key: "Precisa chave/API",
+    pending: "Pendente de ingestao",
+    empty: "Sem dado encontrado",
+    error: "Erro"
+  }[status] || status;
 }
 
 function setView(view) {
@@ -402,74 +171,506 @@ function setView(view) {
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === view);
   });
+  const titles = {
+    overview: ["Dados reais", "Overview"],
+    investigate: ["Grafo interativo", "Investigar"],
+    dossier: ["Relatorio do alvo", "Dossie"],
+    sources: ["Conectores", "Fontes reais"]
+  };
+  const [kicker, title] = titles[view];
+  $("#view-kicker").textContent = kicker;
+  $("#view-title").textContent = title;
 }
 
-function renderGraph() {
-  const edgeLayer = $("#edge-layer");
-  const nodeLayer = $("#node-layer");
-  const byId = Object.fromEntries(graphNodes.map((node) => [node.id, node]));
+function setLoading(isLoading) {
+  const button = $("#search-form button");
+  button.disabled = isLoading;
+  button.textContent = isLoading ? "Consultando..." : "Consultar";
+}
 
-  edgeLayer.innerHTML = graphEdges
-    .map(([from, to, label]) => {
-      const a = byId[from];
-      const b = byId[to];
-      const x1 = a.x + (a.central ? 240 : 214);
-      const y1 = a.y + 45;
-      const x2 = b.x;
-      const y2 = b.y + 45;
-      const midX = (x1 + x2) / 2;
-      const midY = (y1 + y2) / 2;
-      return `
-        <line class="edge-line" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"></line>
-        <circle cx="${midX}" cy="${midY}" r="5" fill="#b8ef86"></circle>
-        <text class="edge-label" x="${midX + 10}" y="${midY + 4}">${label}</text>
-      `;
-    })
-    .join("");
+async function runSearch(cnpjInput) {
+  const cnpj = onlyDigits(cnpjInput);
+  if (cnpj.length !== 14) {
+    showInspectorMessage("CNPJ invalido", "Informe 14 digitos. Nenhuma consulta foi executada.");
+    return;
+  }
 
-  nodeLayer.innerHTML = graphNodes
-    .map((node) => {
-      const fields = node.fields
-        .map(([label, value]) => `<div class="node-field"><span>${label}</span><strong>${value}</strong></div>`)
-        .join("");
+  setLoading(true);
+  setView("investigate");
+  clearResult();
+
+  const results = await Promise.allSettled([
+    realDataProvider.fetchCnpj(cnpj),
+    realDataProvider.fetchDomains(cnpj),
+    realDataProvider.fetchProcesses(cnpj),
+    realDataProvider.fetchTransparency(cnpj)
+  ]);
+
+  const cnpjResult = unwrapResult(results[0]);
+  const domainResult = unwrapResult(results[1]);
+  const processResult = unwrapResult(results[2]);
+  const transparencyResult = unwrapResult(results[3]);
+
+  state.sources.cnpj = resultToSource(cnpjResult);
+  state.sources.rdap = resultToSource(domainResult);
+  state.sources.datajud = resultToSource(processResult, "key");
+  state.sources.transparency = resultToSource(transparencyResult, "key");
+
+  if (!cnpjResult.ok || !cnpjResult.value?.data) {
+    setLoading(false);
+    renderSources();
+    renderOverview();
+    renderGraph();
+    renderDossier();
+    showInspectorMessage(
+      "CNPJ nao carregado",
+      cnpjResult.error || "A fonte principal nao retornou dados. O dossie permanece vazio."
+    );
+    return;
+  }
+
+  const company = normalizeCnpjPayload(cnpjResult.value.data);
+  state.target = company;
+  state.news = [];
+
+  const newsQuery = company.legalName || company.tradeName || cnpj;
+  const newsResult = await settle(realDataProvider.fetchNews(newsQuery));
+  state.sources.news = resultToSource(newsResult);
+  state.news = newsResult.ok ? newsResult.value.items || [] : [];
+
+  const domains = domainResult.ok ? normalizeDomains(domainResult.value) : [];
+  const processes = processResult.ok ? processResult.value.items || [] : [];
+  const transparency = transparencyResult.ok ? transparencyResult.value.items || [] : [];
+
+  buildDossier(company, domains, state.news, processes, transparency);
+  buildGraph(company, domains, state.news);
+  renderAll();
+  setLoading(false);
+}
+
+function unwrapResult(result) {
+  if (result.status === "fulfilled") return { ok: true, value: result.value };
+  return {
+    ok: false,
+    error: result.reason?.payload?.error || result.reason?.message || "Falha na consulta",
+    payload: result.reason?.payload
+  };
+}
+
+async function settle(promise) {
+  try {
+    return { ok: true, value: await promise };
+  } catch (error) {
+    return { ok: false, error: error.payload?.error || error.message, payload: error.payload };
+  }
+}
+
+function resultToSource(result, fallbackBlockedStatus = "error") {
+  if (result.ok) return { status: "connected", detail: "Consulta real executada" };
+  if (result.payload?.status === "requires_key") return { status: "key", detail: result.error };
+  if (result.payload?.status === "pending_ingestion") return { status: "pending", detail: result.error };
+  return { status: fallbackBlockedStatus, detail: result.error };
+}
+
+function normalizeCnpjPayload(data) {
+  const est = data.estabelecimento || {};
+  const city = est.cidade?.nome || est.cidade_nome || "";
+  const stateCode = est.estado?.sigla || est.estado_sigla || "";
+  const mainActivity = est.atividade_principal || {};
+  const secondary = est.atividades_secundarias || [];
+  return {
+    cnpj: est.cnpj || data.cnpj || "",
+    legalName: data.razao_social || data.nome || "",
+    tradeName: est.nome_fantasia || "",
+    status: est.situacao_cadastral || "",
+    openingDate: est.data_inicio_atividade || "",
+    legalNature: data.natureza_juridica?.descricao || "",
+    size: data.porte?.descricao || data.porte || "",
+    capital: data.capital_social,
+    mainCnae: {
+      code: mainActivity.id || mainActivity.codigo || "",
+      description: mainActivity.descricao || ""
+    },
+    secondaryCnaes: secondary.map((item) => ({
+      code: item.id || item.codigo || "",
+      description: item.descricao || ""
+    })),
+    partners: (data.socios || data.qsa || []).map((partner) => ({
+      name: partner.nome || partner.nome_socio || "",
+      qualification: partner.qualificacao_socio?.descricao || partner.qualificacao_socio || partner.qualificacao || "",
+      entryDate: partner.data_entrada || ""
+    })),
+    address: {
+      street: [est.tipo_logradouro, est.logradouro].filter(Boolean).join(" "),
+      number: est.numero || "",
+      complement: est.complemento || "",
+      district: est.bairro || "",
+      zip: est.cep || "",
+      city,
+      state: stateCode
+    },
+    phones: [est.ddd1 && est.telefone1 ? `(${est.ddd1}) ${est.telefone1}` : "", est.ddd2 && est.telefone2 ? `(${est.ddd2}) ${est.telefone2}` : ""].filter(Boolean),
+    email: est.email || "",
+    raw: data
+  };
+}
+
+function normalizeDomains(payload) {
+  if (!payload?.data) return [];
+  const events = Array.isArray(payload.data.events) ? payload.data.events : [];
+  const links = Array.isArray(payload.data.links) ? payload.data.links : [];
+  const names = new Set();
+
+  for (const link of links) {
+    const href = link.href || "";
+    const match = href.match(/domain\/([^/?#]+)/i);
+    if (match) names.add(decodeURIComponent(match[1]));
+  }
+
+  const notices = Array.isArray(payload.data.notices) ? payload.data.notices : [];
+  for (const notice of notices) {
+    const description = (notice.description || []).join(" ");
+    for (const match of description.matchAll(/\b[a-z0-9-]+\.com\.br\b/gi)) {
+      names.add(match[0]);
+    }
+  }
+
+  const domains = [...names].map((name) => ({
+    name,
+    source: "Registro.br RDAP",
+    date: events[0]?.eventDate || ""
+  }));
+
+  if (!domains.length && Number.isFinite(Number(payload.data.nicbr_domainCount))) {
+    domains.push({
+      name: `${payload.data.nicbr_domainCount} dominios .br vinculados`,
+      source: "Registro.br RDAP",
+      date: events[0]?.eventDate || "",
+      aggregate: true
+    });
+  }
+
+  return domains;
+}
+
+function buildDossier(company, domains, news, processes, transparency) {
+  const addressLine = [
+    company.address.street,
+    company.address.number,
+    company.address.complement,
+    company.address.district,
+    company.address.city,
+    company.address.state,
+    company.address.zip
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  state.dossier = {
+    basic: compactItems([
+      item("Razao social", company.legalName, "CNPJ.ws / Receita Federal"),
+      item("Nome fantasia", company.tradeName, "CNPJ.ws / Receita Federal"),
+      item("CNPJ", formatCnpj(company.cnpj), "CNPJ.ws / Receita Federal"),
+      item("Situacao cadastral", company.status, "CNPJ.ws / Receita Federal"),
+      item("Data de abertura", company.openingDate, "CNPJ.ws / Receita Federal"),
+      item("Natureza juridica", company.legalNature, "CNPJ.ws / Receita Federal"),
+      item("Porte", company.size, "CNPJ.ws / Receita Federal"),
+      item("Capital social", money(company.capital), "CNPJ.ws / Receita Federal")
+    ]),
+    cnaes: compactItems([
+      item("CNAE principal", [company.mainCnae.code, company.mainCnae.description].filter(Boolean).join(" - "), "CNPJ.ws / Receita Federal"),
+      ...company.secondaryCnaes.map((cnae) => item("CNAE secundario", [cnae.code, cnae.description].filter(Boolean).join(" - "), "CNPJ.ws / Receita Federal"))
+    ]),
+    partners: company.partners.map((partner) =>
+      item(partner.name, [partner.qualification, partner.entryDate ? `Entrada: ${partner.entryDate}` : ""].filter(Boolean).join(" | "), "QSA / CNPJ.ws")
+    ),
+    addresses: compactItems([item("Endereco cadastral", addressLine, "CNPJ.ws / Receita Federal")]),
+    phones: company.phones.map((phone) => item("Telefone cadastral", phone, "CNPJ.ws / Receita Federal")),
+    emails: compactItems([item("Email cadastral", company.email, "CNPJ.ws / Receita Federal")]),
+    domains: domains.map((domain) =>
+      item(domain.name, domain.aggregate ? "Contagem real retornada pelo RDAP; lista pode estar truncada por politica do servidor." : domain.date ? `Evento RDAP: ${domain.date}` : "Dominio vinculado no RDAP", domain.source)
+    ),
+    news: news.map((newsItem) => item(newsItem.title, `${newsItem.source} | ${newsItem.date || "sem data"}`, "Google News RSS")),
+    processes: processes.map((process) => item(process.title || process.numeroProcesso || "Processo", process.description || "Retornado pelo DataJud", "CNJ DataJud")),
+    publicPayments: transparency.map((entry) => item(entry.title || "Registro", entry.description || "Portal da Transparencia", "Portal da Transparencia")),
+    movements: [],
+    social: [],
+    documents: [],
+    debts: [],
+    irregularities: [],
+    alerts: [],
+    regulatoryHistory: [],
+    decisionPattern: []
+  };
+}
+
+function item(label, value, source) {
+  return { label, value: text(value), source, empty: !value };
+}
+
+function compactItems(items) {
+  return items.filter((entry) => !entry.empty);
+}
+
+function buildGraph(company, domains, news) {
+  const nodes = [];
+  const edges = [];
+  nodes.push({
+    id: "company",
+    type: "company",
+    title: company.legalName || formatCnpj(company.cnpj),
+    subtitle: formatCnpj(company.cnpj),
+    x: 120,
+    y: 190,
+    central: true,
+    status: company.status || "Conectado",
+    fields: [
+      ["Fonte", "CNPJ.ws"],
+      ["Situacao", company.status || "Sem dado"],
+      ["CNAE", company.mainCnae.code || "Sem dado"],
+      ["Cidade/UF", [company.address.city, company.address.state].filter(Boolean).join("/") || "Sem dado"]
+    ]
+  });
+
+  company.partners.slice(0, 10).forEach((partner, index) => {
+    const id = `partner-${index}`;
+    nodes.push({
+      id,
+      type: "partner",
+      title: partner.name || "Socio sem nome",
+      subtitle: partner.qualification || "QSA",
+      x: 520,
+      y: 90 + index * 108,
+      status: "QSA",
+      fields: [["Fonte", "CNPJ.ws"], ["Entrada", partner.entryDate || "Sem dado"]]
+    });
+    edges.push(["company", id, "Socio"]);
+  });
+
+  company.phones.forEach((phone, index) => {
+    const id = `phone-${index}`;
+    nodes.push({
+      id,
+      type: "contact",
+      title: "Telefone",
+      subtitle: phone,
+      x: 870,
+      y: 90 + index * 108,
+      status: "Fonte publica",
+      fields: [["Fonte", "CNPJ.ws"]]
+    });
+    edges.push(["company", id, "Contato"]);
+  });
+
+  if (company.email) {
+    nodes.push({
+      id: "email",
+      type: "contact",
+      title: "Email",
+      subtitle: company.email,
+      x: 870,
+      y: 305,
+      status: "Fonte publica",
+      fields: [["Fonte", "CNPJ.ws"]]
+    });
+    edges.push(["company", "email", "Contato"]);
+  }
+
+  domains.slice(0, 8).forEach((domain, index) => {
+    const id = `domain-${index}`;
+    nodes.push({
+      id,
+      type: "domain",
+      title: domain.name,
+      subtitle: domain.aggregate ? "Contagem RDAP" : "Registro.br RDAP",
+      x: 240 + index * 150,
+      y: 610,
+      status: "RDAP",
+      fields: [["Fonte", "Registro.br"]]
+    });
+    edges.push(["company", id, "Dominio"]);
+  });
+
+  news.slice(0, 4).forEach((newsItem, index) => {
+    const id = `news-${index}`;
+    nodes.push({
+      id,
+      type: "news",
+      title: newsItem.title,
+      subtitle: newsItem.source,
+      x: 240 + index * 250,
+      y: 20,
+      status: "RSS",
+      fields: [["Data", newsItem.date || "Sem data"], ["Fonte", "Google News RSS"]]
+    });
+    edges.push([id, "company", "Citado em noticia"]);
+  });
+
+  state.graphNodes = nodes;
+  state.graphEdges = edges;
+  state.selectedNodeId = "company";
+}
+
+function clearResult() {
+  state.target = null;
+  state.graphNodes = [];
+  state.graphEdges = [];
+  state.dossier = {};
+  state.news = [];
+  state.selectedNodeId = null;
+  renderAll();
+}
+
+function renderAll() {
+  renderOverview();
+  renderSources();
+  renderGraph();
+  renderInspector();
+  renderDossier();
+}
+
+function renderOverview() {
+  $("#metric-last").textContent = state.target ? formatCnpj(state.target.cnpj) : "-";
+  $("#metric-last-label").textContent = state.target?.legalName || "Nenhum CNPJ consultado";
+  $("#overview-source-list").innerHTML = sourceStatus
+    .map((source) => {
+      const runtime = state.sources[source.id];
+      const status = runtime?.status || source.status;
+      const detail = runtime?.detail || source.help;
       return `
-        <article
-          class="graph-node ${node.central ? "central" : ""} ${node.id === state.selectedNodeId ? "active" : ""}"
-          style="left:${node.x}px; top:${node.y}px"
-          data-node="${node.id}"
-        >
-          <div class="node-head">
-            <span class="node-icon ${node.type}">${iconFor(node.type)}</span>
-            <div>
-              <span class="node-title">${node.title}</span>
-              <span class="node-type">${node.subtitle}</span>
-            </div>
+        <article class="source-row">
+          <span class="status-pill ${sourceClass(status)}">${sourceLabel(status)}</span>
+          <div>
+            <strong>${source.name}</strong>
+            <p class="status-help">${detail}</p>
           </div>
-          ${node.central ? '<div class="node-image" aria-hidden="true"></div>' : ""}
-          <div class="node-fields">${fields}</div>
-          <span class="status-chip ${statusClass(node.status)}">${node.status}</span>
         </article>
       `;
     })
     .join("");
 }
 
+function renderSources() {
+  $("#source-grid").innerHTML = sourceStatus
+    .map((source) => {
+      const runtime = state.sources[source.id];
+      const status = runtime?.status || source.status;
+      const detail = runtime?.detail || source.help;
+      return `
+        <article class="source-card">
+          <span class="source-meta">${source.method}</span>
+          <strong>${source.name}</strong>
+          <p>${source.data}</p>
+          <span class="status-pill ${sourceClass(status)}">${sourceLabel(status)}</span>
+          <p>${detail}</p>
+        </article>
+      `;
+    })
+    .join("");
+
+  if (!state.news.length) {
+    $("#news-list").innerHTML = emptyCard("Noticias / RSS", "Sem consulta executada ou sem noticias retornadas por fonte real.");
+    return;
+  }
+
+  $("#news-list").innerHTML = state.news
+    .map(
+      (entry) => `
+        <article class="news-card">
+          <span class="source-meta">${entry.source} | ${entry.date || "sem data"}</span>
+          <strong>${entry.title}</strong>
+          <p>${entry.summary || "Sem resumo disponivel no RSS."}</p>
+          <div class="entity-row">
+            <span class="entity-pill">RSS real</span>
+            ${entry.link ? `<a class="entity-pill" href="${entry.link}" target="_blank" rel="noreferrer">Abrir fonte</a>` : ""}
+          </div>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function renderGraph() {
+  const stage = $("#graph-stage");
+  const edgeLayer = $("#edge-layer");
+  const nodeLayer = $("#node-layer");
+  stage.style.transform = `translate(${state.transform.x}px, ${state.transform.y}px) scale(${state.transform.scale})`;
+  $("#graph-empty").classList.toggle("hidden", state.graphNodes.length > 0);
+  $("#graph-title").textContent = state.target?.legalName || "Aguardando CNPJ";
+
+  edgeLayer.setAttribute("viewBox", "0 0 1400 900");
+
+  const nodeById = Object.fromEntries(state.graphNodes.map((node) => [node.id, node]));
+  edgeLayer.innerHTML = state.graphEdges
+    .map(([from, to, label]) => {
+      const a = nodeById[from];
+      const b = nodeById[to];
+      if (!a || !b) return "";
+      const x1 = a.x + (a.central ? 270 : 238);
+      const y1 = a.y + 48;
+      const x2 = b.x;
+      const y2 = b.y + 48;
+      const mx = (x1 + x2) / 2;
+      const my = (y1 + y2) / 2;
+      return `
+        <line class="edge-line" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"></line>
+        <text class="edge-label" x="${mx + 8}" y="${my - 5}">${escapeHtml(label)}</text>
+      `;
+    })
+    .join("");
+
+  nodeLayer.innerHTML = state.graphNodes
+    .map((node) => {
+      const fields = node.fields
+        .filter(([, value]) => value)
+        .map(([label, value]) => `<div class="node-field"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+        .join("");
+      return `
+        <article
+          class="node-card ${node.central ? "central" : ""} ${node.id === state.selectedNodeId ? "active" : ""}"
+          data-node="${node.id}"
+          style="left:${node.x}px; top:${node.y}px"
+        >
+          <div class="node-head">
+            <span class="node-icon ${node.type}">${iconFor(node.type)}</span>
+            <div>
+              <span class="node-title">${escapeHtml(node.title)}</span>
+              <span class="node-subtitle">${escapeHtml(node.subtitle)}</span>
+            </div>
+          </div>
+          <div class="node-fields">${fields}</div>
+          <span class="status-pill status-ok">${escapeHtml(node.status)}</span>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function iconFor(type) {
+  return { company: "C", partner: "S", contact: "@", domain: "D", news: "N" }[type] || "I";
+}
+
 function renderInspector() {
-  const node = getNode();
+  const node = state.graphNodes.find((entry) => entry.id === state.selectedNodeId);
+  if (!node) {
+    showInspectorMessage("Sem selecao", "Consulte um CNPJ real para selecionar nos e ver a origem dos dados.");
+    return;
+  }
   $("#inspector-title").textContent = node.title;
   $("#inspector-body").innerHTML = `
     <article class="detail-card">
-      <span class="field-source">${node.type} · ${node.status}</span>
-      <strong>${node.subtitle}</strong>
-      <p>${node.body}</p>
+      <span class="field-source">${escapeHtml(node.type)} | ${escapeHtml(node.status)}</span>
+      <strong>${escapeHtml(node.subtitle)}</strong>
+      <p>Dado exibido somente porque foi retornado por fonte real conectada.</p>
     </article>
     ${node.fields
+      .filter(([, value]) => value)
       .map(
         ([label, value]) => `
           <article class="detail-card">
-            <span class="field-source">${label}</span>
-            <strong>${value}</strong>
-            <p>Campo rastreável com origem e confiança no dossiê.</p>
+            <span class="field-source">${escapeHtml(label)}</span>
+            <strong>${escapeHtml(value)}</strong>
+            <p>Origem rastreavel no dossie.</p>
           </article>
         `
       )
@@ -477,75 +678,71 @@ function renderInspector() {
   `;
 }
 
-function renderDossierHeader() {
-  $("#dossier-title").textContent = `Dossiê: ${target.title}`;
-  $("#dossier-summary").textContent = target.summary;
-  $("#risk-score").textContent = target.riskScore;
+function showInspectorMessage(title, message) {
+  $("#inspector-title").textContent = title;
+  $("#inspector-body").innerHTML = `<article class="detail-card"><p>${escapeHtml(message)}</p></article>`;
+}
+
+function renderDossier() {
+  renderDossierTabs();
+  const title = state.target?.legalName || "Nenhum alvo consultado";
+  $("#dossier-title").textContent = title;
+  $("#dossier-summary").textContent = state.target
+    ? `Dossie real-only para ${formatCnpj(state.target.cnpj)}. Secoes sem retorno real aparecem como vazias.`
+    : "As secoes abaixo so serao preenchidas quando houver dado retornado por fonte real.";
+
+  const items = state.dossier[state.activeDossierTab] || [];
+  if (!items.length) {
+    $("#dossier-content").innerHTML = emptyCard(
+      dossierTabs.find(([id]) => id === state.activeDossierTab)?.[1] || "Secao",
+      emptyMessageForTab(state.activeDossierTab)
+    );
+    return;
+  }
+
+  $("#dossier-content").innerHTML = items
+    .map(
+      (entry) => `
+        <article class="dossier-item">
+          <span class="field-source">${escapeHtml(entry.source)}</span>
+          <strong>${escapeHtml(entry.label)}</strong>
+          <p>${escapeHtml(entry.value)}</p>
+        </article>
+      `
+    )
+    .join("");
 }
 
 function renderDossierTabs() {
-  $("#dossier-tabs").innerHTML = dossierSections
+  $("#dossier-tabs").innerHTML = dossierTabs
     .map(
-      (section) => `
-        <button class="dossier-tab ${section.id === state.activeDossierTab ? "active" : ""}" type="button" data-dossier-tab="${section.id}">
-          ${section.label}
-        </button>
-      `
+      ([id, label]) => `<button class="dossier-tab ${state.activeDossierTab === id ? "active" : ""}" type="button" data-dossier-tab="${id}">${label}</button>`
     )
     .join("");
 }
 
-function renderDossierContent() {
-  const section = dossierSections.find((item) => item.id === state.activeDossierTab) || dossierSections[0];
-  $("#dossier-content").innerHTML = section.items
-    .map(
-      ([label, value, source]) => `
-        <article class="dossier-item ${section.restricted ? "restricted" : ""}">
-          <span class="field-source">${source}</span>
-          <strong>${label}</strong>
-          <p>${value}</p>
-        </article>
-      `
-    )
-    .join("");
+function emptyMessageForTab(tab) {
+  const messages = {
+    movements: "Movimentacoes exigem REDESIM/Junta Comercial ou ingestao do dump da Receita. Ainda nao conectado.",
+    social: "Redes sociais dependem de OSINT permitido ou base licenciada. Nao ha dado real retornado.",
+    documents: "Documentos regulatorios exigem ingestao de agencias/DOU. Ainda nao conectado.",
+    processes: "DataJud esta preparado, mas requer chave no ambiente para consulta real.",
+    debts: "PGFN exige ingestao do dump trimestral ou API contratada. Ainda nao conectado.",
+    publicPayments: "Portal da Transparencia requer chave gratuita no ambiente.",
+    irregularities: "Alertas reais dependem de dados conectados e regras aplicadas.",
+    alerts: "Sem alerta real gerado para este alvo.",
+    regulatoryHistory: "Historico regulatorio e exclusivo LINCE, mas exige ingestao de deliberações.",
+    decisionPattern: "Padrao decisorio exige votos/deliberacoes ingeridos."
+  };
+  return messages[tab] || "Sem dado encontrado em fonte real conectada.";
 }
 
-function renderSources() {
-  $("#source-grid").innerHTML = sourceCapabilities
-    .map(
-      ([source, data, method, status]) => `
-        <article class="source-card">
-          <span class="source-meta">${method}</span>
-          <strong>${source}</strong>
-          <p>${data}</p>
-          <span class="status-chip ${statusClass(status)}">${status}</span>
-        </article>
-      `
-    )
-    .join("");
-
-  $("#rss-feed").innerHTML = rssItems
-    .map(
-      (item) => `
-        <article class="rss-card">
-          <span class="source-meta">${item.source} · ${new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium" }).format(new Date(`${item.date}T12:00:00`))}</span>
-          <strong>${item.title}</strong>
-          <p>${item.summary}</p>
-          <div class="entities">
-            ${item.entities.map((entity) => `<span class="entity-pill">${entity}</span>`).join("")}
-            <span class="entity-pill">Score ${item.score}%</span>
-          </div>
-        </article>
-      `
-    )
-    .join("");
+function emptyCard(title, message) {
+  return `<article class="dossier-item empty"><span class="field-source">Sem dado conectado</span><strong>${escapeHtml(title)}</strong><p>${escapeHtml(message)}</p></article>`;
 }
 
-function generateDossier() {
-  state.activeDossierTab = "decision";
-  renderDossierTabs();
-  renderDossierContent();
-  setView("dossier");
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
 }
 
 function wireEvents() {
@@ -555,58 +752,105 @@ function wireEvents() {
     setView(button.dataset.view);
   });
 
-  $("#node-layer").addEventListener("click", (event) => {
-    const node = event.target.closest("[data-node]");
-    if (!node) return;
-    state.selectedNodeId = node.dataset.node;
-    renderGraph();
-    renderInspector();
+  $("#search-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    runSearch($("#global-search").value).catch((error) => {
+      setLoading(false);
+      showInspectorMessage("Erro de consulta", error.message);
+    });
   });
+
+  $("#open-dossier").addEventListener("click", () => setView("dossier"));
+  $("#center-graph").addEventListener("click", centerGraph);
+  $("#reset-graph").addEventListener("click", () => {
+    state.transform = { x: 80, y: 60, scale: 1 };
+    renderGraph();
+  });
+  $("#zoom-in").addEventListener("click", () => zoomGraph(0.12));
+  $("#zoom-out").addEventListener("click", () => zoomGraph(-0.12));
 
   $("#dossier-tabs").addEventListener("click", (event) => {
     const tab = event.target.closest("[data-dossier-tab]");
     if (!tab) return;
     state.activeDossierTab = tab.dataset.dossierTab;
-    renderDossierTabs();
-    renderDossierContent();
+    renderDossier();
   });
 
-  document.querySelectorAll("[data-search-type]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.searchType = button.dataset.searchType;
-      document.querySelectorAll("[data-search-type]").forEach((item) => {
-        item.classList.toggle("active", item === button);
-      });
-      $("#global-search").placeholder = `Buscar por ${button.textContent.trim()}`;
-    });
-  });
+  const canvas = $("#graph-canvas");
+  canvas.addEventListener("pointerdown", onPointerDown);
+  canvas.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerup", onPointerUp);
+  canvas.addEventListener("pointercancel", onPointerUp);
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+}
 
-  $("#search-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    setView("investigate");
-    state.selectedNodeId = "company";
+function onPointerDown(event) {
+  const nodeEl = event.target.closest("[data-node]");
+  const canvas = $("#graph-canvas");
+  canvas.setPointerCapture(event.pointerId);
+  if (nodeEl) {
+    const node = state.graphNodes.find((entry) => entry.id === nodeEl.dataset.node);
+    state.selectedNodeId = node.id;
+    state.drag = {
+      id: node.id,
+      startX: event.clientX,
+      startY: event.clientY,
+      nodeX: node.x,
+      nodeY: node.y
+    };
     renderGraph();
     renderInspector();
-  });
+    return;
+  }
+  state.pan = {
+    startX: event.clientX,
+    startY: event.clientY,
+    x: state.transform.x,
+    y: state.transform.y
+  };
+  canvas.classList.add("dragging");
+}
 
-  $("#generate-dossier").addEventListener("click", generateDossier);
-  $("#open-dossier").addEventListener("click", () => setView("dossier"));
-  $("#expand-node").addEventListener("click", () => {
-    const node = getNode();
-    $("#inspector-body").insertAdjacentHTML(
-      "afterbegin",
-      `<article class="notice-card"><p>IA do LINCE expandiu conexões relacionadas a ${node.title}. Em produção, esta ação consultaria Supabase, fontes públicas e scrapers/RSS.</p></article>`
-    );
-  });
+function onPointerMove(event) {
+  if (state.drag) {
+    const node = state.graphNodes.find((entry) => entry.id === state.drag.id);
+    if (!node) return;
+    node.x = Math.max(0, state.drag.nodeX + (event.clientX - state.drag.startX) / state.transform.scale);
+    node.y = Math.max(0, state.drag.nodeY + (event.clientY - state.drag.startY) / state.transform.scale);
+    renderGraph();
+  }
+  if (state.pan) {
+    state.transform.x = state.pan.x + event.clientX - state.pan.startX;
+    state.transform.y = state.pan.y + event.clientY - state.pan.startY;
+    renderGraph();
+  }
+}
+
+function onPointerUp(event) {
+  $("#graph-canvas").releasePointerCapture?.(event.pointerId);
+  $("#graph-canvas").classList.remove("dragging");
+  state.drag = null;
+  state.pan = null;
+}
+
+function onWheel(event) {
+  event.preventDefault();
+  zoomGraph(event.deltaY > 0 ? -0.08 : 0.08);
+}
+
+function zoomGraph(delta) {
+  state.transform.scale = Math.min(1.8, Math.max(0.45, state.transform.scale + delta));
+  renderGraph();
+}
+
+function centerGraph() {
+  state.transform = { x: 80, y: 60, scale: 1 };
+  setView("investigate");
+  renderGraph();
 }
 
 function init() {
-  renderGraph();
-  renderInspector();
-  renderDossierHeader();
-  renderDossierTabs();
-  renderDossierContent();
-  renderSources();
+  renderAll();
   wireEvents();
 }
 
