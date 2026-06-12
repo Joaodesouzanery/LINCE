@@ -857,3 +857,12 @@ h1 {
     flex-direction: column;
   }
 }
+
+.dou-date {
+  background: transparent;
+  border: 1px solid var(--border, #2a2f3a);
+  color: inherit;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}

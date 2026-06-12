@@ -17,11 +17,13 @@
   },
   {
     "name": "DOU",
-    "priority": 2,
+    "priority": 1,
     "method": "inlabs_xml_zip",
     "cadence": "daily",
-    "entities": ["document", "person", "agency"],
-    "url": "https://github.com/Imprensa-Nacional/inlabs"
+    "entities": ["document", "person", "agency", "alert"],
+    "url": "https://github.com/Imprensa-Nacional/inlabs",
+    "status": "connected",
+    "endpoints": ["/api/ingest-dou", "/api/dou-feed"]
   },
   {
     "name": "Receita Federal CNPJ",

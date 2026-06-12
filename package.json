@@ -1,0 +1,14 @@
+{
+  "name": "lince",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LINCE - Plataforma de Inteligencia Regulatoria Nacional",
+  "scripts": {
+    "db:setup": "node scripts/setup-db.js",
+    "ingest:dou": "node scripts/run-ingest-dou.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "adm-zip": "^0.5.16"
+  }
+}

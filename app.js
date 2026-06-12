@@ -175,9 +175,11 @@ function setView(view) {
     overview: ["Dados reais", "Overview"],
     investigate: ["Grafo interativo", "Investigar"],
     dossier: ["Relatorio do alvo", "Dossie"],
-    sources: ["Conectores", "Fontes reais"]
+    sources: ["Conectores", "Fontes reais"],
+    dou: ["Diario Oficial da Uniao", "Monitor DOU"]
   };
   const [kicker, title] = titles[view];
+  if (view === "dou") loadDouFeed();
   $("#view-kicker").textContent = kicker;
   $("#view-title").textContent = title;
 }
@@ -590,6 +592,39 @@ function renderSources() {
     .join("");
 }
 
+const DOU_TYPE_LABEL = { norma: "Norma", ato_pessoal: "Ato de pessoal", contrato: "Contrato", ato: "Ato" };
+
+async function loadDouFeed() {
+  const list = $("#dou-list");
+  if (!list) return;
+  list.innerHTML = emptyCard("Monitor DOU", "Carregando atos do Diario Oficial...");
+  const date = $("#dou-date")?.value;
+  const url = date ? `/api/dou-feed?date=${date}` : "/api/dou-feed";
+  try {
+    const payload = await requestJson(url);
+    const items = payload.items || [];
+    if (!items.length) {
+      list.innerHTML = emptyCard("Monitor DOU", "Sem atos das agencias ingeridos para este periodo. Rode /api/ingest-dou.");
+      return;
+    }
+    list.innerHTML = items
+      .map((entry) => `
+        <article class="news-card">
+          <span class="source-meta">${escapeHtml(entry.agency || "DOU")} | ${escapeHtml(DOU_TYPE_LABEL[entry.type] || entry.type)} | ${escapeHtml(entry.date || "sem data")}</span>
+          <strong>${escapeHtml(entry.title)}</strong>
+          <p>${escapeHtml(entry.summary || "Sem resumo de IA.")}</p>
+          <div class="entity-row">
+            ${(entry.entities || []).slice(0, 4).map((e) => `<span class="entity-pill">${escapeHtml(e.name || "")}</span>`).join("")}
+            ${entry.link ? `<a class="entity-pill" href="${escapeHtml(entry.link)}" target="_blank" rel="noreferrer">Abrir DOU</a>` : ""}
+          </div>
+        </article>
+      `)
+      .join("");
+  } catch (error) {
+    list.innerHTML = emptyCard("Monitor DOU", `Falha ao carregar: ${error.message}`);
+  }
+}
+
 function renderGraph() {
   const stage = $("#graph-stage");
   const edgeLayer = $("#edge-layer");
@@ -759,6 +794,8 @@ function wireEvents() {
       showInspectorMessage("Erro de consulta", error.message);
     });
   });
+
+  $("#dou-date")?.addEventListener("change", () => loadDouFeed());
 
   $("#open-dossier").addEventListener("click", () => setView("dossier"));
   $("#center-graph").addEventListener("click", centerGraph);

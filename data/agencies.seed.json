@@ -1,0 +1,13 @@
+[
+  { "name": "Agencia Nacional de Energia Eletrica", "acronym": "ANEEL", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/aneel" },
+  { "name": "Agencia Nacional de Telecomunicacoes", "acronym": "ANATEL", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anatel" },
+  { "name": "Agencia Nacional do Petroleo, Gas Natural e Biocombustiveis", "acronym": "ANP", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anp" },
+  { "name": "Agencia Nacional de Vigilancia Sanitaria", "acronym": "ANVISA", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anvisa" },
+  { "name": "Agencia Nacional de Saude Suplementar", "acronym": "ANS", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/ans" },
+  { "name": "Agencia Nacional de Aguas e Saneamento Basico", "acronym": "ANA", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/ana" },
+  { "name": "Agencia Nacional de Transportes Terrestres", "acronym": "ANTT", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/antt" },
+  { "name": "Agencia Nacional de Transportes Aquaviarios", "acronym": "ANTAQ", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/antaq" },
+  { "name": "Agencia Nacional de Aviacao Civil", "acronym": "ANAC", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anac" },
+  { "name": "Agencia Nacional do Cinema", "acronym": "ANCINE", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/ancine" },
+  { "name": "Agencia Nacional de Mineracao", "acronym": "ANM", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anm" }
+]
