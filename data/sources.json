@@ -39,7 +39,9 @@
     "method": "rest_api",
     "cadence": "daily_monthly",
     "entities": ["company", "person", "relationship", "alert"],
-    "url": "https://api.portaldatransparencia.gov.br/swagger-ui/index.html"
+    "url": "https://api.portaldatransparencia.gov.br/swagger-ui/index.html",
+    "status": "connected",
+    "endpoints": ["/api/dossier-person"]
   },
   {
     "name": "CNJ DataJud",
@@ -48,5 +50,25 @@
     "cadence": "continuous",
     "entities": ["company", "document", "relationship"],
     "url": "https://www.cnj.jus.br/sistemas/datajud/api-publica/"
+  },
+  {
+    "name": "PNCP",
+    "priority": 1,
+    "method": "rest_api",
+    "cadence": "weekly",
+    "entities": ["contract", "company", "agency", "relationship"],
+    "url": "https://pncp.gov.br/api/pncp/swagger-ui/index.html",
+    "status": "connected",
+    "endpoints": ["/api/ingest-pncp"]
+  },
+  {
+    "name": "TCU Jurisprudencia",
+    "priority": 3,
+    "method": "public_csv_dump",
+    "cadence": "monthly",
+    "entities": ["jurisprudence"],
+    "url": "https://sites.tcu.gov.br/dados-abertos/jurisprudencia/",
+    "status": "connected",
+    "endpoints": ["scripts/load-tcu.js"]
   }
 ]

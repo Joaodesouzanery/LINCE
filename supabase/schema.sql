@@ -234,3 +234,83 @@ create index domains_target_idx on domains (target_kind, target_id);
 create index news_items_source_idx on news_items (source_name, published_at);
 create index bank_accounts_metadata_target_idx on bank_accounts_metadata (target_kind, target_id);
 create index company_movements_company_idx on company_movements (company_id, movement_date);
+
+-- ============================================================================
+-- Fases 2-4: diretores (M3), contratos (M6), jurisprudencia (M9)
+-- ============================================================================
+
+-- Entity resolution de pessoas: chave canonica por nome normalizado / CPF.
+alter table people add column if not exists cpf text;
+alter table people add column if not exists normalized_name text;
+alter table people add column if not exists agency_id uuid references agencies(id);
+create index if not exists people_normalized_name_idx on people (normalized_name);
+create index if not exists people_cpf_idx on people (cpf);
+
+-- Mandatos de diretores (nomeacao/exoneracao via DOU Secao 2). M3.
+create table if not exists mandates (
+  id uuid primary key default gen_random_uuid(),
+  person_id uuid not null references people(id) on delete cascade,
+  agency_id uuid not null references agencies(id),
+  role text,
+  started_at date,
+  ended_at date,
+  appointment_act text,
+  source_document_id uuid references documents(id),
+  confidence_score numeric(5, 4) not null default 0,
+  created_at timestamptz not null default now()
+);
+create index if not exists mandates_person_idx on mandates (person_id);
+create index if not exists mandates_agency_idx on mandates (agency_id);
+
+-- Filiacao partidaria / doacoes (TSE dados abertos). M3.
+create table if not exists party_links (
+  id uuid primary key default gen_random_uuid(),
+  person_id uuid references people(id) on delete cascade,
+  party text not null,
+  link_type text not null default 'filiacao',
+  reference_year int,
+  amount numeric(14, 2),
+  source_name text not null default 'TSE',
+  created_at timestamptz not null default now()
+);
+create index if not exists party_links_person_idx on party_links (person_id);
+
+-- Contratos / licitacoes (PNCP). M6.
+create table if not exists contracts (
+  id uuid primary key default gen_random_uuid(),
+  agency_id uuid references agencies(id),
+  supplier_company_id uuid references companies(id),
+  supplier_cnpj text,
+  supplier_name text,
+  object text,
+  modality text,
+  value numeric(16, 2),
+  signed_at date,
+  ends_at date,
+  pncp_id text unique,
+  source_url text,
+  source_name text not null default 'PNCP',
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists contracts_agency_idx on contracts (agency_id);
+create index if not exists contracts_supplier_idx on contracts (supplier_cnpj);
+create index if not exists contracts_ends_idx on contracts (ends_at);
+
+-- Jurisprudencia / processos (TCU, DataJud, CADE). M9.
+create table if not exists jurisprudence (
+  id uuid primary key default gen_random_uuid(),
+  court text not null,
+  process_number text,
+  title text not null,
+  summary text,
+  decided_at date,
+  url text,
+  related_company_id uuid references companies(id),
+  related_agency_id uuid references agencies(id),
+  external_id text unique,
+  metadata jsonb not null default '{}'::jsonb,
+  embedding vector(1536),
+  created_at timestamptz not null default now()
+);
+create index if not exists jurisprudence_court_idx on jurisprudence (court, decided_at);

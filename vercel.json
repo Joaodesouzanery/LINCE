@@ -2,6 +2,8 @@
   "cleanUrls": true,
   "trailingSlash": false,
   "crons": [
-    { "path": "/api/ingest-dou", "schedule": "0 12 * * *" }
+    { "path": "/api/ingest-dou", "schedule": "0 12 * * *" },
+    { "path": "/api/ingest-people-dou", "schedule": "30 12 * * *" },
+    { "path": "/api/ingest-pncp", "schedule": "0 6 * * 1" }
   ]
 }

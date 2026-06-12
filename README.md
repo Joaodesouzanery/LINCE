@@ -49,6 +49,25 @@ npm run db:setup
 npm run ingest:dou 2026-06-11
 ```
 
+## Modulos de Inteligencia (Fases 2-4)
+
+- **M3 Diretores** -> `api/ingest-people-dou` (extrai dirigentes dos atos de pessoal do DOU,
+  cria `people`/`mandates`/`relationships`) e `api/dossier-person?name=` (dossie: mandatos,
+  filiacao, votos, SIAPE, score de captura). Front: aba "Diretores".
+- **M6 Contratos** -> `api/ingest-pncp` (PNCP, contratos por agencia; preencha o CNPJ da
+  agencia em `agencies.collection_rules.cnpj`). Tabela `contracts` + `relationships`.
+- **M7 Grafo Nacional** -> `api/graph` (nodes/edges a partir de `relationships`). Front: aba
+  "Grafo Nacional".
+- **M9 Jurisprudencia** -> `scripts/load-tcu.js` (CSV do TCU) + `api/datajud` (processos).
+
+## Onde colocar credenciais e dados
+
+- **Chaves/segredos** (pequenos): em `.env` local (ver `.env.example`) e, em producao, no
+  painel da Vercel (Environment Variables). Nunca no repositorio.
+- **Bases publicas grandes** (dumps CSV/ZIP: Receita CNPJ, TSE, TCU): NAO vao no Git. Baixe e
+  carregue no Supabase com os loaders em `scripts/` (ex.: `node scripts/load-tcu.js arquivo.csv`).
+  O Supabase e a fonte unica de leitura da plataforma.
+
 ## Open The MVP
 
 Open `index.html` directly in a browser. No install step is required.

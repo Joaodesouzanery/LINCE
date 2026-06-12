@@ -42,6 +42,14 @@
             <span>05</span>
             Monitor DOU
           </button>
+          <button class="nav-item" type="button" data-view="directors">
+            <span>06</span>
+            Diretores
+          </button>
+          <button class="nav-item" type="button" data-view="graph">
+            <span>07</span>
+            Grafo Nacional
+          </button>
         </nav>
 
         <div class="sidebar-section">
@@ -246,6 +254,36 @@
                 <input id="dou-date" type="date" class="dou-date" />
               </div>
               <div class="news-list" id="dou-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-directors">
+          <div class="sources-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Dossie de dirigentes (M3)</p>
+                  <h2>Diretores das agencias</h2>
+                </div>
+                <input id="director-search" type="search" class="dou-date" placeholder="Buscar por nome" />
+              </div>
+              <div class="news-list" id="directors-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-graph">
+          <div class="sources-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Rede de influencia (M7)</p>
+                  <h2>Grafo Nacional</h2>
+                </div>
+                <input id="graph-agency" type="search" class="dou-date" placeholder="Filtrar por sigla (ex: ANEEL)" />
+              </div>
+              <div class="news-list" id="graph-list"></div>
             </section>
           </div>
         </section>

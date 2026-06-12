@@ -176,10 +176,14 @@ function setView(view) {
     investigate: ["Grafo interativo", "Investigar"],
     dossier: ["Relatorio do alvo", "Dossie"],
     sources: ["Conectores", "Fontes reais"],
-    dou: ["Diario Oficial da Uniao", "Monitor DOU"]
+    dou: ["Diario Oficial da Uniao", "Monitor DOU"],
+    directors: ["Dossie de dirigentes", "Diretores"],
+    graph: ["Rede de influencia", "Grafo Nacional"]
   };
   const [kicker, title] = titles[view];
   if (view === "dou") loadDouFeed();
+  if (view === "directors") loadDirectors();
+  if (view === "graph") loadNationalGraph();
   $("#view-kicker").textContent = kicker;
   $("#view-title").textContent = title;
 }
@@ -625,6 +629,57 @@ async function loadDouFeed() {
   }
 }
 
+async function loadDirectors() {
+  const list = $("#directors-list");
+  if (!list) return;
+  const name = $("#director-search")?.value?.trim();
+  if (!name) {
+    list.innerHTML = emptyCard("Diretores", "Digite um nome para gerar o dossie do dirigente.");
+    return;
+  }
+  list.innerHTML = emptyCard("Diretores", "Montando dossie...");
+  try {
+    const d = await requestJson(`/api/dossier-person?name=${encodeURIComponent(name)}`);
+    const intel = d.intelligence || {};
+    const mandates = (d.mandates || []).map((m) => `<span class="entity-pill">${escapeHtml(m.agencies?.acronym || "")} ${escapeHtml(m.role || "")}</span>`).join("");
+    const parties = (d.party_links || []).map((p) => `<span class="entity-pill">${escapeHtml(p.party)}</span>`).join("");
+    list.innerHTML = `
+      <article class="news-card">
+        <span class="source-meta">${escapeHtml(d.person.full_name)} | ${escapeHtml(d.person.role || "dirigente")}</span>
+        <strong>Score de captura: ${intel.capture_score ?? "-"}/100 | Votos vencidos: ${intel.dissent_votes ?? 0}</strong>
+        <p>Mandato ativo: ${intel.active_mandate ? "sim" : "nao"} | SIAPE: ${(d.siape || []).length} registro(s)</p>
+        <div class="entity-row">${mandates}${parties}</div>
+      </article>`;
+  } catch (error) {
+    list.innerHTML = emptyCard("Diretores", `Falha: ${error.message}`);
+  }
+}
+
+async function loadNationalGraph() {
+  const list = $("#graph-list");
+  if (!list) return;
+  list.innerHTML = emptyCard("Grafo Nacional", "Carregando rede de conexoes...");
+  const agency = $("#graph-agency")?.value?.trim();
+  try {
+    const g = await requestJson(`/api/graph${agency ? `?agency=${encodeURIComponent(agency)}` : ""}`);
+    if (!g.edges?.length) {
+      list.innerHTML = emptyCard("Grafo Nacional", "Sem conexoes ingeridas ainda. Rode as ingestoes de DOU/pessoas/PNCP.");
+      return;
+    }
+    const byId = Object.fromEntries((g.nodes || []).map((n) => [n.id, n]));
+    list.innerHTML = `<article class="news-card"><span class="source-meta">${g.nodes.length} entidades | ${g.edges.length} conexoes</span></article>` +
+      g.edges.slice(0, 80).map((e) => {
+        const a = byId[e.from], b = byId[e.to];
+        return `<article class="news-card">
+          <span class="source-meta">${escapeHtml(a?.type || "")} -> ${escapeHtml(b?.type || "")} | ${escapeHtml(e.relationship)}</span>
+          <strong>${escapeHtml(a?.title || e.from)} &rarr; ${escapeHtml(b?.title || e.to)}</strong>
+        </article>`;
+      }).join("");
+  } catch (error) {
+    list.innerHTML = emptyCard("Grafo Nacional", `Falha: ${error.message}`);
+  }
+}
+
 function renderGraph() {
   const stage = $("#graph-stage");
   const edgeLayer = $("#edge-layer");
@@ -796,6 +851,8 @@ function wireEvents() {
   });
 
   $("#dou-date")?.addEventListener("change", () => loadDouFeed());
+  $("#director-search")?.addEventListener("change", () => loadDirectors());
+  $("#graph-agency")?.addEventListener("change", () => loadNationalGraph());
 
   $("#open-dossier").addEventListener("click", () => setView("dossier"));
   $("#center-graph").addEventListener("click", centerGraph);
