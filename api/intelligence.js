@@ -130,7 +130,67 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "radar", radar });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily" });
+    if (type === "giratoria") {
+      // Porta giratoria: diretores (mandatos em agencias) que tambem sao socios
+      // de empresas com contratos ou relacoes com agencias reguladoras.
+      const { data: mandates } = await supabase
+        .from("mandates")
+        .select("person_id, agency_id, role, started_at, ended_at, people(name), agencies(acronym)");
+
+      const personIds = [...new Set((mandates || []).map((m) => m.person_id))];
+      if (personIds.length === 0) return res.status(200).json({ ok: true, type: "giratoria", cases: [] });
+
+      // Busca relacoes de socio dessas pessoas com empresas
+      const { data: socioRels } = await supabase
+        .from("relationships")
+        .select("from_id, to_id, metadata, companies(cnpj, legal_name)")
+        .eq("from_kind", "person")
+        .eq("to_kind", "company")
+        .eq("relationship", "socio")
+        .in("from_id", personIds);
+
+      // Busca filiacao partidaria
+      const { data: partyLinks } = await supabase
+        .from("party_links")
+        .select("person_id, party, joined_at, status")
+        .in("person_id", personIds);
+
+      const partyByPerson = {};
+      for (const pl of partyLinks || []) {
+        if (!partyByPerson[pl.person_id]) partyByPerson[pl.person_id] = [];
+        partyByPerson[pl.person_id].push(pl);
+      }
+
+      const socioByPerson = {};
+      for (const r of socioRels || []) {
+        if (!socioByPerson[r.from_id]) socioByPerson[r.from_id] = [];
+        socioByPerson[r.from_id].push({ company: r.companies?.legal_name, cnpj: r.companies?.cnpj, role: r.metadata?.role });
+      }
+
+      // Monta casos de porta giratoria (diretor + vinculo empresarial)
+      const seen = new Set();
+      const cases = [];
+      for (const m of mandates || []) {
+        if (!socioByPerson[m.person_id] && !partyByPerson[m.person_id]) continue;
+        const key = m.person_id;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        cases.push({
+          person_id: m.person_id,
+          name: m.people?.name || "?",
+          agency: m.agencies?.acronym,
+          role: m.role,
+          mandate_from: m.started_at,
+          mandate_to: m.ended_at,
+          companies: socioByPerson[m.person_id] || [],
+          parties: (partyByPerson[m.person_id] || []).map((pl) => pl.party)
+        });
+      }
+      cases.sort((a, b) => b.companies.length - a.companies.length);
+      return res.status(200).json({ ok: true, type: "giratoria", total: cases.length, cases });
+    }
+
+    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily, trend, recent, giratoria" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }
