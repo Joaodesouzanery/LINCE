@@ -15,6 +15,9 @@
   --yellow: #d7ad4f;
   --red: #ef6760;
   --purple: #8d7bff;
+  --accent: #f97316;
+  --accent-soft: rgba(249, 115, 22, 0.14);
+  --accent-line: rgba(249, 115, 22, 0.4);
   --radius: 8px;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -76,9 +79,9 @@ button {
 .brand-icon,
 .avatar {
   align-items: center;
-  background: linear-gradient(145deg, #ffffff, #aeb8cc);
+  background: linear-gradient(145deg, #fb923c, #ea580c);
   border-radius: 9px;
-  color: #111;
+  color: #fff;
   display: flex;
   font-weight: 900;
   height: 44px;
@@ -137,10 +140,21 @@ button {
   width: 34px;
 }
 
-.nav-item:hover,
+.nav-item:hover {
+  background: #1e1e1e;
+  border-color: #2c2c2c;
+}
+
 .nav-item.active {
-  background: #303030;
-  border-color: #383838;
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.nav-item.active span {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .sidebar-section {
@@ -193,8 +207,6 @@ button {
 }
 
 .avatar {
-  background: linear-gradient(145deg, #9fd0ff, #7b6dff);
-  color: #fff;
   flex: 0 0 auto;
 }
 
@@ -238,7 +250,9 @@ button {
 }
 
 .icon-button.active {
-  background: #303030;
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
 }
 
 .kicker {
@@ -282,14 +296,14 @@ h1 {
 }
 
 .search-box input:focus {
-  border-color: var(--blue);
-  box-shadow: 0 0 0 3px rgba(78, 140, 255, 0.16);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .search-box button,
 .primary-button {
-  background: var(--blue);
-  border: 1px solid var(--blue);
+  background: var(--accent);
+  border: 1px solid var(--accent);
   color: #fff;
   cursor: pointer;
   font-weight: 800;
@@ -871,3 +885,75 @@ h1 {
 .node-icon.person { background: #61c46e; }
 .dou-date { background: transparent; border: 1px solid var(--border, #2a2f3a); color: inherit; border-radius: 6px; padding: 4px 8px; font: inherit; }
 
+
+/* ===== Redesign laranja: sidebar agrupada ===== */
+.nav-group-label {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  margin: 16px 0 6px 4px;
+}
+.nav-group-label:first-child { margin-top: 0; }
+
+/* ===== Metric cards com sparkline ===== */
+.metric-card { position: relative; overflow: hidden; }
+.metric-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 34px;
+  margin-top: 10px;
+}
+.metric-spark i {
+  flex: 1;
+  background: #2a2a2a;
+  border-radius: 2px;
+  min-height: 3px;
+}
+.metric-spark i.hot { background: var(--accent); }
+.metric-delta { color: var(--green); font-size: 12px; font-weight: 700; }
+.metric-delta.down { color: var(--red); }
+
+/* ===== Gráfico de tendência pixelado ===== */
+.trend-panel { display: flex; flex-direction: column; gap: 16px; }
+.trend-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.period-toggle { display: inline-flex; background: #111; border: 1px solid var(--line); border-radius: 8px; padding: 3px; gap: 2px; }
+.period-toggle button {
+  background: transparent; border: 0; color: var(--muted);
+  padding: 6px 14px; border-radius: 6px; cursor: pointer; font-weight: 700; font-size: 13px;
+}
+.period-toggle button.active { background: var(--accent); color: #fff; }
+.trend-chart {
+  display: flex; align-items: flex-end; gap: 6px;
+  height: 240px; padding: 12px 4px 0;
+  border-top: 1px solid var(--line-soft);
+  overflow-x: auto;
+}
+.trend-col { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 6px; min-width: 26px; flex: 1; }
+.trend-stack { display: flex; flex-direction: column-reverse; gap: 2px; width: 100%; align-items: center; }
+.trend-cell { width: 16px; height: 9px; border-radius: 2px; background: var(--accent); opacity: 0.92; }
+.trend-cell.norma { background: var(--accent); }
+.trend-cell.ato_pessoal { background: var(--purple); }
+.trend-cell.contrato { background: var(--yellow); }
+.trend-x { color: var(--faint); font-size: 10px; text-transform: uppercase; }
+.trend-legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); }
+.trend-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
+
+/* ===== Tabela de atos recentes ===== */
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th {
+  text-align: left; color: var(--faint); font-weight: 750; text-transform: uppercase;
+  font-size: 11px; letter-spacing: 0.08em; padding: 10px 12px; border-bottom: 1px solid var(--line);
+}
+.data-table td { padding: 11px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.data-table tr:hover td { background: #0e0e0e; }
+.tag { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+.tag.norma { background: var(--accent-soft); color: var(--accent); }
+.tag.ato_pessoal { background: rgba(141,123,255,0.16); color: var(--purple); }
+.tag.contrato { background: rgba(215,173,79,0.16); color: var(--yellow); }
+.tag.ato { background: #1c1c1c; color: var(--muted); }
+.conf-badge { font-size: 11px; color: var(--faint); }
+.conf-badge.high { color: var(--green); }
+.conf-badge.mid { color: var(--yellow); }

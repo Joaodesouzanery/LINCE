@@ -542,24 +542,21 @@ function renderAll() {
 }
 
 function renderOverview() {
-  $("#metric-last").textContent = state.target ? formatCnpj(state.target.cnpj) : "-";
-  $("#metric-last-label").textContent = state.target?.legalName || "Nenhum CNPJ consultado";
-  $("#overview-source-list").innerHTML = sourceStatus
-    .map((source) => {
+  // Overview agora é orientado a dados regulatorios (ver loadOverviewMetrics).
+  // Mantido defensivo caso elementos antigos nao existam.
+  const last = $("#metric-last");
+  if (last) last.textContent = state.target ? formatCnpj(state.target.cnpj) : "-";
+  const lastLabel = $("#metric-last-label");
+  if (lastLabel) lastLabel.textContent = state.target?.legalName || "Nenhum CNPJ consultado";
+  const sourceList = $("#overview-source-list");
+  if (sourceList) {
+    sourceList.innerHTML = sourceStatus.map((source) => {
       const runtime = state.sources[source.id];
       const status = runtime?.status || source.status;
       const detail = runtime?.detail || source.help;
-      return `
-        <article class="source-row">
-          <span class="status-pill ${sourceClass(status)}">${sourceLabel(status)}</span>
-          <div>
-            <strong>${source.name}</strong>
-            <p class="status-help">${detail}</p>
-          </div>
-        </article>
-      `;
-    })
-    .join("");
+      return `<article class="source-row"><span class="status-pill ${sourceClass(status)}">${sourceLabel(status)}</span><div><strong>${source.name}</strong><p class="status-help">${detail}</p></div></article>`;
+    }).join("");
+  }
 }
 
 function renderSources() {
@@ -1145,18 +1142,82 @@ function centerGraph() {
   renderGraph();
 }
 
+const TREND_MAX_CELLS = 12; // teto de quadradinhos por barra (cada um = bloco de atos)
+
+function renderTrendChart(series) {
+  const chart = $("#trend-chart");
+  if (!chart) return;
+  if (!series?.length) {
+    chart.innerHTML = `<p style="color:var(--faint);padding:20px">Sem atos no periodo. Rode a ingestao do DOU.</p>`;
+    return;
+  }
+  const maxTotal = Math.max(...series.map((d) => d.total), 1);
+  const scale = Math.min(1, TREND_MAX_CELLS / maxTotal);
+  chart.innerHTML = series.map((d) => {
+    const cell = (type, n) => Array.from({ length: Math.round(n * scale) }, () => `<i class="trend-cell ${type}"></i>`).join("");
+    const stack = cell("contrato", d.contrato) + cell("ato_pessoal", d.ato_pessoal) + cell("norma", d.norma);
+    const day = (d.date || "").slice(8, 10);
+    return `<div class="trend-col" title="${escapeHtml(d.date)}: ${d.total} atos">
+      <div class="trend-stack">${stack || '<i class="trend-cell" style="background:#222"></i>'}</div>
+      <span class="trend-x">${day}</span>
+    </div>`;
+  }).join("");
+}
+
+function renderSparkline(series) {
+  const el = $("#spark-docs");
+  if (!el || !series?.length) return;
+  const last = series.slice(-16);
+  const max = Math.max(...last.map((d) => d.total), 1);
+  el.innerHTML = last.map((d, i) => {
+    const h = Math.max(3, Math.round((d.total / max) * 34));
+    const hot = i >= last.length - 3 ? " hot" : "";
+    return `<i class="${hot.trim()}" style="height:${h}px"></i>`;
+  }).join("");
+}
+
+function renderRecentActs(items) {
+  const tbody = $("#recent-tbody");
+  if (!tbody) return;
+  if (!items?.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--faint)">Sem atos ingeridos. Rode <b>npm run ingest:dou</b>.</td></tr>`;
+    return;
+  }
+  const conf = (c) => {
+    if (c == null) return `<span class="conf-badge">regex</span>`;
+    const cls = c >= 0.8 ? "high" : c >= 0.5 ? "mid" : "";
+    return `<span class="conf-badge ${cls}">${Math.round(c * 100)}%</span>`;
+  };
+  tbody.innerHTML = items.map((it) => `
+    <tr>
+      <td><strong>${escapeHtml(it.agency || "?")}</strong></td>
+      <td><span class="tag ${escapeHtml(it.type || "ato")}">${escapeHtml((it.type || "ato").replace("_", " "))}</span></td>
+      <td>${it.link ? `<a href="${escapeHtml(it.link)}" target="_blank" rel="noreferrer" style="color:inherit">${escapeHtml(it.title)}</a>` : escapeHtml(it.title)}</td>
+      <td>${escapeHtml(it.date || "")}</td>
+      <td>${conf(it.confidence)}</td>
+    </tr>`).join("");
+}
+
+async function loadTrend(days = 30) {
+  const trend = await requestJson(`/api/intelligence?type=trend&days=${days}`).catch(() => null);
+  if (trend?.series) { renderTrendChart(trend.series); renderSparkline(trend.series); }
+  const docEl = $("#metric-docs");
+  if (docEl && trend) docEl.textContent = trend.total;
+}
+
 async function loadOverviewMetrics() {
   try {
+    loadTrend(30);
+    requestJson("/api/intelligence?type=recent&limit=20").then((r) => renderRecentActs(r?.items)).catch(() => {});
+
     const [score, daily] = await Promise.all([
       requestJson("/api/intelligence?type=score").catch(() => null),
       requestJson("/api/intelligence?type=daily").catch(() => null)
     ]);
     if (score?.scores) {
-      const total = score.scores.reduce((s, a) => s + a.docs, 0);
       const people = score.scores.reduce((s, a) => s + a.active_directors, 0);
       const alerts = score.scores.reduce((s, a) => s + a.open_alerts, 0);
-      const docEl = $("#metric-docs"), ppEl = $("#metric-people"), alEl = $("#metric-alerts");
-      if (docEl) { docEl.textContent = total; $("#metric-docs-label").textContent = "Atos do DOU no banco"; }
+      const ppEl = $("#metric-people"), alEl = $("#metric-alerts");
       if (ppEl) ppEl.textContent = people;
       if (alEl) alEl.textContent = alerts;
     }
@@ -1165,9 +1226,8 @@ async function loadOverviewMetrics() {
       const entries = Object.entries(daily.by_agency);
       dailyEl.innerHTML = entries.length
         ? entries.map(([ac, d]) => `<article class="news-card"><span class="source-meta">${escapeHtml(ac)}</span><strong>${d.normas} normas · ${d.pessoal} atos pessoal · ${d.contratos} contratos</strong>${(d.destaques||[]).slice(0,1).map(s=>`<p>${escapeHtml(s)}</p>`).join("")}</article>`).join("")
-        : emptyCard("Diario", "Nenhum ato nas ultimas 24h. Cron roda ao meio-dia UTC.");
+        : emptyCard("Diario", "Nenhum ato nas ultimas 24h.");
     }
-    // contratos
     const contracts = await requestJson("/api/intelligence?type=radar").catch(() => null);
     if (contracts) {
       const total = (contracts.radar?.["30d"]?.length || 0) + (contracts.radar?.["60d"]?.length || 0) + (contracts.radar?.["90d"]?.length || 0);
@@ -1177,9 +1237,21 @@ async function loadOverviewMetrics() {
   } catch { /* sem dados ainda */ }
 }
 
+function wireTrendToggle() {
+  const toggle = $("#trend-toggle");
+  if (!toggle) return;
+  toggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-days]");
+    if (!btn) return;
+    toggle.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
+    loadTrend(Number(btn.dataset.days));
+  });
+}
+
 function init() {
   renderAll();
   wireEvents();
+  wireTrendToggle();
   loadOverviewMetrics();
 }
 

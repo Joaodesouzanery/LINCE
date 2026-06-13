@@ -1,9 +1,9 @@
-// M3 - Extrai pessoas (diretores nomeados/exonerados) a partir dos atos de
-// pessoal do DOU ja ingeridos (Secao 2), usando as entidades extraidas pela IA.
-// Cria/atualiza people, mandates e relationships (agency employs person).
-// GET /api/ingest-people-dou?date=YYYY-MM-DD  (default: todos sem processar)
+// M3 - Backfill de diretores a partir dos atos de pessoal do DOU JA ingeridos.
+// Usa regex (lib/dou) + entidades de IA (se houver) para criar people, mandates
+// e relationships. Util para processar os atos antigos sem reingerir o DOU.
+// GET /api/ingest-people-dou?date=YYYY-MM-DD  (default: todos os atos de pessoal)
 const { getSupabase } = require("../lib/supabase");
-const { upsertPerson } = require("../lib/people");
+const { processPeopleFromDoc } = require("../lib/ingest");
 
 module.exports = async function handler(req, res) {
   try {
@@ -11,67 +11,31 @@ module.exports = async function handler(req, res) {
 
     let query = supabase
       .from("documents")
-      .select("id, title, agency_id, published_at, metadata")
+      .select("id, title, agency_id, published_at, extracted_text, metadata")
       .eq("source_name", "DOU")
       .eq("document_type", "ato_pessoal")
       .order("published_at", { ascending: false })
-      .limit(200);
+      .limit(500);
     if (req.query.date) query = query.eq("published_at", String(req.query.date));
 
     const { data: docs, error } = await query;
     if (error) throw error;
 
-    let people = 0;
-    let mandates = 0;
-    const rels = [];
-
+    let people = 0, mandates = 0, rels = 0;
     for (const doc of docs || []) {
-      const entities = doc.metadata?.ai_entities || [];
-      const persons = entities.filter((e) => e.kind === "person" && e.name);
-      for (const p of persons) {
-        const person = await upsertPerson(supabase, {
-          full_name: p.name,
-          role: p.role || "Dirigente",
-          agency_id: doc.agency_id
-        });
-        people++;
-
-        // Registra mandato (idempotente por person+agency+ato).
-        const { data: existing } = await supabase
-          .from("mandates")
-          .select("id")
-          .eq("person_id", person.id)
-          .eq("agency_id", doc.agency_id)
-          .eq("appointment_act", doc.title)
-          .maybeSingle();
-        if (!existing) {
-          await supabase.from("mandates").insert({
-            person_id: person.id,
-            agency_id: doc.agency_id,
-            role: p.role || "Dirigente",
-            started_at: doc.published_at,
-            appointment_act: doc.title,
-            source_document_id: doc.id,
-            confidence_score: doc.metadata?.ai_confidence || 0
-          });
-          mandates++;
-        }
-
-        rels.push({
-          from_kind: "agency",
-          from_id: doc.agency_id,
-          to_kind: "person",
-          to_id: person.id,
-          relationship: "employs",
-          source_document_id: doc.id,
-          confidence_score: doc.metadata?.ai_confidence || 0
-        });
-      }
+      const r = await processPeopleFromDoc(supabase, {
+        id: doc.id,
+        agency_id: doc.agency_id,
+        agency_acronym: doc.metadata?.agency_acronym,
+        published_at: doc.published_at,
+        title: doc.title,
+        text: doc.extracted_text,
+        aiEntities: doc.metadata?.ai_entities
+      });
+      people += r.people; mandates += r.mandates; rels += r.relationships;
     }
 
-    if (rels.length) await supabase.from("relationships").insert(rels);
-
-    return res.status(200).json({ ok: true, docs: docs?.length || 0, people, mandates, relationships: rels.length });
+    return res.status(200).json({ ok: true, docs: docs?.length || 0, people, mandates, relationships: rels });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }

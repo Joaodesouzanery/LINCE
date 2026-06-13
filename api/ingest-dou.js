@@ -4,6 +4,7 @@
 const { getSupabase } = require("../lib/supabase");
 const { collectDou } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");
+const { processPeopleFromDoc } = require("../lib/ingest");
 
 const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
 
@@ -36,6 +37,7 @@ module.exports = async function handler(req, res) {
 
     let inserted = 0;
     let skipped = 0;
+    let directors = 0;
     const alerts = [];
 
     for (const record of records) {
@@ -75,7 +77,7 @@ module.exports = async function handler(req, res) {
       if (docErr) throw docErr;
       inserted++;
 
-      // Nomeacoes/exoneracoes (Secao 2) viram alerta imediato.
+      // Nomeacoes/exoneracoes (Secao 2): alerta + extracao de diretores.
       if (record.section === 2) {
         alerts.push({
           target_kind: "agency",
@@ -85,6 +87,16 @@ module.exports = async function handler(req, res) {
           severity: "high",
           source_document_id: doc.id
         });
+        const r = await processPeopleFromDoc(supabase, {
+          id: doc.id,
+          agency_id: record.agency_id,
+          agency_acronym: record.agency_acronym,
+          published_at: record.published_at,
+          title: record.title,
+          text: record.extracted_text,
+          aiEntities: ai.entities
+        });
+        directors += r.people;
       }
     }
 
@@ -98,6 +110,7 @@ module.exports = async function handler(req, res) {
       found: records.length,
       inserted,
       skipped,
+      directors,
       alerts: alerts.length
     });
   } catch (error) {

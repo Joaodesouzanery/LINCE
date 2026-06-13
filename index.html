@@ -22,6 +22,7 @@
         </div>
 
         <nav class="nav-list" id="view-nav" aria-label="Navegacao principal">
+          <p class="nav-group-label">Principal</p>
           <button class="nav-item active" type="button" data-view="overview">
             <span>01</span>
             Overview
@@ -30,6 +31,8 @@
             <span>02</span>
             Inteligencia
           </button>
+
+          <p class="nav-group-label">Monitoramento</p>
           <button class="nav-item" type="button" data-view="dou">
             <span>03</span>
             Monitor DOU
@@ -42,6 +45,8 @@
             <span>05</span>
             Grafo Nacional
           </button>
+
+          <p class="nav-group-label">Regulatorio</p>
           <button class="nav-item" type="button" data-view="consultas">
             <span>06</span>
             Consultas
@@ -50,6 +55,8 @@
             <span>07</span>
             Agenda
           </button>
+
+          <p class="nav-group-label">Investigacao</p>
           <button class="nav-item" type="button" data-view="investigate">
             <span>08</span>
             Investigar CNPJ
@@ -115,7 +122,7 @@
             <article class="metric-card">
               <span>Atos DOU ingeridos</span>
               <strong id="metric-docs">-</strong>
-              <small id="metric-docs-label">Carregando...</small>
+              <div class="metric-spark" id="spark-docs"></div>
             </article>
             <article class="metric-card">
               <span>Diretores mapeados</span>
@@ -134,25 +141,54 @@
             </article>
           </div>
 
+          <section class="panel trend-panel" style="margin-bottom:16px">
+            <div class="panel-header">
+              <div>
+                <p class="kicker">Tendencia regulatoria</p>
+                <h2>Atos publicados no DOU</h2>
+              </div>
+              <div class="period-toggle" id="trend-toggle">
+                <button type="button" data-days="14">14d</button>
+                <button type="button" data-days="30" class="active">30d</button>
+                <button type="button" data-days="90">90d</button>
+              </div>
+            </div>
+            <div style="padding:16px">
+              <div class="trend-legend">
+                <span><i style="background:var(--accent)"></i>Normas</span>
+                <span><i style="background:var(--purple)"></i>Atos de pessoal</span>
+                <span><i style="background:var(--yellow)"></i>Contratos</span>
+              </div>
+              <div class="trend-chart" id="trend-chart"></div>
+            </div>
+          </section>
+
           <div class="overview-grid">
             <section class="panel">
               <div class="panel-header">
                 <div>
-                  <p class="kicker">Resumo executivo do dia</p>
-                  <h2>Inteligencia diaria</h2>
+                  <p class="kicker">Ultimos atos</p>
+                  <h2>Atos recentes</h2>
                 </div>
               </div>
-              <div class="news-list" id="overview-daily"></div>
+              <div style="overflow-x:auto">
+                <table class="data-table" id="recent-table">
+                  <thead>
+                    <tr><th>Agencia</th><th>Tipo</th><th>Ato</th><th>Data</th><th>Confianca</th></tr>
+                  </thead>
+                  <tbody id="recent-tbody"></tbody>
+                </table>
+              </div>
             </section>
 
             <section class="panel">
               <div class="panel-header">
                 <div>
-                  <p class="kicker">Status por fonte</p>
-                  <h2>O que esta conectado</h2>
+                  <p class="kicker">Resumo do dia</p>
+                  <h2>Inteligencia diaria</h2>
                 </div>
               </div>
-              <div class="status-list" id="overview-source-list"></div>
+              <div class="news-list" id="overview-daily"></div>
             </section>
           </div>
         </section>

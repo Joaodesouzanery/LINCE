@@ -9,6 +9,51 @@ module.exports = async function handler(req, res) {
   try {
     const supabase = getSupabase();
 
+    if (type === "trend") {
+      // Serie temporal de atos para o grafico de tendencia (ultimos N dias).
+      const days = Math.min(Number(req.query.days) || 30, 90);
+      const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+      const { data: docs } = await supabase
+        .from("documents")
+        .select("published_at, document_type")
+        .eq("source_name", "DOU")
+        .gte("published_at", since)
+        .order("published_at", { ascending: true })
+        .limit(5000);
+      const buckets = {};
+      for (const d of docs || []) {
+        const k = d.published_at;
+        if (!buckets[k]) buckets[k] = { date: k, norma: 0, ato_pessoal: 0, contrato: 0, total: 0 };
+        const t = d.document_type === "norma" || d.document_type === "ato_pessoal" || d.document_type === "contrato" ? d.document_type : "norma";
+        buckets[k][t]++; buckets[k].total++;
+      }
+      const series = Object.values(buckets).sort((a, b) => a.date.localeCompare(b.date));
+      const total = (docs || []).length;
+      return res.status(200).json({ ok: true, type: "trend", days, total, series });
+    }
+
+    if (type === "recent") {
+      // Atos mais recentes para a tabela do dashboard.
+      const limit = Math.min(Number(req.query.limit) || 20, 100);
+      const { data: docs } = await supabase
+        .from("documents")
+        .select("id, title, document_type, published_at, source_url, metadata, agencies(acronym)")
+        .eq("source_name", "DOU")
+        .order("published_at", { ascending: false })
+        .limit(limit);
+      const items = (docs || []).map((d) => ({
+        id: d.id,
+        title: d.title,
+        type: d.document_type,
+        date: d.published_at,
+        agency: d.agencies?.acronym || d.metadata?.agency_acronym || "?",
+        summary: d.metadata?.ai_summary || null,
+        confidence: d.metadata?.ai_confidence ?? null,
+        link: d.source_url
+      }));
+      return res.status(200).json({ ok: true, type: "recent", items });
+    }
+
     if (type === "daily") {
       // Resumo executivo: atos das ultimas 24h por agencia
       const since = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
