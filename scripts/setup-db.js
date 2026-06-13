@@ -3,6 +3,7 @@
 // Obs: a aplicacao do schema.sql exige acesso ao banco; se a service key nao
 // permitir DDL via RPC, rode supabase/schema.sql manualmente no SQL Editor e
 // este script apenas popula o seed das agencias.
+require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const { getSupabase } = require("../lib/supabase");

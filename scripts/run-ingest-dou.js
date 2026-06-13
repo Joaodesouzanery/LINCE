@@ -1,5 +1,6 @@
 // Roda a ingestao do DOU localmente (fora do serverless), para testes.
 // Uso: node scripts/run-ingest-dou.js 2026-06-11
+require("dotenv").config();
 const { getSupabase } = require("../lib/supabase");
 const { collectDou } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");

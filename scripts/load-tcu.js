@@ -1,6 +1,7 @@
 // M9 - Carrega jurisprudencia do TCU (dados abertos CSV) no Supabase.
 // Baixe o CSV em https://sites.tcu.gov.br/dados-abertos/jurisprudencia/
 // Uso: node scripts/load-tcu.js caminho/para/jurisprudencia-selecionada.csv
+require("dotenv").config();
 const fs = require("fs");
 const { getSupabase } = require("../lib/supabase");
 const { parseCsv } = require("../lib/csv");
