@@ -26,39 +26,52 @@
             <span>01</span>
             Overview
           </button>
-          <button class="nav-item" type="button" data-view="investigate">
+          <button class="nav-item" type="button" data-view="intelligence">
             <span>02</span>
-            Investigar
-          </button>
-          <button class="nav-item" type="button" data-view="dossier">
-            <span>03</span>
-            Dossie
-          </button>
-          <button class="nav-item" type="button" data-view="sources">
-            <span>04</span>
-            Fontes reais
+            Inteligencia
           </button>
           <button class="nav-item" type="button" data-view="dou">
-            <span>05</span>
+            <span>03</span>
             Monitor DOU
           </button>
           <button class="nav-item" type="button" data-view="directors">
-            <span>06</span>
+            <span>04</span>
             Diretores
           </button>
           <button class="nav-item" type="button" data-view="graph">
-            <span>07</span>
+            <span>05</span>
             Grafo Nacional
+          </button>
+          <button class="nav-item" type="button" data-view="consultas">
+            <span>06</span>
+            Consultas
+          </button>
+          <button class="nav-item" type="button" data-view="agenda">
+            <span>07</span>
+            Agenda
+          </button>
+          <button class="nav-item" type="button" data-view="investigate">
+            <span>08</span>
+            Investigar CNPJ
+          </button>
+          <button class="nav-item" type="button" data-view="dossier">
+            <span>09</span>
+            Dossie
+          </button>
+          <button class="nav-item" type="button" data-view="sources">
+            <span>10</span>
+            Fontes
           </button>
         </nav>
 
         <div class="sidebar-section">
-          <p>Fontes no MVP</p>
-          <div class="mini-status"><i class="ok"></i>CNPJ.ws proxy</div>
-          <div class="mini-status"><i class="ok"></i>Registro.br RDAP</div>
-          <div class="mini-status"><i class="ok"></i>Google News RSS</div>
-          <div class="mini-status"><i class="warn"></i>DataJud com chave</div>
-          <div class="mini-status"><i class="wait"></i>PGFN dump</div>
+          <p>Fontes ativas</p>
+          <div class="mini-status"><i class="ok"></i>DOU / INLABS</div>
+          <div class="mini-status"><i class="ok"></i>PNCP Contratos</div>
+          <div class="mini-status"><i class="ok"></i>Portal Transparencia</div>
+          <div class="mini-status"><i class="ok"></i>CNPJ.ws + RDAP</div>
+          <div class="mini-status"><i class="warn"></i>DataJud (chave)</div>
+          <div class="mini-status"><i class="warn"></i>TCU (CSV manual)</div>
         </div>
 
         <div class="user-card">
@@ -100,24 +113,24 @@
         <section class="view active" id="view-overview">
           <div class="metric-grid">
             <article class="metric-card">
-              <span>Fonte real ativa</span>
-              <strong id="metric-connected">3</strong>
-              <small>CNPJ.ws, RDAP, News RSS</small>
+              <span>Atos DOU ingeridos</span>
+              <strong id="metric-docs">-</strong>
+              <small id="metric-docs-label">Carregando...</small>
             </article>
             <article class="metric-card">
-              <span>Exigem chave</span>
-              <strong id="metric-keys">2</strong>
-              <small>DataJud e Portal da Transparencia</small>
+              <span>Diretores mapeados</span>
+              <strong id="metric-people">-</strong>
+              <small>Extraidos de atos de pessoal</small>
             </article>
             <article class="metric-card">
-              <span>Pendente ingestao</span>
-              <strong id="metric-pending">3</strong>
-              <small>PGFN, ANEEL/ARTESP, DOU</small>
+              <span>Contratos PNCP</span>
+              <strong id="metric-contracts">-</strong>
+              <small>Por agencias reguladoras</small>
             </article>
             <article class="metric-card">
-              <span>Ultima consulta</span>
-              <strong id="metric-last">-</strong>
-              <small id="metric-last-label">Nenhum CNPJ consultado</small>
+              <span>Alertas abertos</span>
+              <strong id="metric-alerts">-</strong>
+              <small id="metric-alerts-label">Nomeacoes e normas criticas</small>
             </article>
           </div>
 
@@ -125,28 +138,11 @@
             <section class="panel">
               <div class="panel-header">
                 <div>
-                  <p class="kicker">Como usar</p>
-                  <h2>Comece por um CNPJ real</h2>
+                  <p class="kicker">Resumo executivo do dia</p>
+                  <h2>Inteligencia diaria</h2>
                 </div>
               </div>
-              <div class="empty-guide">
-                <p>
-                  O LINCE agora nao carrega dados ficticios. Informe um CNPJ e o sistema consulta
-                  fontes reais. O que nao estiver conectado aparece como pendente, sem inventar resultado.
-                </p>
-                <div class="guide-row">
-                  <span>1</span>
-                  <p>CNPJ.ws preenche informacoes basicas, CNAEs, socios, endereco, telefone e email quando a fonte retornar.</p>
-                </div>
-                <div class="guide-row">
-                  <span>2</span>
-                  <p>Registro.br RDAP tenta encontrar dominios .br vinculados ao CNPJ.</p>
-                </div>
-                <div class="guide-row">
-                  <span>3</span>
-                  <p>RSS de noticias busca publicacoes recentes sobre o alvo para alimentar alertas.</p>
-                </div>
-              </div>
+              <div class="news-list" id="overview-daily"></div>
             </section>
 
             <section class="panel">
@@ -157,6 +153,57 @@
                 </div>
               </div>
               <div class="status-list" id="overview-source-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-intelligence">
+          <div class="sources-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Score de risco por agencia</p>
+                  <h2>Mapa de poder regulatorio</h2>
+                </div>
+              </div>
+              <div class="news-list" id="intel-score"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Contratos a vencer</p>
+                  <h2>Radar 30 / 60 / 90 dias</h2>
+                </div>
+              </div>
+              <div class="news-list" id="intel-radar"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-consultas">
+          <div class="sources-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Oportunidades abertas (M5)</p>
+                  <h2>Consultas e audiencias publicas</h2>
+                </div>
+              </div>
+              <div class="news-list" id="consultas-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-agenda">
+          <div class="sources-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Calendario regulatorio (M8)</p>
+                  <h2>Pautas e reunioes</h2>
+                </div>
+              </div>
+              <div class="news-list" id="agenda-list"></div>
             </section>
           </div>
         </section>
@@ -274,17 +321,40 @@
         </section>
 
         <section class="view" id="view-graph">
-          <div class="sources-grid">
-            <section class="panel">
-              <div class="panel-header">
+          <div class="investigation-grid">
+            <section class="panel graph-panel">
+              <div class="panel-header graph-header">
                 <div>
                   <p class="kicker">Rede de influencia (M7)</p>
-                  <h2>Grafo Nacional</h2>
+                  <h2 id="nat-graph-title">Grafo Nacional</h2>
                 </div>
-                <input id="graph-agency" type="search" class="dou-date" placeholder="Filtrar por sigla (ex: ANEEL)" />
+                <div class="graph-tools">
+                  <input id="graph-agency" type="search" class="dou-date" placeholder="Agencia (ex: ANEEL)" style="width:130px" />
+                  <button type="button" id="nat-zoom-out">-</button>
+                  <button type="button" id="nat-zoom-in">+</button>
+                  <button type="button" id="nat-reset-graph">Reset</button>
+                </div>
               </div>
-              <div class="news-list" id="graph-list"></div>
+              <div class="graph-canvas" id="nat-graph-canvas">
+                <div class="graph-stage" id="nat-graph-stage">
+                  <svg id="nat-edge-layer" class="edge-layer"></svg>
+                  <div id="nat-node-layer" class="node-layer"></div>
+                </div>
+                <div class="graph-empty" id="nat-graph-empty">
+                  <strong>Grafo Nacional vazio</strong>
+                  <p>Rode as ingestoes (DOU, pessoas, PNCP) para popular o grafo de conexoes reais.</p>
+                </div>
+              </div>
             </section>
+            <aside class="panel inspector">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Entidade selecionada</p>
+                  <h2 id="nat-inspector-title">Sem selecao</h2>
+                </div>
+              </div>
+              <div class="inspector-body" id="nat-inspector-body"></div>
+            </aside>
           </div>
         </section>
       </main>

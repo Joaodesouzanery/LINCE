@@ -5,7 +5,10 @@
   "description": "LINCE - Plataforma de Inteligencia Regulatoria Nacional",
   "scripts": {
     "db:setup": "node scripts/setup-db.js",
-    "ingest:dou": "node scripts/run-ingest-dou.js"
+    "db:agencies-cnpj": "node scripts/seed-agencies-cnpj.js",
+    "ingest:dou": "node scripts/run-ingest-dou.js",
+    "ingest:people": "node -e \"require('dotenv').config(); const h=require('./api/ingest-people-dou'); h({query:{}},{status:()=>({json:console.log})})\"",
+    "load:tcu": "node scripts/load-tcu.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

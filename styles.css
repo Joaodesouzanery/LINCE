@@ -866,3 +866,8 @@ h1 {
   padding: 6px 8px;
   font: inherit;
 }
+
+.node-icon.agency { background: #8d7bff; }
+.node-icon.person { background: #61c46e; }
+.dou-date { background: transparent; border: 1px solid var(--border, #2a2f3a); color: inherit; border-radius: 6px; padding: 4px 8px; font: inherit; }
+

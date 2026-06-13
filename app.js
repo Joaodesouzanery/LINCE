@@ -178,12 +178,18 @@ function setView(view) {
     sources: ["Conectores", "Fontes reais"],
     dou: ["Diario Oficial da Uniao", "Monitor DOU"],
     directors: ["Dossie de dirigentes", "Diretores"],
-    graph: ["Rede de influencia", "Grafo Nacional"]
+    graph: ["Rede de influencia (M7)", "Grafo Nacional"],
+    intelligence: ["Inteligencia regulatoria", "Inteligencia Nacional"],
+    consultas: ["Participacao social (M5)", "Consultas Publicas"],
+    agenda: ["Calendario regulatorio (M8)", "Agenda e Pautas"]
   };
-  const [kicker, title] = titles[view];
+  const [kicker, title] = titles[view] || ["LINCE", view];
   if (view === "dou") loadDouFeed();
   if (view === "directors") loadDirectors();
   if (view === "graph") loadNationalGraph();
+  if (view === "intelligence") loadIntelligence();
+  if (view === "consultas") loadConsultas();
+  if (view === "agenda") loadAgenda();
   $("#view-kicker").textContent = kicker;
   $("#view-title").textContent = title;
 }
@@ -655,28 +661,224 @@ async function loadDirectors() {
   }
 }
 
+// Estado do grafo nacional (separado do estado do grafo CNPJ).
+const natGraph = {
+  nodes: [],
+  edges: [],
+  transform: { x: 80, y: 60, scale: 0.7 },
+  selectedId: null,
+  drag: null,
+  pan: null
+};
+
+function natNodeWidth(node) { return node.type === "agency" ? 270 : 238; }
+
+function layoutNatNodes(nodes) {
+  // Layout circular por tipo: agencias no centro, pessoas ao redor, empresas na borda.
+  const byType = { agency: [], person: [], company: [], other: [] };
+  nodes.forEach((n) => { (byType[n.type] || byType.other).push(n); });
+  const cx = 700, cy = 450;
+  const place = (arr, r, offsetAngle = 0) => arr.forEach((n, i) => {
+    const angle = offsetAngle + (i / Math.max(arr.length, 1)) * 2 * Math.PI;
+    n.x = Math.round(cx + r * Math.cos(angle));
+    n.y = Math.round(cy + r * Math.sin(angle));
+  });
+  place(byType.agency, 0);   // agencias no centro (empilhadas perto)
+  place(byType.agency, byType.agency.length > 1 ? 200 : 0);
+  place(byType.person, 420, Math.PI / 6);
+  place(byType.company, 700, 0);
+  place(byType.other, 550, Math.PI / 3);
+}
+
+function renderNatGraph() {
+  const stage = $("#nat-graph-stage");
+  const edgeLayer = $("#nat-edge-layer");
+  const nodeLayer = $("#nat-node-layer");
+  if (!stage) return;
+  stage.style.transform = `translate(${natGraph.transform.x}px, ${natGraph.transform.y}px) scale(${natGraph.transform.scale})`;
+  $("#nat-graph-empty").classList.toggle("hidden", natGraph.nodes.length > 0);
+
+  edgeLayer.setAttribute("viewBox", "0 0 1400 900");
+  const nodeById = Object.fromEntries(natGraph.nodes.map((n) => [n.id, n]));
+  edgeLayer.innerHTML = natGraph.edges.map(([from, to, label]) => {
+    const a = nodeById[from], b = nodeById[to];
+    if (!a || !b) return "";
+    const w = natNodeWidth(a);
+    const x1 = a.x + w, y1 = a.y + 48, x2 = b.x, y2 = b.y + 48;
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    return `<line class="edge-line" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"></line>
+            <text class="edge-label" x="${mx + 4}" y="${my - 4}">${escapeHtml(label)}</text>`;
+  }).join("");
+
+  nodeLayer.innerHTML = natGraph.nodes.map((node) => {
+    const w = natNodeWidth(node);
+    const active = node.id === natGraph.selectedId ? " active" : "";
+    const central = node.type === "agency" ? " central" : "";
+    const fields = (node.fields || []).map(([k, v]) => `<div class="node-field"><span>${escapeHtml(k)}</span><span>${escapeHtml(String(v))}</span></div>`).join("");
+    return `<article class="node-card${central}${active}" data-natnode="${escapeHtml(node.id)}" style="left:${node.x}px;top:${node.y}px;width:${w}px">
+      <div class="node-icon ${escapeHtml(node.type)}">${iconFor(node.type)}</div>
+      <div class="node-body">
+        <strong>${escapeHtml(node.title)}</strong>
+        <span class="node-sub">${escapeHtml(node.subtitle || "")}</span>
+        ${fields}
+        <span class="status-pill ok">${escapeHtml(node.status || node.type)}</span>
+      </div>
+    </article>`;
+  }).join("");
+}
+
 async function loadNationalGraph() {
-  const list = $("#graph-list");
-  if (!list) return;
-  list.innerHTML = emptyCard("Grafo Nacional", "Carregando rede de conexoes...");
   const agency = $("#graph-agency")?.value?.trim();
+  const url = `/api/graph${agency ? `?agency=${encodeURIComponent(agency)}&limit=500` : "?limit=500"}`;
   try {
-    const g = await requestJson(`/api/graph${agency ? `?agency=${encodeURIComponent(agency)}` : ""}`);
-    if (!g.edges?.length) {
-      list.innerHTML = emptyCard("Grafo Nacional", "Sem conexoes ingeridas ainda. Rode as ingestoes de DOU/pessoas/PNCP.");
-      return;
-    }
-    const byId = Object.fromEntries((g.nodes || []).map((n) => [n.id, n]));
-    list.innerHTML = `<article class="news-card"><span class="source-meta">${g.nodes.length} entidades | ${g.edges.length} conexoes</span></article>` +
-      g.edges.slice(0, 80).map((e) => {
-        const a = byId[e.from], b = byId[e.to];
-        return `<article class="news-card">
-          <span class="source-meta">${escapeHtml(a?.type || "")} -> ${escapeHtml(b?.type || "")} | ${escapeHtml(e.relationship)}</span>
-          <strong>${escapeHtml(a?.title || e.from)} &rarr; ${escapeHtml(b?.title || e.to)}</strong>
-        </article>`;
-      }).join("");
+    const g = await requestJson(url);
+    if (!g.nodes?.length) { renderNatGraph(); return; }
+    natGraph.nodes = g.nodes.map((n) => ({
+      id: n.id,
+      type: n.type,
+      title: n.title,
+      subtitle: n.subtitle || "",
+      status: n.type,
+      fields: [["Tipo", n.type]],
+      x: 200, y: 200
+    }));
+    natGraph.edges = g.edges.map((e) => [e.from, e.to, e.relationship]);
+    layoutNatNodes(natGraph.nodes);
+    $("#nat-graph-title").textContent = `${g.nodes.length} entidades · ${g.edges.length} conexoes`;
+    renderNatGraph();
   } catch (error) {
-    list.innerHTML = emptyCard("Grafo Nacional", `Falha: ${error.message}`);
+    const empty = $("#nat-graph-empty");
+    if (empty) { empty.classList.remove("hidden"); empty.querySelector("p").textContent = `Falha: ${error.message}`; }
+  }
+}
+
+function wireNatGraph() {
+  const canvas = $("#nat-graph-canvas");
+  if (!canvas) return;
+  canvas.addEventListener("pointerdown", (e) => {
+    const nodeEl = e.target.closest("[data-natnode]");
+    if (nodeEl) {
+      natGraph.selectedId = nodeEl.dataset.natnode;
+      const node = natGraph.nodes.find((n) => n.id === natGraph.selectedId);
+      const title = $("#nat-inspector-title"), body = $("#nat-inspector-body");
+      if (title) title.textContent = node?.title || natGraph.selectedId;
+      if (body) body.innerHTML = node ? `<div class="inspector-section"><p class="field-source">${escapeHtml(node.type)}</p><p>${escapeHtml(node.subtitle || "")}</p></div>` : "";
+      natGraph.drag = { id: natGraph.selectedId, startX: e.clientX, startY: e.clientY, ox: node?.x || 0, oy: node?.y || 0 };
+      renderNatGraph();
+    } else {
+      natGraph.pan = { startX: e.clientX, startY: e.clientY, ox: natGraph.transform.x, oy: natGraph.transform.y };
+    }
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (natGraph.drag) {
+      const node = natGraph.nodes.find((n) => n.id === natGraph.drag.id);
+      if (node) { node.x = natGraph.drag.ox + (e.clientX - natGraph.drag.startX) / natGraph.transform.scale; node.y = natGraph.drag.oy + (e.clientY - natGraph.drag.startY) / natGraph.transform.scale; }
+      renderNatGraph();
+    } else if (natGraph.pan) {
+      natGraph.transform.x = natGraph.pan.ox + (e.clientX - natGraph.pan.startX);
+      natGraph.transform.y = natGraph.pan.oy + (e.clientY - natGraph.pan.startY);
+      renderNatGraph();
+    }
+  });
+  canvas.addEventListener("pointerup", () => { natGraph.drag = null; natGraph.pan = null; });
+  canvas.addEventListener("wheel", (e) => { e.preventDefault(); natGraph.transform.scale = Math.min(2, Math.max(0.3, natGraph.transform.scale - e.deltaY * 0.001)); renderNatGraph(); }, { passive: false });
+  $("#nat-zoom-in")?.addEventListener("click", () => { natGraph.transform.scale = Math.min(2, natGraph.transform.scale + 0.12); renderNatGraph(); });
+  $("#nat-zoom-out")?.addEventListener("click", () => { natGraph.transform.scale = Math.max(0.3, natGraph.transform.scale - 0.12); renderNatGraph(); });
+  $("#nat-reset-graph")?.addEventListener("click", () => { natGraph.transform = { x: 80, y: 60, scale: 0.7 }; renderNatGraph(); });
+  $("#graph-agency")?.addEventListener("change", () => loadNationalGraph());
+}
+
+async function loadIntelligence() {
+  const score = $("#intel-score"), radar = $("#intel-radar");
+  if (score) score.innerHTML = emptyCard("Score", "Calculando...");
+  if (radar) radar.innerHTML = emptyCard("Radar", "Calculando...");
+  try {
+    const [sc, rd, daily] = await Promise.all([
+      requestJson("/api/intelligence?type=score"),
+      requestJson("/api/intelligence?type=radar"),
+      requestJson("/api/intelligence?type=daily")
+    ]);
+    // Score
+    if (score) {
+      if (!sc.scores?.length) { score.innerHTML = emptyCard("Score", "Sem dados. Rode a ingestao do DOU."); }
+      else score.innerHTML = sc.scores.map((s) => `
+        <article class="news-card">
+          <span class="source-meta">${escapeHtml(s.agency)} | ${s.docs} atos | ${s.open_alerts} alertas abertos | ${s.active_directors} diretores ativos</span>
+          <strong>${escapeHtml(s.name)}</strong>
+          <div class="entity-row">
+            <span class="entity-pill" style="background:${s.score > 60 ? '#ef6760' : s.score > 30 ? '#d7ad4f' : '#61c46e'}">Score ${s.score}/100</span>
+          </div>
+        </article>`).join("");
+    }
+    // Radar
+    if (radar) {
+      const all = [...(rd.radar?.["30d"] || []).map((i) => ({ ...i, window: "30d" })),
+                   ...(rd.radar?.["60d"] || []).map((i) => ({ ...i, window: "60d" })),
+                   ...(rd.radar?.["90d"] || []).map((i) => ({ ...i, window: "90d" }))];
+      if (!all.length) { radar.innerHTML = emptyCard("Radar", "Nenhum contrato a vencer nos proximos 90 dias. Rode ingest-pncp."); }
+      else radar.innerHTML = all.map((c) => `
+        <article class="news-card">
+          <span class="source-meta">${escapeHtml(c.agency || "")} | Vence: ${escapeHtml(c.date || "")} | <strong>${escapeHtml(c.window)}</strong></span>
+          <strong>${escapeHtml(c.label)}</strong>
+          <p>${escapeHtml(c.supplier || "Fornecedor nao identificado")}</p>
+        </article>`).join("");
+    }
+    // Overview daily
+    const dailyEl = $("#overview-daily");
+    if (dailyEl && daily.by_agency) {
+      const entries = Object.entries(daily.by_agency);
+      if (!entries.length) { dailyEl.innerHTML = emptyCard("Diario", "Nenhum ato nas ultimas 24h. O cron roda ao meio-dia UTC."); }
+      else dailyEl.innerHTML = entries.map(([ac, d]) => `
+        <article class="news-card">
+          <span class="source-meta">${escapeHtml(ac)} | ${d.normas} normas · ${d.pessoal} atos pessoal · ${d.contratos} contratos</span>
+          ${(d.destaques || []).slice(0, 2).map((s) => `<p>${escapeHtml(s)}</p>`).join("")}
+        </article>`).join("");
+    }
+  } catch (error) {
+    if (score) score.innerHTML = emptyCard("Score", `Erro: ${error.message}`);
+  }
+}
+
+async function loadConsultas() {
+  const list = $("#consultas-list");
+  if (!list) return;
+  list.innerHTML = emptyCard("Consultas", "Buscando consultas e audiencias publicas abertas...");
+  try {
+    const data = await requestJson("/api/m5-consultas");
+    if (!data.items?.length) { list.innerHTML = emptyCard("Consultas", "Nenhuma consulta identificada nos RSS das agencias no momento."); return; }
+    list.innerHTML = data.items.map((c) => `
+      <article class="news-card">
+        <span class="source-meta">${escapeHtml(c.agency)} | ${escapeHtml(c.date || "sem data")}</span>
+        <strong>${escapeHtml(c.title)}</strong>
+        <p>${escapeHtml(c.summary || "")}</p>
+        <div class="entity-row">
+          ${c.link ? `<a class="entity-pill" href="${escapeHtml(c.link)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+        </div>
+      </article>`).join("");
+  } catch (error) {
+    list.innerHTML = emptyCard("Consultas", `Erro: ${error.message}`);
+  }
+}
+
+async function loadAgenda() {
+  const list = $("#agenda-list");
+  if (!list) return;
+  list.innerHTML = emptyCard("Agenda", "Buscando pautas e reunioes das agencias...");
+  try {
+    const data = await requestJson("/api/m8-agenda");
+    if (!data.items?.length) { list.innerHTML = emptyCard("Agenda", "Nenhuma pauta identificada nos RSS das agencias no momento."); return; }
+    list.innerHTML = data.items.map((c) => `
+      <article class="news-card">
+        <span class="source-meta">${escapeHtml(c.agency)} | ${escapeHtml(c.date || "sem data")}</span>
+        <strong>${escapeHtml(c.title)}</strong>
+        <p>${escapeHtml(c.summary || "")}</p>
+        <div class="entity-row">
+          ${c.link ? `<a class="entity-pill" href="${escapeHtml(c.link)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+        </div>
+      </article>`).join("");
+  } catch (error) {
+    list.innerHTML = emptyCard("Agenda", `Erro: ${error.message}`);
   }
 }
 
@@ -737,7 +939,7 @@ function renderGraph() {
 }
 
 function iconFor(type) {
-  return { company: "C", partner: "S", contact: "@", domain: "D", news: "N" }[type] || "I";
+  return { company: "C", partner: "S", contact: "@", domain: "D", news: "N", agency: "A", person: "P" }[type] || "I";
 }
 
 function renderInspector() {
@@ -852,7 +1054,7 @@ function wireEvents() {
 
   $("#dou-date")?.addEventListener("change", () => loadDouFeed());
   $("#director-search")?.addEventListener("change", () => loadDirectors());
-  $("#graph-agency")?.addEventListener("change", () => loadNationalGraph());
+  wireNatGraph();
 
   $("#open-dossier").addEventListener("click", () => setView("dossier"));
   $("#center-graph").addEventListener("click", centerGraph);
@@ -943,9 +1145,42 @@ function centerGraph() {
   renderGraph();
 }
 
+async function loadOverviewMetrics() {
+  try {
+    const [score, daily] = await Promise.all([
+      requestJson("/api/intelligence?type=score").catch(() => null),
+      requestJson("/api/intelligence?type=daily").catch(() => null)
+    ]);
+    if (score?.scores) {
+      const total = score.scores.reduce((s, a) => s + a.docs, 0);
+      const people = score.scores.reduce((s, a) => s + a.active_directors, 0);
+      const alerts = score.scores.reduce((s, a) => s + a.open_alerts, 0);
+      const docEl = $("#metric-docs"), ppEl = $("#metric-people"), alEl = $("#metric-alerts");
+      if (docEl) { docEl.textContent = total; $("#metric-docs-label").textContent = "Atos do DOU no banco"; }
+      if (ppEl) ppEl.textContent = people;
+      if (alEl) alEl.textContent = alerts;
+    }
+    const dailyEl = $("#overview-daily");
+    if (dailyEl && daily?.by_agency) {
+      const entries = Object.entries(daily.by_agency);
+      dailyEl.innerHTML = entries.length
+        ? entries.map(([ac, d]) => `<article class="news-card"><span class="source-meta">${escapeHtml(ac)}</span><strong>${d.normas} normas · ${d.pessoal} atos pessoal · ${d.contratos} contratos</strong>${(d.destaques||[]).slice(0,1).map(s=>`<p>${escapeHtml(s)}</p>`).join("")}</article>`).join("")
+        : emptyCard("Diario", "Nenhum ato nas ultimas 24h. Cron roda ao meio-dia UTC.");
+    }
+    // contratos
+    const contracts = await requestJson("/api/intelligence?type=radar").catch(() => null);
+    if (contracts) {
+      const total = (contracts.radar?.["30d"]?.length || 0) + (contracts.radar?.["60d"]?.length || 0) + (contracts.radar?.["90d"]?.length || 0);
+      const el = $("#metric-contracts");
+      if (el) el.textContent = total;
+    }
+  } catch { /* sem dados ainda */ }
+}
+
 function init() {
   renderAll();
   wireEvents();
+  loadOverviewMetrics();
 }
 
 init();
