@@ -27,7 +27,7 @@ const sourceStatus = [
     id: "datajud",
     name: "CNJ DataJud",
     data: "Metadados de processos judiciais",
-    method: "/api/datajud",
+    method: "/api/external?type=datajud",
     status: "key",
     help: "Endpoint preparado. Requer DATAJUD_API_KEY no ambiente da Vercel."
   },
@@ -35,7 +35,7 @@ const sourceStatus = [
     id: "transparency",
     name: "Portal da Transparencia",
     data: "Contratos, pagamentos, servidores e sancoes",
-    method: "/api/transparency",
+    method: "/api/external?type=transparency",
     status: "key",
     help: "Endpoint preparado. Requer PORTAL_TRANSPARENCIA_API_KEY."
   },
@@ -106,10 +106,10 @@ const realDataProvider = {
     return requestJson(`/api/news?q=${encodeURIComponent(query)}`);
   },
   async fetchProcesses(nameOrCnpj) {
-    return requestJson(`/api/datajud?q=${encodeURIComponent(nameOrCnpj)}`);
+    return requestJson(`/api/external?type=datajud&q=${encodeURIComponent(nameOrCnpj)}`);
   },
   async fetchTransparency(cnpj) {
-    return requestJson(`/api/transparency?cnpj=${onlyDigits(cnpj)}`);
+    return requestJson(`/api/external?type=transparency&cnpj=${onlyDigits(cnpj)}`);
   }
 };
 
@@ -845,7 +845,7 @@ async function loadConsultas() {
   if (!list) return;
   list.innerHTML = emptyCard("Consultas", "Buscando consultas e audiencias publicas abertas...");
   try {
-    const data = await requestJson("/api/m5-consultas");
+    const data = await requestJson("/api/rss-feeds?type=consultas");
     if (!data.items?.length) { list.innerHTML = emptyCard("Consultas", "Nenhuma consulta identificada nos RSS das agencias no momento."); return; }
     list.innerHTML = data.items.map((c) => `
       <article class="news-card">
@@ -866,7 +866,7 @@ async function loadAgenda() {
   if (!list) return;
   list.innerHTML = emptyCard("Agenda", "Buscando pautas e reunioes das agencias...");
   try {
-    const data = await requestJson("/api/m8-agenda");
+    const data = await requestJson("/api/rss-feeds?type=agenda");
     if (!data.items?.length) { list.innerHTML = emptyCard("Agenda", "Nenhuma pauta identificada nos RSS das agencias no momento."); return; }
     list.innerHTML = data.items.map((c) => `
       <article class="news-card">
