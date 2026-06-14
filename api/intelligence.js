@@ -135,7 +135,7 @@ module.exports = async function handler(req, res) {
       // de empresas com contratos ou relacoes com agencias reguladoras.
       const { data: mandates } = await supabase
         .from("mandates")
-        .select("person_id, agency_id, role, started_at, ended_at, people(name), agencies(acronym)");
+        .select("person_id, agency_id, role, started_at, ended_at, people(full_name), agencies(acronym)");
 
       const personIds = [...new Set((mandates || []).map((m) => m.person_id))];
       if (personIds.length === 0) return res.status(200).json({ ok: true, type: "giratoria", cases: [] });
@@ -177,7 +177,7 @@ module.exports = async function handler(req, res) {
         seen.add(key);
         cases.push({
           person_id: m.person_id,
-          name: m.people?.name || "?",
+          name: m.people?.full_name || "?",
           agency: m.agencies?.acronym,
           role: m.role,
           mandate_from: m.started_at,

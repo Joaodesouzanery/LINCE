@@ -45,10 +45,10 @@ async function main() {
   const supabase = getSupabase();
 
   // Carrega diretores do banco
-  const { data: people } = await supabase.from("people").select("id, name, normalized_name");
+  const { data: people } = await supabase.from("people").select("id, full_name, normalized_name");
   const nameIndex = new Map();
   for (const p of people || []) {
-    const key = normalize(p.normalized_name || p.name);
+    const key = normalize(p.normalized_name || p.full_name);
     if (key) nameIndex.set(key, p.id);
   }
   console.log(`Diretores no banco: ${nameIndex.size}`);
