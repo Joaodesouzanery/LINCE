@@ -205,7 +205,44 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "giratoria", total: cases.length, cases });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily, trend, recent, giratoria" });
+    if (type === "search") {
+      const q = String(req.query.q || "").trim();
+      if (!q) return res.status(400).json({ ok: false, error: "Informe ?q=termo" });
+      const agency = req.query.agency ? String(req.query.agency).toUpperCase() : null;
+      const limit = Math.min(Number(req.query.limit) || 30, 100);
+      const term = `%${q.replace(/\s+/g, "%")}%`;
+      let query = supabase
+        .from("documents")
+        .select("id, title, document_type, published_at, source_url, metadata, agencies(acronym)")
+        .ilike("extracted_text", term)
+        .eq("source_name", "DOU")
+        .order("published_at", { ascending: false })
+        .limit(limit);
+      const { data: docs } = await query;
+      let items = (docs || []).map((d) => ({
+        id: d.id,
+        title: d.title,
+        type: d.document_type,
+        date: d.published_at,
+        agency: d.agencies?.acronym || d.metadata?.agency_acronym || "?",
+        link: d.source_url
+      }));
+      if (agency) items = items.filter((i) => i.agency === agency);
+      return res.status(200).json({ ok: true, type: "search", q, total: items.length, items });
+    }
+
+    if (type === "alerts") {
+      const limit = Math.min(Number(req.query.limit) || 20, 100);
+      const { data: alerts } = await supabase
+        .from("alerts")
+        .select("id, alert_type, severity, title, body, created_at, metadata")
+        .is("acknowledged_at", null)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      return res.status(200).json({ ok: true, type: "alerts", items: alerts || [] });
+    }
+
+    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily, trend, recent, giratoria, search, alerts" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }

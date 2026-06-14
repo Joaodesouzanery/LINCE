@@ -265,6 +265,26 @@ async function runSearch(cnpjInput) {
   setLoading(false);
 }
 
+async function runKeywordSearch(query) {
+  setView("dou");
+  const url = `/api/intelligence?type=search&q=${encodeURIComponent(query)}&limit=30`;
+  const r = await requestJson(url).catch(() => null);
+  const items = r?.items || [];
+  const douFeed = $("#dou-feed");
+  if (!douFeed) return;
+  if (!items.length) {
+    douFeed.innerHTML = emptyCard("Busca", `Nenhum ato encontrado para "${escapeHtml(query)}".`);
+    return;
+  }
+  douFeed.innerHTML = `<p style="margin:0 0 12px;opacity:.7">${items.length} resultado(s) para <strong>"${escapeHtml(query)}"</strong></p>` +
+    items.map((d) => `
+      <article class="news-card">
+        <span class="source-meta">${escapeHtml(d.agency)} · ${escapeHtml(d.date || "")} · <span class="type-pill ${d.type}">${escapeHtml(d.type || "")}</span></span>
+        <strong>${escapeHtml(d.title || "Sem título")}</strong>
+        ${d.link ? `<a href="${escapeHtml(d.link)}" target="_blank" rel="noopener" style="font-size:.8rem">Abrir no DOU ↗</a>` : ""}
+      </article>`).join("");
+}
+
 function unwrapResult(result) {
   if (result.status === "fulfilled") return { ok: true, value: result.value };
   return {
@@ -1263,10 +1283,22 @@ function wireEvents() {
 
   $("#search-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    runSearch($("#global-search").value).catch((error) => {
-      setLoading(false);
-      showInspectorMessage("Erro de consulta", error.message);
-    });
+    const raw = ($("#global-search").value || "").trim();
+    const digits = onlyDigits(raw);
+    if (digits.length === 14) {
+      // CNPJ -> investigação tradicional
+      runSearch(raw).catch((error) => {
+        setLoading(false);
+        showInspectorMessage("Erro de consulta", error.message);
+      });
+    } else if (raw.length >= 3) {
+      // Texto -> busca por palavra-chave nos atos do DOU
+      runKeywordSearch(raw).catch((error) => {
+        showInspectorMessage("Erro de busca", error.message);
+      });
+    } else {
+      showInspectorMessage("Busca", "Informe um CNPJ (14 dígitos) ou termo de busca (mín. 3 letras).");
+    }
   });
 
   $("#dou-date")?.addEventListener("change", () => loadDouFeed());
@@ -1454,6 +1486,24 @@ async function loadOverviewMetrics() {
       const total = (contracts.radar?.["30d"]?.length || 0) + (contracts.radar?.["60d"]?.length || 0) + (contracts.radar?.["90d"]?.length || 0);
       const el = $("#metric-contracts");
       if (el) el.textContent = total;
+    }
+
+    const alertsData = await requestJson("/api/intelligence?type=alerts&limit=10").catch(() => null);
+    const alertsEl = $("#overview-alerts");
+    if (alertsEl && alertsData?.items?.length) {
+      const sevClass = { high: "status-error", info: "status-ok", warning: "status-warn" };
+      const sevLabel = { high: "Alta", info: "Info", warning: "Atenção" };
+      alertsEl.innerHTML = `<h3 style="margin:0 0 10px;font-size:.9rem;opacity:.7">Alertas recentes</h3>` +
+        alertsData.items.map((a) => `
+          <article class="news-card" style="margin-bottom:6px">
+            <span class="source-meta"><span class="status-pill ${sevClass[a.severity] || "status-ok"}">${sevLabel[a.severity] || a.severity}</span> · ${escapeHtml(a.alert_type)} · ${escapeHtml((a.created_at || "").slice(0, 10))}</span>
+            <strong>${escapeHtml(a.title || "")}</strong>
+            ${a.body ? `<p style="margin:4px 0 0;font-size:.8rem;opacity:.8">${escapeHtml(a.body)}</p>` : ""}
+          </article>`).join("");
+      const alEl = $("#metric-alerts");
+      if (alEl) alEl.textContent = alertsData.items.length;
+    } else if (alertsEl) {
+      alertsEl.innerHTML = `<p style="opacity:.5;font-size:.85rem">Nenhum alerta recente.</p>`;
     }
   } catch { /* sem dados ainda */ }
 }
