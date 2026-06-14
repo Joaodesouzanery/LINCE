@@ -725,12 +725,14 @@ function rebuildNatVisible() {
   // Para cada no expandido, revela seus vizinhos diretos (ate o limite por no).
   for (const srcId of natGraph.expanded) {
     visible.add(srcId);
-    const neighbors = natGraph.allEdges
-      .filter((e) => e.from === srcId || e.to === srcId)
-      .map((e) => (e.from === srcId ? e.to : e.from))
-      .filter((id) => allById[id]);
-    // Ordena por peso da aresta (confianca) desc para mostrar os mais relevantes.
-    neighbors.slice(0, NAT_EXPAND_LIMIT).forEach((id) => visible.add(id));
+    // Deduplica: usa Set para garantir vizinhos únicos (evita duplicatas de arestas no banco).
+    const uniqueNeighbors = [...new Set(
+      natGraph.allEdges
+        .filter((e) => e.from === srcId || e.to === srcId)
+        .map((e) => (e.from === srcId ? e.to : e.from))
+        .filter((id) => allById[id])
+    )];
+    uniqueNeighbors.slice(0, NAT_EXPAND_LIMIT).forEach((id) => visible.add(id));
   }
   natGraph.nodes = [...visible].map((id) => mapGraphNode(allById[id])).filter(Boolean);
   const visibleSet = new Set(visible);
@@ -870,8 +872,8 @@ async function loadNationalGraph() {
     natGraph.expanded = new Set();
     natGraph.transform = { x: 80, y: 60, scale: 0.7 };
     rebuildNatVisible();
-    const conns = natGraph.allEdges.filter((e) => e.from === natGraph.centerId || e.to === natGraph.centerId).length;
-    $("#nat-graph-title").textContent = `Clique no no para expandir · ${conns} conexoes diretas`;
+    const centerNeighbors = new Set(natGraph.allEdges.filter((e) => e.from === natGraph.centerId || e.to === natGraph.centerId).map((e) => (e.from === natGraph.centerId ? e.to : e.from))).size;
+    $("#nat-graph-title").textContent = `Clique no nó para expandir · ${centerNeighbors} vizinhos diretos`;
     renderNatGraph();
   } catch (error) {
     const empty = $("#nat-graph-empty");
@@ -884,7 +886,7 @@ function expandNatNode(nodeId) {
   if (!nodeId) return;
   natGraph.expanded.add(nodeId);
   rebuildNatVisible();
-  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexoes`;
+  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexões`;
   renderNatGraph();
 }
 
@@ -893,7 +895,7 @@ function collapseNatNode(nodeId) {
   if (!nodeId || nodeId === natGraph.centerId) return;
   natGraph.expanded.delete(nodeId);
   rebuildNatVisible();
-  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexoes`;
+  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexões`;
   renderNatGraph();
 }
 
@@ -921,12 +923,39 @@ function wireNatGraph() {
       const title = $("#nat-inspector-title"), body = $("#nat-inspector-body");
       if (title) title.textContent = node?.title || natGraph.selectedId;
       const isExpanded = natGraph.expanded.has(natGraph.selectedId);
-      const nConns = natGraph.allEdges.filter((e) => e.from === natGraph.selectedId || e.to === natGraph.selectedId).length;
+      // Vizinhos únicos (deduplic.) — não contar arestas duplicadas entre os mesmos pares.
+      const neighborSet = new Set(
+        natGraph.allEdges
+          .filter((e) => e.from === natGraph.selectedId || e.to === natGraph.selectedId)
+          .map((e) => (e.from === natGraph.selectedId ? e.to : e.from))
+      );
+      const nNeighbors = neighborSet.size;
+      const nEdges = natGraph.allEdges.filter((e) => e.from === natGraph.selectedId || e.to === natGraph.selectedId).length;
+      // Relações do nó com os vizinhos visíveis (para exibir pills).
+      const relPills = [...new Set(
+        natGraph.allEdges
+          .filter((e) => e.from === natGraph.selectedId || e.to === natGraph.selectedId)
+          .map((e) => e.relationship)
+      )].map((r) => `<span class="entity-pill">${escapeHtml(r)}</span>`).join(" ");
+      const isPersonNode = node?.type === "person";
+      const personId = natGraph.selectedId?.split(":")?.[1];
       if (body) body.innerHTML = node
-        ? `<div class="inspector-section"><p class="field-source">${escapeHtml(node.type)}</p><p>${escapeHtml(node.subtitle || "")}</p>
-           <p>${nConns} conexao(oes) disponivel(is)</p>
-           <button type="button" class="entity-pill" id="nat-expand">${isExpanded ? "Colapsar conexoes" : "Expandir conexoes"}</button></div>`
+        ? `<div class="inspector-section">
+             <p class="field-source">${escapeHtml(node.type)}</p>
+             <p style="font-size:13px;color:var(--muted)">${escapeHtml(node.subtitle || "")}</p>
+             <p style="margin:8px 0 4px;font-size:13px">${nNeighbors} vizinho(s) direto(s) · ${nEdges} relação(ões)</p>
+             <div style="margin-bottom:10px">${relPills}</div>
+             <button type="button" class="entity-pill" id="nat-expand">${isExpanded ? "Colapsar conexões" : "Expandir conexões"}</button>
+             ${isPersonNode ? `<button type="button" class="entity-pill" id="nat-open-dossier" style="margin-left:6px">Abrir dossiê</button>` : ""}
+           </div>`
         : "";
+      if (isPersonNode) {
+        $("#nat-open-dossier")?.addEventListener("click", () => {
+          // Muda para aba Diretores e abre o dossiê do nó selecionado.
+          document.querySelector("[data-view='directors']")?.click();
+          openDirectorDossier(personId);
+        });
+      }
       $("#nat-expand")?.addEventListener("click", () =>
         (natGraph.expanded.has(natGraph.selectedId) ? collapseNatNode : expandNatNode)(natGraph.selectedId));
       natGraph.drag = { id: natGraph.selectedId, startX: e.clientX, startY: e.clientY, ox: node?.x || 0, oy: node?.y || 0 };
@@ -957,8 +986,8 @@ function wireNatGraph() {
     natGraph.selectedId = null;
     natGraph.transform = { x: 80, y: 60, scale: 0.7 };
     rebuildNatVisible();
-    const conns = natGraph.allEdges.filter((e) => e.from === natGraph.centerId || e.to === natGraph.centerId).length;
-    $("#nat-graph-title").textContent = `Clique no no para expandir · ${conns} conexoes diretas`;
+    const centerNeighbors = new Set(natGraph.allEdges.filter((e) => e.from === natGraph.centerId || e.to === natGraph.centerId).map((e) => (e.from === natGraph.centerId ? e.to : e.from))).size;
+    $("#nat-graph-title").textContent = `Clique no nó para expandir · ${centerNeighbors} vizinhos diretos`;
     renderNatGraph();
   });
   $("#graph-agency")?.addEventListener("change", () => loadNationalGraph());
