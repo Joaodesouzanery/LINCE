@@ -4,9 +4,24 @@
 // Ex:  node scripts/backfill-dou.js 2026-01-02 2026-06-12
 require("dotenv").config();
 const { getSupabase } = require("../lib/supabase");
-const { collectDou } = require("../lib/dou");
+const { collectDou, login } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");
 const { processPeopleFromDoc } = require("../lib/ingest");
+
+// Sessao INLABS compartilhada: loga uma vez e reusa o cookie. O cookie expira
+// em 30 min (Max-Age=1800), entao re-loga periodicamente. Evita o rate-limit
+// do INLABS, que bloqueia o IP apos ~20 logins seguidos.
+const SESSION_TTL_MS = 25 * 60 * 1000; // re-loga a cada 25 min (margem de seguranca)
+let _cookie = null;
+let _cookieAt = 0;
+async function getCookie() {
+  const now = Date.now();
+  if (!_cookie || now - _cookieAt > SESSION_TTL_MS) {
+    _cookie = await login();
+    _cookieAt = now;
+  }
+  return _cookie;
+}
 
 const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
 
@@ -28,8 +43,11 @@ async function ingestDate(supabase, date, agencies) {
   let inserted = 0, skipped = 0, directors = 0;
   let records;
   try {
-    records = await collectDou(date, agencies);
+    const cookie = await getCookie();
+    records = await collectDou(date, agencies, { cookie });
   } catch (e) {
+    // Se falhar, forca novo login na proxima data (cookie pode ter expirado)
+    _cookie = null;
     console.error(`  [${date}] ERRO collectDou: ${e.message}`);
     return { inserted, skipped, directors };
   }
