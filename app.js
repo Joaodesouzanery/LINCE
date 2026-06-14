@@ -700,33 +700,61 @@ async function openDirectorDossier(id) {
 }
 
 // Estado do grafo nacional (separado do estado do grafo CNPJ).
+// allNodes/allEdges = dataset completo da agencia; nodes/edges = visiveis.
+// expanded = ids ja expandidos (comportamento Sherlocker: revela vizinhos ao clicar).
 const natGraph = {
+  allNodes: [],
+  allEdges: [],
   nodes: [],
   edges: [],
+  expanded: new Set(),
+  centerId: null,
   transform: { x: 80, y: 60, scale: 0.7 },
   selectedId: null,
   drag: null,
   pan: null
 };
 
+const NAT_EXPAND_LIMIT = 25; // vizinhos revelados por expansao (legibilidade).
+
+// Reconstroi nodes/edges visiveis a partir do dataset completo e do conjunto expanded.
+function rebuildNatVisible() {
+  const allById = Object.fromEntries(natGraph.allNodes.map((n) => [n.id, n]));
+  const visible = new Set();
+  if (natGraph.centerId) visible.add(natGraph.centerId);
+  // Para cada no expandido, revela seus vizinhos diretos (ate o limite por no).
+  for (const srcId of natGraph.expanded) {
+    visible.add(srcId);
+    const neighbors = natGraph.allEdges
+      .filter((e) => e.from === srcId || e.to === srcId)
+      .map((e) => (e.from === srcId ? e.to : e.from))
+      .filter((id) => allById[id]);
+    // Ordena por peso da aresta (confianca) desc para mostrar os mais relevantes.
+    neighbors.slice(0, NAT_EXPAND_LIMIT).forEach((id) => visible.add(id));
+  }
+  natGraph.nodes = [...visible].map((id) => mapGraphNode(allById[id])).filter(Boolean);
+  const visibleSet = new Set(visible);
+  natGraph.edges = natGraph.allEdges
+    .filter((e) => visibleSet.has(e.from) && visibleSet.has(e.to))
+    .map((e) => [e.from, e.to, e.relationship]);
+  layoutNatNodes(natGraph.nodes);
+  applyGraphFilters();
+}
+
 function natNodeWidth(node) { return node.type === "agency" ? 270 : 238; }
 
 function layoutNatNodes(nodes) {
-  // Hub-and-spoke legivel: agencia(s) no centro, demais nos em aneis concentricos
+  // Hub-and-spoke legivel: no central no meio, demais em aneis concentricos
   // com espacamento minimo (anti-sobreposicao). Raio cresce conforme a contagem.
-  const agencies = nodes.filter((n) => n.type === "agency");
-  const others = nodes.filter((n) => n.type !== "agency");
   const cx = 700, cy = 450;
+  // O no central e o centerId (agencia foco); fallback para agencias / primeiro.
+  const center = nodes.find((n) => n.id === natGraph.centerId)
+    || nodes.find((n) => n.type === "agency")
+    || nodes[0];
+  const centers = center ? [center] : [];
+  const others = nodes.filter((n) => n !== center);
 
-  if (agencies.length <= 1) {
-    agencies.forEach((n) => { n.x = cx; n.y = cy; });
-  } else {
-    agencies.forEach((n, i) => {
-      const a = (i / agencies.length) * 2 * Math.PI;
-      n.x = Math.round(cx + 180 * Math.cos(a));
-      n.y = Math.round(cy + 180 * Math.sin(a));
-    });
-  }
+  centers.forEach((n) => { n.x = cx; n.y = cy; });
 
   // Distribui os demais em aneis: cada anel comporta um numero proporcional ao raio.
   const perRingBase = 12;
@@ -821,22 +849,29 @@ function mapGraphNode(n) {
 async function loadNationalGraph() {
   await populateGraphAgencies();
   const agency = $("#graph-agency")?.value?.trim();
-  // Foco: comeca por uma agencia (estilo Sherlocker). Sem agencia, carrega tudo.
+  // Carrega o subgrafo da agencia UMA vez, mas exibe so o no central (Sherlocker).
   const url = `/api/graph${agency ? `?agency=${encodeURIComponent(agency)}&limit=500` : "?limit=500"}`;
   try {
     const g = await requestJson(url);
     if (!g.nodes?.length) {
-      natGraph.nodes = []; natGraph.edges = [];
+      natGraph.allNodes = []; natGraph.allEdges = [];
+      natGraph.nodes = []; natGraph.edges = []; natGraph.expanded = new Set(); natGraph.centerId = null;
       const empty = $("#nat-graph-empty");
       if (empty) { empty.classList.remove("hidden"); empty.querySelector("p").textContent = "Sem conexoes para esta agencia ainda."; }
       renderNatGraph(); return;
     }
-    natGraph.nodes = g.nodes.map(mapGraphNode);
-    natGraph.edges = g.edges.map((e) => [e.from, e.to, e.relationship]);
-    layoutNatNodes(natGraph.nodes);
-    applyGraphFilters();
-    $("#nat-graph-title").textContent = `${g.nodes.length} entidades · ${g.edges.length} conexoes`;
+    natGraph.allNodes = g.nodes.slice();
+    natGraph.allEdges = g.edges.slice();
+    // No central = a agencia selecionada (ou o primeiro no se nao houver agencia).
+    const center = agency
+      ? g.nodes.find((n) => n.type === "agency" && (n.subtitle || "").toUpperCase() === agency.toUpperCase())
+      : g.nodes[0];
+    natGraph.centerId = center ? center.id : g.nodes[0].id;
+    natGraph.expanded = new Set();
     natGraph.transform = { x: 80, y: 60, scale: 0.7 };
+    rebuildNatVisible();
+    const conns = natGraph.allEdges.filter((e) => e.from === natGraph.centerId || e.to === natGraph.centerId).length;
+    $("#nat-graph-title").textContent = `Clique no no para expandir · ${conns} conexoes diretas`;
     renderNatGraph();
   } catch (error) {
     const empty = $("#nat-graph-empty");
@@ -844,24 +879,22 @@ async function loadNationalGraph() {
   }
 }
 
-// Expande um no: busca vizinhos diretos e adiciona ao grafo (merge sem duplicar).
-async function expandNatNode(nodeId) {
-  try {
-    const g = await requestJson(`/api/graph?node=${encodeURIComponent(nodeId)}&limit=200`);
-    const existing = new Set(natGraph.nodes.map((n) => n.id));
-    for (const n of g.nodes || []) {
-      if (!existing.has(n.id)) { natGraph.nodes.push(mapGraphNode(n)); existing.add(n.id); }
-    }
-    const edgeKeys = new Set(natGraph.edges.map((e) => `${e[0]}|${e[1]}`));
-    for (const e of g.edges || []) {
-      const k = `${e.from}|${e.to}`;
-      if (!edgeKeys.has(k)) { natGraph.edges.push([e.from, e.to, e.relationship]); edgeKeys.add(k); }
-    }
-    layoutNatNodes(natGraph.nodes);
-    applyGraphFilters();
-    $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexoes`;
-    renderNatGraph();
-  } catch { /* silencioso */ }
+// Expande um no: revela seus vizinhos diretos a partir do dataset ja carregado.
+function expandNatNode(nodeId) {
+  if (!nodeId) return;
+  natGraph.expanded.add(nodeId);
+  rebuildNatVisible();
+  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexoes`;
+  renderNatGraph();
+}
+
+// Colapsa um no: esconde os vizinhos revelados por ele (mantem o central).
+function collapseNatNode(nodeId) {
+  if (!nodeId || nodeId === natGraph.centerId) return;
+  natGraph.expanded.delete(nodeId);
+  rebuildNatVisible();
+  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexoes`;
+  renderNatGraph();
 }
 
 // Centraliza/destaca um no cujo titulo casa com o termo de busca.
@@ -887,11 +920,15 @@ function wireNatGraph() {
       const node = natGraph.nodes.find((n) => n.id === natGraph.selectedId);
       const title = $("#nat-inspector-title"), body = $("#nat-inspector-body");
       if (title) title.textContent = node?.title || natGraph.selectedId;
+      const isExpanded = natGraph.expanded.has(natGraph.selectedId);
+      const nConns = natGraph.allEdges.filter((e) => e.from === natGraph.selectedId || e.to === natGraph.selectedId).length;
       if (body) body.innerHTML = node
         ? `<div class="inspector-section"><p class="field-source">${escapeHtml(node.type)}</p><p>${escapeHtml(node.subtitle || "")}</p>
-           <button type="button" class="entity-pill" id="nat-expand">Expandir conexoes</button></div>`
+           <p>${nConns} conexao(oes) disponivel(is)</p>
+           <button type="button" class="entity-pill" id="nat-expand">${isExpanded ? "Colapsar conexoes" : "Expandir conexoes"}</button></div>`
         : "";
-      $("#nat-expand")?.addEventListener("click", () => expandNatNode(natGraph.selectedId));
+      $("#nat-expand")?.addEventListener("click", () =>
+        (natGraph.expanded.has(natGraph.selectedId) ? collapseNatNode : expandNatNode)(natGraph.selectedId));
       natGraph.drag = { id: natGraph.selectedId, startX: e.clientX, startY: e.clientY, ox: node?.x || 0, oy: node?.y || 0 };
       renderNatGraph();
     } else {
@@ -914,7 +951,16 @@ function wireNatGraph() {
   canvas.addEventListener("wheel", (e) => { e.preventDefault(); natGraph.transform.scale = Math.min(2, Math.max(0.3, natGraph.transform.scale - e.deltaY * 0.001)); renderNatGraph(); }, { passive: false });
   $("#nat-zoom-in")?.addEventListener("click", () => { natGraph.transform.scale = Math.min(2, natGraph.transform.scale + 0.12); renderNatGraph(); });
   $("#nat-zoom-out")?.addEventListener("click", () => { natGraph.transform.scale = Math.max(0.3, natGraph.transform.scale - 0.12); renderNatGraph(); });
-  $("#nat-reset-graph")?.addEventListener("click", () => { natGraph.transform = { x: 80, y: 60, scale: 0.7 }; renderNatGraph(); });
+  $("#nat-reset-graph")?.addEventListener("click", () => {
+    // Reset volta ao no central colapsado (Sherlocker).
+    natGraph.expanded = new Set();
+    natGraph.selectedId = null;
+    natGraph.transform = { x: 80, y: 60, scale: 0.7 };
+    rebuildNatVisible();
+    const conns = natGraph.allEdges.filter((e) => e.from === natGraph.centerId || e.to === natGraph.centerId).length;
+    $("#nat-graph-title").textContent = `Clique no no para expandir · ${conns} conexoes diretas`;
+    renderNatGraph();
+  });
   $("#graph-agency")?.addEventListener("change", () => loadNationalGraph());
   // Double-click num no tambem expande.
   canvas.addEventListener("dblclick", (e) => {
