@@ -6,6 +6,21 @@ const { getSupabase } = require("../lib/supabase");
 module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "s-maxage=1800, stale-while-revalidate=3600");
   const type = String(req.query.type || "radar");
+
+  // Diagnostico: verifica env vars sem expor valores
+  if (type === "health") {
+    return res.status(200).json({
+      ok: true,
+      supabase_url: !!process.env.SUPABASE_URL,
+      service_key: !!process.env.SUPABASE_SERVICE_KEY,
+      inlabs_email: !!process.env.INLABS_EMAIL,
+      inlabs_senha: !!process.env.INLABS_SENHA,
+      anthropic_key: !!process.env.ANTHROPIC_API_KEY,
+      node_version: process.version,
+      env: process.env.NODE_ENV || "production"
+    });
+  }
+
   try {
     const supabase = getSupabase();
 
