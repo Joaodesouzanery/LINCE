@@ -11,17 +11,62 @@ module.exports = async function handler(req, res) {
     const supabase = getSupabase();
     const id = req.query.id ? String(req.query.id) : null;
     const name = req.query.name ? String(req.query.name) : null;
-    if (!id && !name) return res.status(400).json({ ok: false, error: "Informe id ou name." });
+    const q = req.query.q ? String(req.query.q).trim() : null;
+    const list = req.query.list ? String(req.query.list) : null;
+    const agency = req.query.agency ? String(req.query.agency).toUpperCase() : null;
+
+    // Modo busca incremental: ?q=<termo> -> lista de pessoas que casam (ilike).
+    if (q) {
+      const term = `%${q.replace(/\s+/g, "%")}%`;
+      const { data } = await supabase
+        .from("people")
+        .select("id, full_name, role, agency_id, agencies(acronym)")
+        .or(`normalized_name.ilike.${`%${normalizeName(q).replace(/\s+/g, "%")}%`},full_name.ilike.${term}`)
+        .limit(30);
+      const people = (data || []).map((p) => ({
+        id: p.id, full_name: p.full_name, role: p.role || "dirigente",
+        agency: p.agencies?.acronym || null
+      }));
+      return res.status(200).json({ ok: true, mode: "search", people });
+    }
+
+    // Modo lista: ?list=1[&agency=ANEEL] -> diretores agrupaveis por agencia.
+    if (list) {
+      let query = supabase
+        .from("people")
+        .select("id, full_name, role, agency_id, agencies(acronym, name)")
+        .order("full_name", { ascending: true })
+        .limit(500);
+      const { data } = await query;
+      let people = (data || []).map((p) => ({
+        id: p.id, full_name: p.full_name, role: p.role || "dirigente",
+        agency: p.agencies?.acronym || null, agency_name: p.agencies?.name || null
+      }));
+      if (agency) people = people.filter((p) => p.agency === agency);
+      return res.status(200).json({ ok: true, mode: "list", people });
+    }
+
+    if (!id && !name) return res.status(400).json({ ok: false, error: "Informe id, name, q ou list." });
 
     let person;
     if (id) {
       ({ data: person } = await supabase.from("people").select("*").eq("id", id).maybeSingle());
     } else {
+      // Tenta match exato; se falhar, cai para ilike (melhor match parcial).
       ({ data: person } = await supabase
         .from("people")
         .select("*")
         .eq("normalized_name", normalizeName(name))
         .maybeSingle());
+      if (!person) {
+        const term = `%${normalizeName(name).replace(/\s+/g, "%")}%`;
+        const { data: matches } = await supabase
+          .from("people")
+          .select("*")
+          .ilike("normalized_name", term)
+          .limit(1);
+        person = (matches || [])[0] || null;
+      }
     }
     if (!person) return res.status(404).json({ ok: false, error: "Pessoa nao encontrada." });
 

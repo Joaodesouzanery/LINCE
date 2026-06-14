@@ -14,10 +14,27 @@ module.exports = async function handler(req, res) {
     const supabase = getSupabase();
     const limit = Math.min(Number(req.query.limit) || 300, 1000);
 
-    const { data: rels, error } = await supabase
-      .from("relationships")
-      .select("from_kind, from_id, to_kind, to_id, relationship, confidence_score, metadata")
-      .limit(limit);
+    // Expansao de no: ?node=person:<uuid> -> so as relationships que tocam o no.
+    const nodeParam = req.query.node ? String(req.query.node) : null;
+    let rels, error;
+    if (nodeParam) {
+      const [nKind, nId] = nodeParam.split(":");
+      const [a, b] = await Promise.all([
+        supabase.from("relationships")
+          .select("from_kind, from_id, to_kind, to_id, relationship, confidence_score, metadata")
+          .eq("from_kind", nKind).eq("from_id", nId).limit(limit),
+        supabase.from("relationships")
+          .select("from_kind, from_id, to_kind, to_id, relationship, confidence_score, metadata")
+          .eq("to_kind", nKind).eq("to_id", nId).limit(limit)
+      ]);
+      error = a.error || b.error;
+      rels = [...(a.data || []), ...(b.data || [])];
+    } else {
+      ({ data: rels, error } = await supabase
+        .from("relationships")
+        .select("from_kind, from_id, to_kind, to_id, relationship, confidence_score, metadata")
+        .limit(limit));
+    }
     if (error) throw error;
 
     // Coleta os ids necessarios por tipo.

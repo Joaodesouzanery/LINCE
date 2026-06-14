@@ -95,6 +95,11 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
 const realDataProvider = {
   async fetchCnpj(cnpj) {
     return requestJson(`/api/cnpj?cnpj=${onlyDigits(cnpj)}`);
@@ -606,7 +611,12 @@ async function loadDouFeed() {
   if (!list) return;
   list.innerHTML = emptyCard("Monitor DOU", "Carregando atos do Diario Oficial...");
   const date = $("#dou-date")?.value;
-  const url = date ? `/api/dou-feed?date=${date}` : "/api/dou-feed";
+  const agency = $("#dou-agency")?.value;
+  const params = new URLSearchParams();
+  if (date) params.set("date", date);
+  if (agency) params.set("agency", agency);
+  const qs = params.toString();
+  const url = qs ? `/api/dou-feed?${qs}` : "/api/dou-feed";
   try {
     const payload = await requestJson(url);
     const items = payload.items || [];
@@ -632,27 +642,58 @@ async function loadDouFeed() {
   }
 }
 
+// Lista de diretores (busca incremental por ?q= ou lista completa por ?list=1).
 async function loadDirectors() {
   const list = $("#directors-list");
   if (!list) return;
   const name = $("#director-search")?.value?.trim();
-  if (!name) {
-    list.innerHTML = emptyCard("Diretores", "Digite um nome para gerar o dossie do dirigente.");
-    return;
+  list.innerHTML = emptyCard("Diretores", name ? "Buscando..." : "Carregando diretores...");
+  try {
+    const url = name
+      ? `/api/dossier-person?q=${encodeURIComponent(name)}`
+      : `/api/dossier-person?list=1`;
+    const data = await requestJson(url);
+    const people = data.people || [];
+    if (!people.length) {
+      list.innerHTML = emptyCard("Diretores", name ? `Nenhum diretor com "${name}".` : "Nenhum diretor mapeado ainda. Rode a ingestao do DOU.");
+      return;
+    }
+    list.innerHTML = people
+      .map((p) => `
+        <article class="news-card director-row" data-person-id="${escapeHtml(p.id)}" style="cursor:pointer">
+          <span class="source-meta">${escapeHtml(p.agency || "?")} | ${escapeHtml(p.role || "dirigente")}</span>
+          <strong>${escapeHtml(p.full_name)}</strong>
+          <p>Clique para abrir o dossie completo.</p>
+        </article>`)
+      .join("");
+    list.querySelectorAll(".director-row").forEach((el) => {
+      el.addEventListener("click", () => openDirectorDossier(el.dataset.personId));
+    });
+  } catch (error) {
+    list.innerHTML = emptyCard("Diretores", `Falha: ${error.message}`);
   }
+}
+
+// Abre o dossie completo de um diretor por id.
+async function openDirectorDossier(id) {
+  const list = $("#directors-list");
+  if (!list) return;
   list.innerHTML = emptyCard("Diretores", "Montando dossie...");
   try {
-    const d = await requestJson(`/api/dossier-person?name=${encodeURIComponent(name)}`);
+    const d = await requestJson(`/api/dossier-person?id=${encodeURIComponent(id)}`);
     const intel = d.intelligence || {};
     const mandates = (d.mandates || []).map((m) => `<span class="entity-pill">${escapeHtml(m.agencies?.acronym || "")} ${escapeHtml(m.role || "")}</span>`).join("");
     const parties = (d.party_links || []).map((p) => `<span class="entity-pill">${escapeHtml(p.party)}</span>`).join("");
+    const rels = (d.relationships || []).length;
     list.innerHTML = `
       <article class="news-card">
+        <button type="button" class="entity-pill" id="director-back">&larr; Voltar a lista</button>
         <span class="source-meta">${escapeHtml(d.person.full_name)} | ${escapeHtml(d.person.role || "dirigente")}</span>
         <strong>Score de captura: ${intel.capture_score ?? "-"}/100 | Votos vencidos: ${intel.dissent_votes ?? 0}</strong>
-        <p>Mandato ativo: ${intel.active_mandate ? "sim" : "nao"} | SIAPE: ${(d.siape || []).length} registro(s)</p>
+        <p>Mandato ativo: ${intel.active_mandate ? "sim" : "nao"} | Conexoes: ${rels} | SIAPE: ${(d.siape || []).length} registro(s)</p>
         <div class="entity-row">${mandates}${parties}</div>
       </article>`;
+    $("#director-back")?.addEventListener("click", () => loadDirectors());
   } catch (error) {
     list.innerHTML = emptyCard("Diretores", `Falha: ${error.message}`);
   }
@@ -671,20 +712,37 @@ const natGraph = {
 function natNodeWidth(node) { return node.type === "agency" ? 270 : 238; }
 
 function layoutNatNodes(nodes) {
-  // Layout circular por tipo: agencias no centro, pessoas ao redor, empresas na borda.
-  const byType = { agency: [], person: [], company: [], other: [] };
-  nodes.forEach((n) => { (byType[n.type] || byType.other).push(n); });
+  // Hub-and-spoke legivel: agencia(s) no centro, demais nos em aneis concentricos
+  // com espacamento minimo (anti-sobreposicao). Raio cresce conforme a contagem.
+  const agencies = nodes.filter((n) => n.type === "agency");
+  const others = nodes.filter((n) => n.type !== "agency");
   const cx = 700, cy = 450;
-  const place = (arr, r, offsetAngle = 0) => arr.forEach((n, i) => {
-    const angle = offsetAngle + (i / Math.max(arr.length, 1)) * 2 * Math.PI;
-    n.x = Math.round(cx + r * Math.cos(angle));
-    n.y = Math.round(cy + r * Math.sin(angle));
-  });
-  place(byType.agency, 0);   // agencias no centro (empilhadas perto)
-  place(byType.agency, byType.agency.length > 1 ? 200 : 0);
-  place(byType.person, 420, Math.PI / 6);
-  place(byType.company, 700, 0);
-  place(byType.other, 550, Math.PI / 3);
+
+  if (agencies.length <= 1) {
+    agencies.forEach((n) => { n.x = cx; n.y = cy; });
+  } else {
+    agencies.forEach((n, i) => {
+      const a = (i / agencies.length) * 2 * Math.PI;
+      n.x = Math.round(cx + 180 * Math.cos(a));
+      n.y = Math.round(cy + 180 * Math.sin(a));
+    });
+  }
+
+  // Distribui os demais em aneis: cada anel comporta um numero proporcional ao raio.
+  const perRingBase = 12;
+  let idx = 0, ring = 1;
+  while (idx < others.length) {
+    const radius = 360 + (ring - 1) * 280;
+    const capacity = perRingBase + (ring - 1) * 8;
+    const count = Math.min(capacity, others.length - idx);
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * 2 * Math.PI + ring * 0.4;
+      const n = others[idx++];
+      n.x = Math.round(cx + radius * Math.cos(angle));
+      n.y = Math.round(cy + radius * Math.sin(angle));
+    }
+    ring++;
+  }
 }
 
 function renderNatGraph() {
@@ -699,7 +757,7 @@ function renderNatGraph() {
   const nodeById = Object.fromEntries(natGraph.nodes.map((n) => [n.id, n]));
   edgeLayer.innerHTML = natGraph.edges.map(([from, to, label]) => {
     const a = nodeById[from], b = nodeById[to];
-    if (!a || !b) return "";
+    if (!a || !b || a.hidden || b.hidden) return "";
     const w = natNodeWidth(a);
     const x1 = a.x + w, y1 = a.y + 48, x2 = b.x, y2 = b.y + 48;
     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
@@ -707,7 +765,7 @@ function renderNatGraph() {
             <text class="edge-label" x="${mx + 4}" y="${my - 4}">${escapeHtml(label)}</text>`;
   }).join("");
 
-  nodeLayer.innerHTML = natGraph.nodes.map((node) => {
+  nodeLayer.innerHTML = natGraph.nodes.filter((n) => !n.hidden).map((node) => {
     const w = natNodeWidth(node);
     const active = node.id === natGraph.selectedId ? " active" : "";
     const central = node.type === "agency" ? " central" : "";
@@ -724,29 +782,99 @@ function renderNatGraph() {
   }).join("");
 }
 
+// Popula o dropdown de agencias do grafo (uma vez).
+let natAgenciesLoaded = false;
+async function populateGraphAgencies() {
+  if (natAgenciesLoaded) return;
+  const sel = $("#graph-agency");
+  if (!sel) return;
+  try {
+    const sc = await requestJson("/api/intelligence?type=score");
+    const opts = (sc.scores || []).map((s) => `<option value="${escapeHtml(s.agency)}">${escapeHtml(s.agency)}</option>`).join("");
+    sel.innerHTML = opts || `<option value="">(sem agencias)</option>`;
+    natAgenciesLoaded = true;
+    // Tambem popula o filtro de agencia do Monitor DOU.
+    const douSel = $("#dou-agency");
+    if (douSel && douSel.options.length <= 1) {
+      douSel.innerHTML = `<option value="">Todas as agencias</option>` +
+        (sc.scores || []).map((s) => `<option value="${escapeHtml(s.agency)}">${escapeHtml(s.agency)}</option>`).join("");
+    }
+  } catch { /* silencioso */ }
+}
+
+function activeGraphTypes() {
+  const boxes = document.querySelectorAll(".graph-type:checked");
+  return new Set([...boxes].map((b) => b.value));
+}
+
+function applyGraphFilters() {
+  // Esconde nos cujo tipo esta desmarcado (filtro client-side, sem refetch).
+  const types = activeGraphTypes();
+  natGraph.nodes.forEach((n) => { n.hidden = !types.has(n.type); });
+  renderNatGraph();
+}
+
+function mapGraphNode(n) {
+  return { id: n.id, type: n.type, title: n.title, subtitle: n.subtitle || "", status: n.type, fields: [["Tipo", n.type]], x: 200, y: 200 };
+}
+
 async function loadNationalGraph() {
+  await populateGraphAgencies();
   const agency = $("#graph-agency")?.value?.trim();
+  // Foco: comeca por uma agencia (estilo Sherlocker). Sem agencia, carrega tudo.
   const url = `/api/graph${agency ? `?agency=${encodeURIComponent(agency)}&limit=500` : "?limit=500"}`;
   try {
     const g = await requestJson(url);
-    if (!g.nodes?.length) { renderNatGraph(); return; }
-    natGraph.nodes = g.nodes.map((n) => ({
-      id: n.id,
-      type: n.type,
-      title: n.title,
-      subtitle: n.subtitle || "",
-      status: n.type,
-      fields: [["Tipo", n.type]],
-      x: 200, y: 200
-    }));
+    if (!g.nodes?.length) {
+      natGraph.nodes = []; natGraph.edges = [];
+      const empty = $("#nat-graph-empty");
+      if (empty) { empty.classList.remove("hidden"); empty.querySelector("p").textContent = "Sem conexoes para esta agencia ainda."; }
+      renderNatGraph(); return;
+    }
+    natGraph.nodes = g.nodes.map(mapGraphNode);
     natGraph.edges = g.edges.map((e) => [e.from, e.to, e.relationship]);
     layoutNatNodes(natGraph.nodes);
+    applyGraphFilters();
     $("#nat-graph-title").textContent = `${g.nodes.length} entidades · ${g.edges.length} conexoes`;
+    natGraph.transform = { x: 80, y: 60, scale: 0.7 };
     renderNatGraph();
   } catch (error) {
     const empty = $("#nat-graph-empty");
     if (empty) { empty.classList.remove("hidden"); empty.querySelector("p").textContent = `Falha: ${error.message}`; }
   }
+}
+
+// Expande um no: busca vizinhos diretos e adiciona ao grafo (merge sem duplicar).
+async function expandNatNode(nodeId) {
+  try {
+    const g = await requestJson(`/api/graph?node=${encodeURIComponent(nodeId)}&limit=200`);
+    const existing = new Set(natGraph.nodes.map((n) => n.id));
+    for (const n of g.nodes || []) {
+      if (!existing.has(n.id)) { natGraph.nodes.push(mapGraphNode(n)); existing.add(n.id); }
+    }
+    const edgeKeys = new Set(natGraph.edges.map((e) => `${e[0]}|${e[1]}`));
+    for (const e of g.edges || []) {
+      const k = `${e.from}|${e.to}`;
+      if (!edgeKeys.has(k)) { natGraph.edges.push([e.from, e.to, e.relationship]); edgeKeys.add(k); }
+    }
+    layoutNatNodes(natGraph.nodes);
+    applyGraphFilters();
+    $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexoes`;
+    renderNatGraph();
+  } catch { /* silencioso */ }
+}
+
+// Centraliza/destaca um no cujo titulo casa com o termo de busca.
+function searchNatGraph(term) {
+  const t = term.trim().toLowerCase();
+  if (!t) return;
+  const node = natGraph.nodes.find((n) => (n.title || "").toLowerCase().includes(t));
+  if (!node) return;
+  natGraph.selectedId = node.id;
+  const stage = $("#nat-graph-canvas");
+  const w = stage ? stage.clientWidth : 1000, h = stage ? stage.clientHeight : 700;
+  natGraph.transform = { x: w / 2 - node.x * natGraph.transform.scale, y: h / 2 - node.y * natGraph.transform.scale, scale: natGraph.transform.scale };
+  renderNatGraph();
 }
 
 function wireNatGraph() {
@@ -759,7 +887,11 @@ function wireNatGraph() {
       const node = natGraph.nodes.find((n) => n.id === natGraph.selectedId);
       const title = $("#nat-inspector-title"), body = $("#nat-inspector-body");
       if (title) title.textContent = node?.title || natGraph.selectedId;
-      if (body) body.innerHTML = node ? `<div class="inspector-section"><p class="field-source">${escapeHtml(node.type)}</p><p>${escapeHtml(node.subtitle || "")}</p></div>` : "";
+      if (body) body.innerHTML = node
+        ? `<div class="inspector-section"><p class="field-source">${escapeHtml(node.type)}</p><p>${escapeHtml(node.subtitle || "")}</p>
+           <button type="button" class="entity-pill" id="nat-expand">Expandir conexoes</button></div>`
+        : "";
+      $("#nat-expand")?.addEventListener("click", () => expandNatNode(natGraph.selectedId));
       natGraph.drag = { id: natGraph.selectedId, startX: e.clientX, startY: e.clientY, ox: node?.x || 0, oy: node?.y || 0 };
       renderNatGraph();
     } else {
@@ -784,6 +916,19 @@ function wireNatGraph() {
   $("#nat-zoom-out")?.addEventListener("click", () => { natGraph.transform.scale = Math.max(0.3, natGraph.transform.scale - 0.12); renderNatGraph(); });
   $("#nat-reset-graph")?.addEventListener("click", () => { natGraph.transform = { x: 80, y: 60, scale: 0.7 }; renderNatGraph(); });
   $("#graph-agency")?.addEventListener("change", () => loadNationalGraph());
+  // Double-click num no tambem expande.
+  canvas.addEventListener("dblclick", (e) => {
+    const nodeEl = e.target.closest("[data-natnode]");
+    if (nodeEl) expandNatNode(nodeEl.dataset.natnode);
+  });
+  // Toggles de tipo (agencia/pessoa/empresa).
+  document.querySelectorAll(".graph-type").forEach((b) => b.addEventListener("change", applyGraphFilters));
+  // Busca no grafo.
+  const search = $("#graph-search");
+  if (search) {
+    search.addEventListener("keydown", (e) => { if (e.key === "Enter") searchNatGraph(search.value); });
+    search.addEventListener("input", () => { if (search.value.length >= 3) searchNatGraph(search.value); });
+  }
 }
 
 async function loadIntelligence() {
@@ -1050,7 +1195,8 @@ function wireEvents() {
   });
 
   $("#dou-date")?.addEventListener("change", () => loadDouFeed());
-  $("#director-search")?.addEventListener("change", () => loadDirectors());
+  $("#dou-agency")?.addEventListener("change", () => loadDouFeed());
+  $("#director-search")?.addEventListener("input", debounce(() => loadDirectors(), 300));
   wireNatGraph();
 
   $("#open-dossier").addEventListener("click", () => setView("dossier"));

@@ -504,6 +504,22 @@ h1 {
   padding: 0 12px;
 }
 
+.type-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted, #9ca3af);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.type-toggle input { accent-color: var(--accent, #f97316); }
+
+.director-row:hover {
+  border-color: var(--accent-line, rgba(249, 115, 22, 0.4));
+}
+
 .graph-canvas {
   background:
     linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),

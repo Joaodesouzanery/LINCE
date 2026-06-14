@@ -334,7 +334,10 @@
                   <p class="kicker">Atos das agencias reguladoras</p>
                   <h2>Diario Oficial da Uniao</h2>
                 </div>
-                <input id="dou-date" type="date" class="dou-date" />
+                <div class="graph-tools">
+                  <select id="dou-agency" class="dou-date"><option value="">Todas as agencias</option></select>
+                  <input id="dou-date" type="date" class="dou-date" />
+                </div>
               </div>
               <div class="news-list" id="dou-list"></div>
             </section>
@@ -365,7 +368,11 @@
                   <h2 id="nat-graph-title">Grafo Nacional</h2>
                 </div>
                 <div class="graph-tools">
-                  <input id="graph-agency" type="search" class="dou-date" placeholder="Agencia (ex: ANEEL)" style="width:130px" />
+                  <select id="graph-agency" class="dou-date" style="width:150px"></select>
+                  <input id="graph-search" type="search" class="dou-date" placeholder="Buscar no grafo" style="width:130px" />
+                  <label class="type-toggle"><input type="checkbox" class="graph-type" value="agency" checked /> Agencias</label>
+                  <label class="type-toggle"><input type="checkbox" class="graph-type" value="person" checked /> Pessoas</label>
+                  <label class="type-toggle"><input type="checkbox" class="graph-type" value="company" checked /> Empresas</label>
                   <button type="button" id="nat-zoom-out">-</button>
                   <button type="button" id="nat-zoom-in">+</button>
                   <button type="button" id="nat-reset-graph">Reset</button>
