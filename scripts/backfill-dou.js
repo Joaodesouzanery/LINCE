@@ -4,7 +4,7 @@
 // Ex:  node scripts/backfill-dou.js 2026-01-02 2026-06-12
 require("dotenv").config();
 const { getSupabase } = require("../lib/supabase");
-const { collectDou, login } = require("../lib/dou");
+const { collectDou, login, AuthError } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");
 const { processPeopleFromDoc } = require("../lib/ingest");
 
@@ -46,10 +46,21 @@ async function ingestDate(supabase, date, agencies) {
     const cookie = await getCookie();
     records = await collectDou(date, agencies, { cookie });
   } catch (e) {
-    // Se falhar, forca novo login na proxima data (cookie pode ter expirado)
-    _cookie = null;
-    console.error(`  [${date}] ERRO collectDou: ${e.message}`);
-    return { inserted, skipped, directors };
+    // AuthError (cookie expirado/inválido) → re-loga e tenta a data 1x de novo.
+    if (e instanceof AuthError) {
+      _cookie = null;
+      try {
+        const cookie = await getCookie();
+        records = await collectDou(date, agencies, { cookie });
+      } catch (e2) {
+        console.error(`  [${date}] ERRO após re-login: ${e2.message}`);
+        return { inserted, skipped, directors };
+      }
+    } else {
+      _cookie = null;
+      console.error(`  [${date}] ERRO collectDou: ${e.message}`);
+      return { inserted, skipped, directors };
+    }
   }
 
   for (const r of records) {
@@ -127,6 +138,14 @@ async function main() {
     totalSkipped += r.skipped;
     totalDirectors += r.directors;
     console.log(`+${r.inserted} novos, ${r.skipped} ja existiam${r.directors ? `, ${r.directors} diretores` : ""}`);
+
+    // Fail-fast: se a 1ª data útil não inseriu nem achou nada, algo está errado
+    // (login/download). Avisa para rodar com DOU_DEBUG=1 em vez de iterar 116 datas mudo.
+    if (i === 0 && r.inserted === 0 && r.skipped === 0) {
+      console.warn(`\n  ⚠ A primeira data retornou 0 atos. Possíveis causas: cookie/download.`);
+      console.warn(`  Rode com diagnóstico para ver o status HTTP por seção:`);
+      console.warn(`    DOU_DEBUG=1 npm run backfill:dou ${date} ${date}\n`);
+    }
 
     // Pausa breve entre datas para nao sobrecarregar INLABS
     if (i < dates.length - 1) await new Promise((r) => setTimeout(r, 500));
