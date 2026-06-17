@@ -265,6 +265,165 @@ async function runSearch(cnpjInput) {
   setLoading(false);
 }
 
+// ── Mini-gráfico SVG de barras semanais (sem D3) ──────────────────────────
+function buildMiniChart(series, baseline) {
+  if (!series?.length) return "";
+  const W = 200, H = 52, pad = 4;
+  const maxVal = Math.max(...series.map((s) => s.total), baseline * 1.5 || 1, 1);
+  const colW = (W - pad * 2) / series.length;
+  const bw = Math.max(1, colW - 2);
+  const bars = series.map((s, i) => {
+    const bh = Math.max(2, (s.total / maxVal) * (H - pad * 2));
+    const x = pad + i * colW;
+    const y = H - pad - bh;
+    const hot = baseline > 0 && s.total > baseline * 1.5;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="${hot ? "var(--accent)" : "var(--blue)"}" rx="2"/>`;
+  }).join("");
+  const baseY = baseline > 0 ? H - pad - (baseline / maxVal) * (H - pad * 2) : null;
+  const line = baseY !== null
+    ? `<line x1="${pad}" y1="${baseY.toFixed(1)}" x2="${W - pad}" y2="${baseY.toFixed(1)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3,2"/>`
+    : "";
+  return `<svg class="mini-chart" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">${bars}${line}</svg>`;
+}
+
+// ── Painel de objeto estilo Palantir Gotham ───────────────────────────────
+async function renderNatInspector(nodeId) {
+  const body = $("#nat-inspector-body");
+  if (!body) return;
+  const node = natGraph.nodes.find((n) => n.id === nodeId) || natGraph.allNodes.find((n) => n.id === nodeId);
+  if (!node) return;
+  const [kind, id] = nodeId.split(":");
+  body.innerHTML = `<p style="opacity:.5;font-size:.8rem;padding:8px 0">Carregando...</p>`;
+
+  const isExpanded = natGraph.expanded.has(nodeId);
+  const neighborSet = new Set(
+    natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId)
+      .map((e) => (e.from === nodeId ? e.to : e.from))
+  );
+  const nNeighbors = neighborSet.size;
+  const nEdges = natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId).length;
+  const expandBtn = `<button type="button" class="entity-pill" id="nat-expand" style="cursor:pointer">${isExpanded ? "Colapsar" : "Expandir conexões"}</button>`;
+
+  if (kind === "agency") {
+    const acronym = node.subtitle || node.title;
+    const stats = await requestJson(`/api/intelligence?type=agency_stats&agency=${encodeURIComponent(acronym)}`).catch(() => null);
+    const series = stats?.weekly_series || [];
+    const lastWeek = series[series.length - 1]?.total ?? 0;
+    const aboveBaseline = stats?.baseline_avg > 0 && lastWeek > stats.baseline_avg * 1.5;
+    const alertItems = (stats?.alerts || []).map((a) => `
+      <div class="activity-alert" ${a.severity !== "high" ? 'style="border-color:var(--line);background:var(--card)"' : ""}>
+        <span class="alert-icon">${a.severity === "high" ? "⚠️" : "ℹ️"}</span>
+        <div style="flex:1;min-width:0">
+          <p style="margin:0;font-size:.78rem;font-weight:700">${escapeHtml(a.title || "")}</p>
+          ${a.body ? `<p style="margin:2px 0 0;font-size:.72rem;opacity:.65">${escapeHtml(a.body.slice(0, 100))}</p>` : ""}
+          <div class="alert-actions">
+            <button type="button" class="alert-btn primary nat-alert-view">Ver atos</button>
+            <button type="button" class="alert-btn nat-alert-dismiss" data-alert-id="${escapeHtml(a.id)}">Dispensar</button>
+          </div>
+        </div>
+      </div>`).join("");
+    body.innerHTML = `
+      <div class="object-section">
+        <p class="object-section-title">Detalhes</p>
+        <p style="font-size:.78rem;opacity:.6;margin:0 0 8px">${escapeHtml(stats?.agency_name || node.title)}</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div class="detail-stat"><span>${stats?.total_docs ?? "—"}</span><small>atos totais</small></div>
+          <div class="detail-stat"><span>${stats?.docs_30d ?? "—"}</span><small>últimos 30d</small></div>
+          <div class="detail-stat"><span>${stats?.active_directors ?? nNeighbors}</span><small>diretores</small></div>
+          <div class="detail-stat"><span>${nNeighbors}</span><small>conexões</small></div>
+        </div>
+      </div>
+      ${series.length ? `
+      <div class="object-section">
+        <p class="object-section-title">Atividade semanal ${aboveBaseline ? '<span class="status-pill status-error" style="font-size:.65rem">Acima do baseline</span>' : ""}</p>
+        ${aboveBaseline ? `<div class="activity-alert" style="margin-bottom:8px"><span class="alert-icon">⚠️</span><span style="font-size:.78rem">Volume atual &gt;1,5× a média histórica</span></div>` : ""}
+        ${buildMiniChart(series, stats.baseline_avg)}
+        <p style="font-size:.68rem;opacity:.45;margin:2px 0 0">— baseline avg: ${stats.baseline_avg} atos/sem.</p>
+      </div>` : ""}
+      ${alertItems ? `
+      <div class="object-section">
+        <p class="object-section-title">Observações (${stats?.open_alerts || 0} pendentes)</p>
+        ${alertItems}
+      </div>` : ""}
+      <div class="object-section"><div class="entity-row">${expandBtn}</div></div>`;
+  } else if (kind === "person") {
+    const dossier = await requestJson(`/api/dossier-person?id=${encodeURIComponent(id)}`).catch(() => null);
+    const intel = dossier?.intelligence || {};
+    const mandates = dossier?.mandates || [];
+    const agencies = [...new Set(mandates.map((m) => m.agencies?.acronym).filter(Boolean))];
+    const relPills = [...new Set(
+      natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId).map((e) => e.relationship)
+    )].map((r) => `<span class="entity-pill">${escapeHtml(r)}</span>`).join(" ");
+    const score = intel.capture_score ?? 0;
+    body.innerHTML = `
+      <div class="object-section">
+        <p class="object-section-title">Detalhes</p>
+        <p style="font-size:.78rem;opacity:.6;margin:0 0 4px">${escapeHtml(node.subtitle || dossier?.person?.role || "Dirigente")}</p>
+        ${agencies.length ? `<p style="font-size:.78rem;margin:2px 0">Agência(s): <strong>${escapeHtml(agencies.join(", "))}</strong></p>` : ""}
+        <p style="font-size:.78rem;margin:2px 0">Mandato ativo: <strong>${intel.active_mandate ? "Sim" : "Não"}</strong></p>
+        <p style="font-size:.78rem;margin:2px 0">${nNeighbors} conexão(ões) · ${nEdges} relação(ões)</p>
+      </div>
+      <div class="object-section">
+        <p class="object-section-title">Score de captura</p>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:6px">
+          <span style="font-size:1.4rem;font-weight:800;color:${score < 30 ? "var(--green)" : score < 60 ? "var(--yellow)" : "var(--red)"}">${score}</span>
+          <span style="font-size:.75rem;opacity:.5">/ 100 &nbsp;·&nbsp; ${intel.dissent_votes ?? 0} voto(s) divergente(s)</span>
+        </div>
+        <div class="score-bar-wrap"><div class="score-bar-fill" style="width:${score}%"></div></div>
+      </div>
+      ${relPills ? `<div class="object-section"><p class="object-section-title">Relações</p><div class="entity-row">${relPills}</div></div>` : ""}
+      <div class="object-section">
+        <div class="entity-row">
+          ${expandBtn}
+          <button type="button" class="alert-btn primary" id="nat-open-dossier">Abrir dossiê</button>
+        </div>
+      </div>`;
+    $("#nat-open-dossier")?.addEventListener("click", () => {
+      document.querySelector("[data-view='directors']")?.click();
+      openDirectorDossier(id);
+    });
+  } else {
+    const cnpj = node.subtitle || "";
+    const relPills = [...new Set(
+      natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId).map((e) => e.relationship)
+    )].map((r) => `<span class="entity-pill">${escapeHtml(r)}</span>`).join(" ");
+    body.innerHTML = `
+      <div class="object-section">
+        <p class="object-section-title">Detalhes</p>
+        ${cnpj ? `<p style="font-size:.78rem;opacity:.6;margin:0 0 4px">CNPJ: ${escapeHtml(cnpj)}</p>` : ""}
+        <p style="font-size:.78rem;margin:2px 0">${nNeighbors} conexão(ões) · ${nEdges} relação(ões)</p>
+      </div>
+      ${relPills ? `<div class="object-section"><p class="object-section-title">Relações</p><div class="entity-row">${relPills}</div></div>` : ""}
+      <div class="object-section">
+        <div class="entity-row">
+          ${expandBtn}
+          ${cnpj ? `<button type="button" class="alert-btn primary" id="nat-investigate-cnpj">Investigar CNPJ</button>` : ""}
+        </div>
+      </div>`;
+    $("#nat-investigate-cnpj")?.addEventListener("click", () => {
+      const el = $("#global-search");
+      if (el) { el.value = cnpj; el.form?.requestSubmit(); }
+    });
+  }
+
+  // Wire expand/collapse
+  $("#nat-expand")?.addEventListener("click", () =>
+    (natGraph.expanded.has(nodeId) ? collapseNatNode : expandNatNode)(nodeId));
+
+  // Wire alert action buttons
+  body.querySelectorAll(".nat-alert-dismiss").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true; btn.textContent = "...";
+      await requestJson(`/api/intelligence?type=dismiss_alert&id=${encodeURIComponent(btn.dataset.alertId)}`).catch(() => {});
+      const card = btn.closest(".activity-alert");
+      if (card) { card.style.transition = "opacity .3s"; card.style.opacity = "0"; setTimeout(() => card.remove(), 320); }
+    });
+  });
+  body.querySelectorAll(".nat-alert-view").forEach((btn) => {
+    btn.addEventListener("click", () => setView("dou"));
+  });
+}
+
 async function runKeywordSearch(query) {
   setView("dou");
   const url = `/api/intelligence?type=search&q=${encodeURIComponent(query)}&limit=30`;
@@ -940,44 +1099,10 @@ function wireNatGraph() {
     if (nodeEl) {
       natGraph.selectedId = nodeEl.dataset.natnode;
       const node = natGraph.nodes.find((n) => n.id === natGraph.selectedId);
-      const title = $("#nat-inspector-title"), body = $("#nat-inspector-body");
+      // Atualiza título imediatamente (síncrono); painel rico carrega async
+      const title = $("#nat-inspector-title");
       if (title) title.textContent = node?.title || natGraph.selectedId;
-      const isExpanded = natGraph.expanded.has(natGraph.selectedId);
-      // Vizinhos únicos (deduplic.) — não contar arestas duplicadas entre os mesmos pares.
-      const neighborSet = new Set(
-        natGraph.allEdges
-          .filter((e) => e.from === natGraph.selectedId || e.to === natGraph.selectedId)
-          .map((e) => (e.from === natGraph.selectedId ? e.to : e.from))
-      );
-      const nNeighbors = neighborSet.size;
-      const nEdges = natGraph.allEdges.filter((e) => e.from === natGraph.selectedId || e.to === natGraph.selectedId).length;
-      // Relações do nó com os vizinhos visíveis (para exibir pills).
-      const relPills = [...new Set(
-        natGraph.allEdges
-          .filter((e) => e.from === natGraph.selectedId || e.to === natGraph.selectedId)
-          .map((e) => e.relationship)
-      )].map((r) => `<span class="entity-pill">${escapeHtml(r)}</span>`).join(" ");
-      const isPersonNode = node?.type === "person";
-      const personId = natGraph.selectedId?.split(":")?.[1];
-      if (body) body.innerHTML = node
-        ? `<div class="inspector-section">
-             <p class="field-source">${escapeHtml(node.type)}</p>
-             <p style="font-size:13px;color:var(--muted)">${escapeHtml(node.subtitle || "")}</p>
-             <p style="margin:8px 0 4px;font-size:13px">${nNeighbors} vizinho(s) direto(s) · ${nEdges} relação(ões)</p>
-             <div style="margin-bottom:10px">${relPills}</div>
-             <button type="button" class="entity-pill" id="nat-expand">${isExpanded ? "Colapsar conexões" : "Expandir conexões"}</button>
-             ${isPersonNode ? `<button type="button" class="entity-pill" id="nat-open-dossier" style="margin-left:6px">Abrir dossiê</button>` : ""}
-           </div>`
-        : "";
-      if (isPersonNode) {
-        $("#nat-open-dossier")?.addEventListener("click", () => {
-          // Muda para aba Diretores e abre o dossiê do nó selecionado.
-          document.querySelector("[data-view='directors']")?.click();
-          openDirectorDossier(personId);
-        });
-      }
-      $("#nat-expand")?.addEventListener("click", () =>
-        (natGraph.expanded.has(natGraph.selectedId) ? collapseNatNode : expandNatNode)(natGraph.selectedId));
+      renderNatInspector(natGraph.selectedId).catch(() => {});
       natGraph.drag = { id: natGraph.selectedId, startX: e.clientX, startY: e.clientY, ox: node?.x || 0, oy: node?.y || 0 };
       renderNatGraph();
     } else {
@@ -1491,19 +1616,35 @@ async function loadOverviewMetrics() {
     const alertsData = await requestJson("/api/intelligence?type=alerts&limit=10").catch(() => null);
     const alertsEl = $("#overview-alerts");
     if (alertsEl && alertsData?.items?.length) {
-      const sevClass = { high: "status-error", info: "status-ok", warning: "status-warn" };
-      const sevLabel = { high: "Alta", info: "Info", warning: "Atenção" };
-      alertsEl.innerHTML = `<h3 style="margin:0 0 10px;font-size:.9rem;opacity:.7">Alertas recentes</h3>` +
-        alertsData.items.map((a) => `
-          <article class="news-card" style="margin-bottom:6px">
-            <span class="source-meta"><span class="status-pill ${sevClass[a.severity] || "status-ok"}">${sevLabel[a.severity] || a.severity}</span> · ${escapeHtml(a.alert_type)} · ${escapeHtml((a.created_at || "").slice(0, 10))}</span>
-            <strong>${escapeHtml(a.title || "")}</strong>
-            ${a.body ? `<p style="margin:4px 0 0;font-size:.8rem;opacity:.8">${escapeHtml(a.body)}</p>` : ""}
-          </article>`).join("");
+      alertsEl.innerHTML = alertsData.items.map((a) => `
+        <div class="activity-alert" data-alert-card="${escapeHtml(a.id)}" ${a.severity !== "high" ? 'style="border-color:var(--line);background:var(--card)"' : ""}>
+          <span class="alert-icon">${a.severity === "high" ? "⚠️" : "ℹ️"}</span>
+          <div style="flex:1;min-width:0">
+            <p style="margin:0;font-size:.78rem;font-weight:700">${escapeHtml(a.title || "")}</p>
+            ${a.body ? `<p style="margin:2px 0 0;font-size:.72rem;opacity:.65">${escapeHtml(a.body.slice(0, 120))}</p>` : ""}
+            <p style="margin:2px 0 0;font-size:.68rem;opacity:.45">${escapeHtml(a.alert_type || "")} · ${escapeHtml((a.created_at || "").slice(0, 10))}</p>
+            <div class="alert-actions">
+              <button type="button" class="alert-btn primary overview-alert-view">Ver atos</button>
+              <button type="button" class="alert-btn overview-alert-dismiss" data-alert-id="${escapeHtml(a.id)}">Dispensar</button>
+            </div>
+          </div>
+        </div>`).join("");
+      // Wire action buttons
+      alertsEl.querySelectorAll(".overview-alert-dismiss").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          btn.disabled = true; btn.textContent = "...";
+          await requestJson(`/api/intelligence?type=dismiss_alert&id=${encodeURIComponent(btn.dataset.alertId)}`).catch(() => {});
+          const card = alertsEl.querySelector(`[data-alert-card="${btn.dataset.alertId}"]`);
+          if (card) { card.style.transition = "opacity .3s"; card.style.opacity = "0"; setTimeout(() => card.remove(), 320); }
+        });
+      });
+      alertsEl.querySelectorAll(".overview-alert-view").forEach((btn) => {
+        btn.addEventListener("click", () => setView("dou"));
+      });
       const alEl = $("#metric-alerts");
       if (alEl) alEl.textContent = alertsData.items.length;
     } else if (alertsEl) {
-      alertsEl.innerHTML = `<p style="opacity:.5;font-size:.85rem">Nenhum alerta recente.</p>`;
+      alertsEl.innerHTML = `<p style="color:var(--green);font-size:.85rem">✓ Nenhum alerta pendente.</p>`;
     }
   } catch { /* sem dados ainda */ }
 }

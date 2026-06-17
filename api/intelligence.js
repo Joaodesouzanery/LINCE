@@ -205,6 +205,52 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "giratoria", total: cases.length, cases });
     }
 
+    if (type === "agency_stats") {
+      const acronym = String(req.query.agency || "").toUpperCase();
+      if (!acronym) return res.status(400).json({ ok: false, error: "Informe ?agency=SIGLA" });
+      const { data: ag } = await supabase.from("agencies").select("id, acronym, name").eq("acronym", acronym).maybeSingle();
+      if (!ag) return res.status(404).json({ ok: false, error: "Agência não encontrada" });
+      const now = new Date();
+      const since30 = new Date(now - 30 * 86400000).toISOString().slice(0, 10);
+      const since8w = new Date(now - 56 * 86400000).toISOString().slice(0, 10);
+      const [docsTotal, docs30d, alertsRes, mandatesRes, weeklyRes] = await Promise.all([
+        supabase.from("documents").select("id", { count: "exact", head: true }).eq("agency_id", ag.id),
+        supabase.from("documents").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).gte("published_at", since30),
+        supabase.from("alerts").select("id, alert_type, severity, title, body, created_at").eq("target_id", ag.id).is("acknowledged_at", null).order("created_at", { ascending: false }).limit(5),
+        supabase.from("mandates").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).is("ended_at", null),
+        supabase.from("documents").select("published_at").eq("agency_id", ag.id).gte("published_at", since8w).order("published_at")
+      ]);
+      const weekBuckets = {};
+      for (const d of weeklyRes.data || []) {
+        const dt = new Date(d.published_at + "T12:00:00Z");
+        dt.setUTCDate(dt.getUTCDate() - dt.getUTCDay());
+        const k = dt.toISOString().slice(0, 10);
+        weekBuckets[k] = (weekBuckets[k] || 0) + 1;
+      }
+      const weekly_series = Object.entries(weekBuckets)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([week, total]) => ({ week, total }))
+        .slice(-8);
+      const baseline_avg = weekly_series.length
+        ? Math.round(weekly_series.reduce((s, w) => s + w.total, 0) / weekly_series.length)
+        : 0;
+      return res.status(200).json({
+        ok: true, type: "agency_stats",
+        agency: ag.acronym, agency_name: ag.name,
+        total_docs: docsTotal.count || 0, docs_30d: docs30d.count || 0,
+        open_alerts: alertsRes.data?.length || 0, active_directors: mandatesRes.count || 0,
+        weekly_series, baseline_avg, alerts: alertsRes.data || []
+      });
+    }
+
+    if (type === "dismiss_alert") {
+      const id = String(req.query.id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe ?id=<uuid>" });
+      const { error: upErr } = await supabase.from("alerts").update({ acknowledged_at: new Date().toISOString() }).eq("id", id);
+      if (upErr) return res.status(500).json({ ok: false, error: upErr.message });
+      return res.status(200).json({ ok: true });
+    }
+
     if (type === "search") {
       const q = String(req.query.q || "").trim();
       if (!q) return res.status(400).json({ ok: false, error: "Informe ?q=termo" });
@@ -242,7 +288,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "alerts", items: alerts || [] });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily, trend, recent, giratoria, search, alerts" });
+    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily, trend, recent, giratoria, search, alerts, agency_stats, dismiss_alert" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }
