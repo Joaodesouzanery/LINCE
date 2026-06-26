@@ -770,12 +770,12 @@ function renderSources() {
     .map(
       (entry) => `
         <article class="news-card">
-          <span class="source-meta">${entry.source} | ${entry.date || "sem data"}</span>
-          <strong>${entry.title}</strong>
-          <p>${entry.summary || "Sem resumo disponivel no RSS."}</p>
+          <span class="source-meta">${escapeHtml(entry.source)} | ${escapeHtml(entry.date || "sem data")}</span>
+          <strong>${escapeHtml(entry.title)}</strong>
+          <p>${escapeHtml(entry.summary || "Sem resumo disponivel no RSS.")}</p>
           <div class="entity-row">
             <span class="entity-pill">RSS real</span>
-            ${entry.link ? `<a class="entity-pill" href="${entry.link}" target="_blank" rel="noreferrer">Abrir fonte</a>` : ""}
+            ${safeUrl(entry.link) ? `<a class="entity-pill" href="${escapeHtml(safeUrl(entry.link))}" target="_blank" rel="noreferrer">Abrir fonte</a>` : ""}
           </div>
         </article>
       `
@@ -1399,6 +1399,13 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
 }
 
+// Aceita apenas URLs http/https; bloqueia esquemas perigosos (javascript:, data:) vindos de fontes externas.
+function safeUrl(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  return /^https?:\/\//i.test(raw) ? raw : "";
+}
+
 function wireEvents() {
   $("#view-nav").addEventListener("click", (event) => {
     const button = event.target.closest("[data-view]");
@@ -1461,6 +1468,7 @@ function onPointerDown(event) {
   canvas.setPointerCapture(event.pointerId);
   if (nodeEl) {
     const node = state.graphNodes.find((entry) => entry.id === nodeEl.dataset.node);
+    if (!node) return;
     state.selectedNodeId = node.id;
     state.drag = {
       id: node.id,

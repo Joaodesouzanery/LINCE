@@ -10,8 +10,8 @@ LINCE is a regulatory intelligence operating system for Brazil. It combines comp
   - `/api/cnpj` -> CNPJ.ws public API.
   - `/api/rdap` -> Registro.br RDAP.
   - `/api/news` -> Google News RSS.
-  - `/api/datajud` -> prepared, requires `DATAJUD_API_KEY`.
-  - `/api/transparency` -> prepared, requires `PORTAL_TRANSPARENCIA_API_KEY`.
+  - `/api/external?type=datajud` -> prepared, requires `DATAJUD_API_KEY`.
+  - `/api/external?type=transparency` -> prepared, requires `PORTAL_TRANSPARENCIA_API_KEY`.
 - Interactive graph with pan, zoom, reset, node selection and draggable nodes.
 - Dossier tabs filled only from real returned data; empty sections explicitly say there is no connected data.
 - Supabase/Postgres schema for the current core plus future contacts, domains, news items, RSS feeds, bank-account metadata and company movements.
@@ -58,7 +58,7 @@ npm run ingest:dou 2026-06-11
   agencia em `agencies.collection_rules.cnpj`). Tabela `contracts` + `relationships`.
 - **M7 Grafo Nacional** -> `api/graph` (nodes/edges a partir de `relationships`). Front: aba
   "Grafo Nacional".
-- **M9 Jurisprudencia** -> `scripts/load-tcu.js` (CSV do TCU) + `api/datajud` (processos).
+- **M9 Jurisprudencia** -> `scripts/load-tcu.js` (CSV do TCU) + `api/external?type=datajud` (processos).
 
 ## Onde colocar credenciais e dados
 
