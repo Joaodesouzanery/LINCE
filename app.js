@@ -27,7 +27,7 @@ const sourceStatus = [
     id: "datajud",
     name: "CNJ DataJud",
     data: "Metadados de processos judiciais",
-    method: "/api/datajud",
+    method: "/api/external?type=datajud",
     status: "key",
     help: "Endpoint preparado. Requer DATAJUD_API_KEY no ambiente da Vercel."
   },
@@ -35,7 +35,7 @@ const sourceStatus = [
     id: "transparency",
     name: "Portal da Transparencia",
     data: "Contratos, pagamentos, servidores e sancoes",
-    method: "/api/transparency",
+    method: "/api/external?type=transparency",
     status: "key",
     help: "Endpoint preparado. Requer PORTAL_TRANSPARENCIA_API_KEY."
   },
@@ -95,6 +95,11 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
 const realDataProvider = {
   async fetchCnpj(cnpj) {
     return requestJson(`/api/cnpj?cnpj=${onlyDigits(cnpj)}`);
@@ -106,10 +111,10 @@ const realDataProvider = {
     return requestJson(`/api/news?q=${encodeURIComponent(query)}`);
   },
   async fetchProcesses(nameOrCnpj) {
-    return requestJson(`/api/datajud?q=${encodeURIComponent(nameOrCnpj)}`);
+    return requestJson(`/api/external?type=datajud&q=${encodeURIComponent(nameOrCnpj)}`);
   },
   async fetchTransparency(cnpj) {
-    return requestJson(`/api/transparency?cnpj=${onlyDigits(cnpj)}`);
+    return requestJson(`/api/external?type=transparency&cnpj=${onlyDigits(cnpj)}`);
   }
 };
 
@@ -175,9 +180,21 @@ function setView(view) {
     overview: ["Dados reais", "Overview"],
     investigate: ["Grafo interativo", "Investigar"],
     dossier: ["Relatorio do alvo", "Dossie"],
-    sources: ["Conectores", "Fontes reais"]
+    sources: ["Conectores", "Fontes reais"],
+    dou: ["Diario Oficial da Uniao", "Monitor DOU"],
+    directors: ["Dossie de dirigentes", "Diretores"],
+    graph: ["Rede de influencia (M7)", "Grafo Nacional"],
+    intelligence: ["Inteligencia regulatoria", "Inteligencia Nacional"],
+    consultas: ["Participacao social (M5)", "Consultas Publicas"],
+    agenda: ["Calendario regulatorio (M8)", "Agenda e Pautas"]
   };
-  const [kicker, title] = titles[view];
+  const [kicker, title] = titles[view] || ["LINCE", view];
+  if (view === "dou") loadDouFeed();
+  if (view === "directors") loadDirectors();
+  if (view === "graph") loadNationalGraph();
+  if (view === "intelligence") loadIntelligence();
+  if (view === "consultas") loadConsultas();
+  if (view === "agenda") loadAgenda();
   $("#view-kicker").textContent = kicker;
   $("#view-title").textContent = title;
 }
@@ -246,6 +263,185 @@ async function runSearch(cnpjInput) {
   buildGraph(company, domains, state.news);
   renderAll();
   setLoading(false);
+}
+
+// ── Mini-gráfico SVG de barras semanais (sem D3) ──────────────────────────
+function buildMiniChart(series, baseline) {
+  if (!series?.length) return "";
+  const W = 200, H = 52, pad = 4;
+  const maxVal = Math.max(...series.map((s) => s.total), baseline * 1.5 || 1, 1);
+  const colW = (W - pad * 2) / series.length;
+  const bw = Math.max(1, colW - 2);
+  const bars = series.map((s, i) => {
+    const bh = Math.max(2, (s.total / maxVal) * (H - pad * 2));
+    const x = pad + i * colW;
+    const y = H - pad - bh;
+    const hot = baseline > 0 && s.total > baseline * 1.5;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="${hot ? "var(--accent)" : "var(--blue)"}" rx="2"/>`;
+  }).join("");
+  const baseY = baseline > 0 ? H - pad - (baseline / maxVal) * (H - pad * 2) : null;
+  const line = baseY !== null
+    ? `<line x1="${pad}" y1="${baseY.toFixed(1)}" x2="${W - pad}" y2="${baseY.toFixed(1)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3,2"/>`
+    : "";
+  return `<svg class="mini-chart" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">${bars}${line}</svg>`;
+}
+
+// ── Painel de objeto estilo Palantir Gotham ───────────────────────────────
+async function renderNatInspector(nodeId) {
+  const body = $("#nat-inspector-body");
+  if (!body) return;
+  const node = natGraph.nodes.find((n) => n.id === nodeId) || natGraph.allNodes.find((n) => n.id === nodeId);
+  if (!node) return;
+  const [kind, id] = nodeId.split(":");
+  body.innerHTML = `<p style="opacity:.5;font-size:.8rem;padding:8px 0">Carregando...</p>`;
+
+  const isExpanded = natGraph.expanded.has(nodeId);
+  const neighborSet = new Set(
+    natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId)
+      .map((e) => (e.from === nodeId ? e.to : e.from))
+  );
+  const nNeighbors = neighborSet.size;
+  const nEdges = natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId).length;
+  const expandBtn = `<button type="button" class="entity-pill" id="nat-expand" style="cursor:pointer">${isExpanded ? "Colapsar" : "Expandir conexões"}</button>`;
+
+  if (kind === "agency") {
+    const acronym = node.subtitle || node.title;
+    const stats = await requestJson(`/api/intelligence?type=agency_stats&agency=${encodeURIComponent(acronym)}`).catch(() => null);
+    const series = stats?.weekly_series || [];
+    const lastWeek = series[series.length - 1]?.total ?? 0;
+    const aboveBaseline = stats?.baseline_avg > 0 && lastWeek > stats.baseline_avg * 1.5;
+    const alertItems = (stats?.alerts || []).map((a) => `
+      <div class="activity-alert" ${a.severity !== "high" ? 'style="border-color:var(--line);background:var(--card)"' : ""}>
+        <span class="alert-icon">${a.severity === "high" ? "⚠️" : "ℹ️"}</span>
+        <div style="flex:1;min-width:0">
+          <p style="margin:0;font-size:.78rem;font-weight:700">${escapeHtml(a.title || "")}</p>
+          ${a.body ? `<p style="margin:2px 0 0;font-size:.72rem;opacity:.65">${escapeHtml(a.body.slice(0, 100))}</p>` : ""}
+          <div class="alert-actions">
+            <button type="button" class="alert-btn primary nat-alert-view">Ver atos</button>
+            <button type="button" class="alert-btn nat-alert-dismiss" data-alert-id="${escapeHtml(a.id)}">Dispensar</button>
+          </div>
+        </div>
+      </div>`).join("");
+    body.innerHTML = `
+      <div class="object-section">
+        <p class="object-section-title">Detalhes</p>
+        <p style="font-size:.78rem;opacity:.6;margin:0 0 8px">${escapeHtml(stats?.agency_name || node.title)}</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div class="detail-stat"><span>${stats?.total_docs ?? "—"}</span><small>atos totais</small></div>
+          <div class="detail-stat"><span>${stats?.docs_30d ?? "—"}</span><small>últimos 30d</small></div>
+          <div class="detail-stat"><span>${stats?.active_directors ?? nNeighbors}</span><small>diretores</small></div>
+          <div class="detail-stat"><span>${nNeighbors}</span><small>conexões</small></div>
+        </div>
+      </div>
+      ${series.length ? `
+      <div class="object-section">
+        <p class="object-section-title">Atividade semanal ${aboveBaseline ? '<span class="status-pill status-error" style="font-size:.65rem">Acima do baseline</span>' : ""}</p>
+        ${aboveBaseline ? `<div class="activity-alert" style="margin-bottom:8px"><span class="alert-icon">⚠️</span><span style="font-size:.78rem">Volume atual &gt;1,5× a média histórica</span></div>` : ""}
+        ${buildMiniChart(series, stats.baseline_avg)}
+        <p style="font-size:.68rem;opacity:.45;margin:2px 0 0">— baseline avg: ${stats.baseline_avg} atos/sem.</p>
+      </div>` : ""}
+      ${alertItems ? `
+      <div class="object-section">
+        <p class="object-section-title">Observações (${stats?.open_alerts || 0} pendentes)</p>
+        ${alertItems}
+      </div>` : ""}
+      <div class="object-section"><div class="entity-row">${expandBtn}</div></div>`;
+  } else if (kind === "person") {
+    const dossier = await requestJson(`/api/dossier-person?id=${encodeURIComponent(id)}`).catch(() => null);
+    const intel = dossier?.intelligence || {};
+    const mandates = dossier?.mandates || [];
+    const agencies = [...new Set(mandates.map((m) => m.agencies?.acronym).filter(Boolean))];
+    const relPills = [...new Set(
+      natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId).map((e) => e.relationship)
+    )].map((r) => `<span class="entity-pill">${escapeHtml(r)}</span>`).join(" ");
+    const score = intel.capture_score ?? 0;
+    body.innerHTML = `
+      <div class="object-section">
+        <p class="object-section-title">Detalhes</p>
+        <p style="font-size:.78rem;opacity:.6;margin:0 0 4px">${escapeHtml(node.subtitle || dossier?.person?.role || "Dirigente")}</p>
+        ${agencies.length ? `<p style="font-size:.78rem;margin:2px 0">Agência(s): <strong>${escapeHtml(agencies.join(", "))}</strong></p>` : ""}
+        <p style="font-size:.78rem;margin:2px 0">Mandato ativo: <strong>${intel.active_mandate ? "Sim" : "Não"}</strong></p>
+        <p style="font-size:.78rem;margin:2px 0">${nNeighbors} conexão(ões) · ${nEdges} relação(ões)</p>
+      </div>
+      <div class="object-section">
+        <p class="object-section-title">Score de captura</p>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:6px">
+          <span style="font-size:1.4rem;font-weight:800;color:${score < 30 ? "var(--green)" : score < 60 ? "var(--yellow)" : "var(--red)"}">${score}</span>
+          <span style="font-size:.75rem;opacity:.5">/ 100 &nbsp;·&nbsp; ${intel.dissent_votes ?? 0} voto(s) divergente(s)</span>
+        </div>
+        <div class="score-bar-wrap"><div class="score-bar-fill" style="width:${score}%"></div></div>
+      </div>
+      ${relPills ? `<div class="object-section"><p class="object-section-title">Relações</p><div class="entity-row">${relPills}</div></div>` : ""}
+      <div class="object-section">
+        <div class="entity-row">
+          ${expandBtn}
+          <button type="button" class="alert-btn primary" id="nat-open-dossier">Abrir dossiê</button>
+        </div>
+      </div>`;
+    $("#nat-open-dossier")?.addEventListener("click", () => {
+      document.querySelector("[data-view='directors']")?.click();
+      openDirectorDossier(id);
+    });
+  } else {
+    const cnpj = node.subtitle || "";
+    const relPills = [...new Set(
+      natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId).map((e) => e.relationship)
+    )].map((r) => `<span class="entity-pill">${escapeHtml(r)}</span>`).join(" ");
+    body.innerHTML = `
+      <div class="object-section">
+        <p class="object-section-title">Detalhes</p>
+        ${cnpj ? `<p style="font-size:.78rem;opacity:.6;margin:0 0 4px">CNPJ: ${escapeHtml(cnpj)}</p>` : ""}
+        <p style="font-size:.78rem;margin:2px 0">${nNeighbors} conexão(ões) · ${nEdges} relação(ões)</p>
+      </div>
+      ${relPills ? `<div class="object-section"><p class="object-section-title">Relações</p><div class="entity-row">${relPills}</div></div>` : ""}
+      <div class="object-section">
+        <div class="entity-row">
+          ${expandBtn}
+          ${cnpj ? `<button type="button" class="alert-btn primary" id="nat-investigate-cnpj">Investigar CNPJ</button>` : ""}
+        </div>
+      </div>`;
+    $("#nat-investigate-cnpj")?.addEventListener("click", () => {
+      const el = $("#global-search");
+      if (el) { el.value = cnpj; el.form?.requestSubmit(); }
+    });
+  }
+
+  // Wire expand/collapse
+  $("#nat-expand")?.addEventListener("click", () =>
+    (natGraph.expanded.has(nodeId) ? collapseNatNode : expandNatNode)(nodeId));
+
+  // Wire alert action buttons
+  body.querySelectorAll(".nat-alert-dismiss").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true; btn.textContent = "...";
+      await requestJson(`/api/intelligence?type=dismiss_alert&id=${encodeURIComponent(btn.dataset.alertId)}`).catch(() => {});
+      const card = btn.closest(".activity-alert");
+      if (card) { card.style.transition = "opacity .3s"; card.style.opacity = "0"; setTimeout(() => card.remove(), 320); }
+    });
+  });
+  body.querySelectorAll(".nat-alert-view").forEach((btn) => {
+    btn.addEventListener("click", () => setView("dou"));
+  });
+}
+
+async function runKeywordSearch(query) {
+  setView("dou");
+  const url = `/api/intelligence?type=search&q=${encodeURIComponent(query)}&limit=30`;
+  const r = await requestJson(url).catch(() => null);
+  const items = r?.items || [];
+  const douFeed = $("#dou-feed");
+  if (!douFeed) return;
+  if (!items.length) {
+    douFeed.innerHTML = emptyCard("Busca", `Nenhum ato encontrado para "${escapeHtml(query)}".`);
+    return;
+  }
+  douFeed.innerHTML = `<p style="margin:0 0 12px;opacity:.7">${items.length} resultado(s) para <strong>"${escapeHtml(query)}"</strong></p>` +
+    items.map((d) => `
+      <article class="news-card">
+        <span class="source-meta">${escapeHtml(d.agency)} · ${escapeHtml(d.date || "")} · <span class="type-pill ${d.type}">${escapeHtml(d.type || "")}</span></span>
+        <strong>${escapeHtml(d.title || "Sem título")}</strong>
+        ${d.link ? `<a href="${escapeHtml(d.link)}" target="_blank" rel="noopener" style="font-size:.8rem">Abrir no DOU ↗</a>` : ""}
+      </article>`).join("");
 }
 
 function unwrapResult(result) {
@@ -530,24 +726,21 @@ function renderAll() {
 }
 
 function renderOverview() {
-  $("#metric-last").textContent = state.target ? formatCnpj(state.target.cnpj) : "-";
-  $("#metric-last-label").textContent = state.target?.legalName || "Nenhum CNPJ consultado";
-  $("#overview-source-list").innerHTML = sourceStatus
-    .map((source) => {
+  // Overview agora é orientado a dados regulatorios (ver loadOverviewMetrics).
+  // Mantido defensivo caso elementos antigos nao existam.
+  const last = $("#metric-last");
+  if (last) last.textContent = state.target ? formatCnpj(state.target.cnpj) : "-";
+  const lastLabel = $("#metric-last-label");
+  if (lastLabel) lastLabel.textContent = state.target?.legalName || "Nenhum CNPJ consultado";
+  const sourceList = $("#overview-source-list");
+  if (sourceList) {
+    sourceList.innerHTML = sourceStatus.map((source) => {
       const runtime = state.sources[source.id];
       const status = runtime?.status || source.status;
       const detail = runtime?.detail || source.help;
-      return `
-        <article class="source-row">
-          <span class="status-pill ${sourceClass(status)}">${sourceLabel(status)}</span>
-          <div>
-            <strong>${source.name}</strong>
-            <p class="status-help">${detail}</p>
-          </div>
-        </article>
-      `;
-    })
-    .join("");
+      return `<article class="source-row"><span class="status-pill ${sourceClass(status)}">${sourceLabel(status)}</span><div><strong>${source.name}</strong><p class="status-help">${detail}</p></div></article>`;
+    }).join("");
+  }
 }
 
 function renderSources() {
@@ -588,6 +781,467 @@ function renderSources() {
       `
     )
     .join("");
+}
+
+const DOU_TYPE_LABEL = { norma: "Norma", ato_pessoal: "Ato de pessoal", contrato: "Contrato", ato: "Ato" };
+
+async function loadDouFeed() {
+  const list = $("#dou-list");
+  if (!list) return;
+  list.innerHTML = emptyCard("Monitor DOU", "Carregando atos do Diario Oficial...");
+  const date = $("#dou-date")?.value;
+  const agency = $("#dou-agency")?.value;
+  const params = new URLSearchParams();
+  if (date) params.set("date", date);
+  if (agency) params.set("agency", agency);
+  const qs = params.toString();
+  const url = qs ? `/api/dou-feed?${qs}` : "/api/dou-feed";
+  try {
+    const payload = await requestJson(url);
+    const items = payload.items || [];
+    if (!items.length) {
+      list.innerHTML = emptyCard("Monitor DOU", "Sem atos das agencias ingeridos para este periodo. Rode /api/ingest-dou.");
+      return;
+    }
+    list.innerHTML = items
+      .map((entry) => `
+        <article class="news-card">
+          <span class="source-meta">${escapeHtml(entry.agency || "DOU")} | ${escapeHtml(DOU_TYPE_LABEL[entry.type] || entry.type)} | ${escapeHtml(entry.date || "sem data")}</span>
+          <strong>${escapeHtml(entry.title)}</strong>
+          <p>${escapeHtml(entry.summary || "Sem resumo de IA.")}</p>
+          <div class="entity-row">
+            ${(entry.entities || []).slice(0, 4).map((e) => `<span class="entity-pill">${escapeHtml(e.name || "")}</span>`).join("")}
+            ${entry.link ? `<a class="entity-pill" href="${escapeHtml(entry.link)}" target="_blank" rel="noreferrer">Abrir DOU</a>` : ""}
+          </div>
+        </article>
+      `)
+      .join("");
+  } catch (error) {
+    list.innerHTML = emptyCard("Monitor DOU", `Falha ao carregar: ${error.message}`);
+  }
+}
+
+// Lista de diretores (busca incremental por ?q= ou lista completa por ?list=1).
+async function loadDirectors() {
+  const list = $("#directors-list");
+  if (!list) return;
+  const name = $("#director-search")?.value?.trim();
+  list.innerHTML = emptyCard("Diretores", name ? "Buscando..." : "Carregando diretores...");
+  try {
+    const url = name
+      ? `/api/dossier-person?q=${encodeURIComponent(name)}`
+      : `/api/dossier-person?list=1`;
+    const data = await requestJson(url);
+    const people = data.people || [];
+    if (!people.length) {
+      list.innerHTML = emptyCard("Diretores", name ? `Nenhum diretor com "${name}".` : "Nenhum diretor mapeado ainda. Rode a ingestao do DOU.");
+      return;
+    }
+    list.innerHTML = people
+      .map((p) => `
+        <article class="news-card director-row" data-person-id="${escapeHtml(p.id)}" style="cursor:pointer">
+          <span class="source-meta">${escapeHtml(p.agency || "?")} | ${escapeHtml(p.role || "dirigente")}</span>
+          <strong>${escapeHtml(p.full_name)}</strong>
+          <p>Clique para abrir o dossie completo.</p>
+        </article>`)
+      .join("");
+    list.querySelectorAll(".director-row").forEach((el) => {
+      el.addEventListener("click", () => openDirectorDossier(el.dataset.personId));
+    });
+  } catch (error) {
+    list.innerHTML = emptyCard("Diretores", `Falha: ${error.message}`);
+  }
+}
+
+// Abre o dossie completo de um diretor por id.
+async function openDirectorDossier(id) {
+  const list = $("#directors-list");
+  if (!list) return;
+  list.innerHTML = emptyCard("Diretores", "Montando dossie...");
+  try {
+    const d = await requestJson(`/api/dossier-person?id=${encodeURIComponent(id)}`);
+    const intel = d.intelligence || {};
+    const mandates = (d.mandates || []).map((m) => `<span class="entity-pill">${escapeHtml(m.agencies?.acronym || "")} ${escapeHtml(m.role || "")}</span>`).join("");
+    const parties = (d.party_links || []).map((p) => `<span class="entity-pill">${escapeHtml(p.party)}</span>`).join("");
+    const rels = (d.relationships || []).length;
+    list.innerHTML = `
+      <article class="news-card">
+        <button type="button" class="entity-pill" id="director-back">&larr; Voltar a lista</button>
+        <span class="source-meta">${escapeHtml(d.person.full_name)} | ${escapeHtml(d.person.role || "dirigente")}</span>
+        <strong>Score de captura: ${intel.capture_score ?? "-"}/100 | Votos vencidos: ${intel.dissent_votes ?? 0}</strong>
+        <p>Mandato ativo: ${intel.active_mandate ? "sim" : "nao"} | Conexoes: ${rels} | SIAPE: ${(d.siape || []).length} registro(s)</p>
+        <div class="entity-row">${mandates}${parties}</div>
+      </article>`;
+    $("#director-back")?.addEventListener("click", () => loadDirectors());
+  } catch (error) {
+    list.innerHTML = emptyCard("Diretores", `Falha: ${error.message}`);
+  }
+}
+
+// Estado do grafo nacional (separado do estado do grafo CNPJ).
+// allNodes/allEdges = dataset completo da agencia; nodes/edges = visiveis.
+// expanded = ids ja expandidos (comportamento Sherlocker: revela vizinhos ao clicar).
+const natGraph = {
+  allNodes: [],
+  allEdges: [],
+  nodes: [],
+  edges: [],
+  expanded: new Set(),
+  centerId: null,
+  transform: { x: 80, y: 60, scale: 0.7 },
+  selectedId: null,
+  drag: null,
+  pan: null
+};
+
+const NAT_EXPAND_LIMIT = 25; // vizinhos revelados por expansao (legibilidade).
+
+// Reconstroi nodes/edges visiveis a partir do dataset completo e do conjunto expanded.
+function rebuildNatVisible() {
+  const allById = Object.fromEntries(natGraph.allNodes.map((n) => [n.id, n]));
+  const visible = new Set();
+  if (natGraph.centerId) visible.add(natGraph.centerId);
+  // Para cada no expandido, revela seus vizinhos diretos (ate o limite por no).
+  for (const srcId of natGraph.expanded) {
+    visible.add(srcId);
+    // Deduplica: usa Set para garantir vizinhos únicos (evita duplicatas de arestas no banco).
+    const uniqueNeighbors = [...new Set(
+      natGraph.allEdges
+        .filter((e) => e.from === srcId || e.to === srcId)
+        .map((e) => (e.from === srcId ? e.to : e.from))
+        .filter((id) => allById[id])
+    )];
+    uniqueNeighbors.slice(0, NAT_EXPAND_LIMIT).forEach((id) => visible.add(id));
+  }
+  natGraph.nodes = [...visible].map((id) => mapGraphNode(allById[id])).filter(Boolean);
+  const visibleSet = new Set(visible);
+  natGraph.edges = natGraph.allEdges
+    .filter((e) => visibleSet.has(e.from) && visibleSet.has(e.to))
+    .map((e) => [e.from, e.to, e.relationship]);
+  layoutNatNodes(natGraph.nodes);
+  applyGraphFilters();
+}
+
+function natNodeWidth(node) { return node.type === "agency" ? 270 : 238; }
+
+function layoutNatNodes(nodes) {
+  // Hub-and-spoke legivel: no central no meio, demais em aneis concentricos
+  // com espacamento minimo (anti-sobreposicao). Raio cresce conforme a contagem.
+  const cx = 700, cy = 450;
+  // O no central e o centerId (agencia foco); fallback para agencias / primeiro.
+  const center = nodes.find((n) => n.id === natGraph.centerId)
+    || nodes.find((n) => n.type === "agency")
+    || nodes[0];
+  const centers = center ? [center] : [];
+  const others = nodes.filter((n) => n !== center);
+
+  centers.forEach((n) => { n.x = cx; n.y = cy; });
+
+  // Distribui os demais em aneis: cada anel comporta um numero proporcional ao raio.
+  const perRingBase = 12;
+  let idx = 0, ring = 1;
+  while (idx < others.length) {
+    const radius = 360 + (ring - 1) * 280;
+    const capacity = perRingBase + (ring - 1) * 8;
+    const count = Math.min(capacity, others.length - idx);
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * 2 * Math.PI + ring * 0.4;
+      const n = others[idx++];
+      n.x = Math.round(cx + radius * Math.cos(angle));
+      n.y = Math.round(cy + radius * Math.sin(angle));
+    }
+    ring++;
+  }
+}
+
+function renderNatGraph() {
+  const stage = $("#nat-graph-stage");
+  const edgeLayer = $("#nat-edge-layer");
+  const nodeLayer = $("#nat-node-layer");
+  if (!stage) return;
+  stage.style.transform = `translate(${natGraph.transform.x}px, ${natGraph.transform.y}px) scale(${natGraph.transform.scale})`;
+  $("#nat-graph-empty").classList.toggle("hidden", natGraph.nodes.length > 0);
+
+  edgeLayer.setAttribute("viewBox", "0 0 1400 900");
+  const nodeById = Object.fromEntries(natGraph.nodes.map((n) => [n.id, n]));
+  edgeLayer.innerHTML = natGraph.edges.map(([from, to, label]) => {
+    const a = nodeById[from], b = nodeById[to];
+    if (!a || !b || a.hidden || b.hidden) return "";
+    const w = natNodeWidth(a);
+    const x1 = a.x + w, y1 = a.y + 48, x2 = b.x, y2 = b.y + 48;
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    return `<line class="edge-line" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"></line>
+            <text class="edge-label" x="${mx + 4}" y="${my - 4}">${escapeHtml(label)}</text>`;
+  }).join("");
+
+  nodeLayer.innerHTML = natGraph.nodes.filter((n) => !n.hidden).map((node) => {
+    const w = natNodeWidth(node);
+    const active = node.id === natGraph.selectedId ? " active" : "";
+    const central = node.type === "agency" ? " central" : "";
+    const fields = (node.fields || []).map(([k, v]) => `<div class="node-field"><span>${escapeHtml(k)}</span><span>${escapeHtml(String(v))}</span></div>`).join("");
+    return `<article class="node-card${central}${active}" data-natnode="${escapeHtml(node.id)}" style="left:${node.x}px;top:${node.y}px;width:${w}px">
+      <div class="node-icon ${escapeHtml(node.type)}">${iconFor(node.type)}</div>
+      <div class="node-body">
+        <strong>${escapeHtml(node.title)}</strong>
+        <span class="node-sub">${escapeHtml(node.subtitle || "")}</span>
+        ${fields}
+        <span class="status-pill ok">${escapeHtml(node.status || node.type)}</span>
+      </div>
+    </article>`;
+  }).join("");
+}
+
+// Popula o dropdown de agencias do grafo (uma vez).
+let natAgenciesLoaded = false;
+async function populateGraphAgencies() {
+  if (natAgenciesLoaded) return;
+  const sel = $("#graph-agency");
+  if (!sel) return;
+  try {
+    const sc = await requestJson("/api/intelligence?type=score");
+    const opts = (sc.scores || []).map((s) => `<option value="${escapeHtml(s.agency)}">${escapeHtml(s.agency)}</option>`).join("");
+    sel.innerHTML = opts || `<option value="">(sem agencias)</option>`;
+    natAgenciesLoaded = true;
+    // Tambem popula o filtro de agencia do Monitor DOU.
+    const douSel = $("#dou-agency");
+    if (douSel && douSel.options.length <= 1) {
+      douSel.innerHTML = `<option value="">Todas as agencias</option>` +
+        (sc.scores || []).map((s) => `<option value="${escapeHtml(s.agency)}">${escapeHtml(s.agency)}</option>`).join("");
+    }
+  } catch { /* silencioso */ }
+}
+
+function activeGraphTypes() {
+  const boxes = document.querySelectorAll(".graph-type:checked");
+  return new Set([...boxes].map((b) => b.value));
+}
+
+function applyGraphFilters() {
+  // Esconde nos cujo tipo esta desmarcado (filtro client-side, sem refetch).
+  const types = activeGraphTypes();
+  natGraph.nodes.forEach((n) => { n.hidden = !types.has(n.type); });
+  renderNatGraph();
+}
+
+function mapGraphNode(n) {
+  return { id: n.id, type: n.type, title: n.title, subtitle: n.subtitle || "", status: n.type, fields: [["Tipo", n.type]], x: 200, y: 200 };
+}
+
+async function loadNationalGraph() {
+  await populateGraphAgencies();
+  const agency = $("#graph-agency")?.value?.trim();
+  // Carrega o subgrafo da agencia UMA vez, mas exibe so o no central (Sherlocker).
+  const url = `/api/graph${agency ? `?agency=${encodeURIComponent(agency)}&limit=500` : "?limit=500"}`;
+  try {
+    const g = await requestJson(url);
+    if (!g.nodes?.length) {
+      natGraph.allNodes = []; natGraph.allEdges = [];
+      natGraph.nodes = []; natGraph.edges = []; natGraph.expanded = new Set(); natGraph.centerId = null;
+      const empty = $("#nat-graph-empty");
+      if (empty) { empty.classList.remove("hidden"); empty.querySelector("p").textContent = "Sem conexoes para esta agencia ainda."; }
+      renderNatGraph(); return;
+    }
+    natGraph.allNodes = g.nodes.slice();
+    natGraph.allEdges = g.edges.slice();
+    // No central = a agencia selecionada (ou o primeiro no se nao houver agencia).
+    const center = agency
+      ? g.nodes.find((n) => n.type === "agency" && (n.subtitle || "").toUpperCase() === agency.toUpperCase())
+      : g.nodes[0];
+    natGraph.centerId = center ? center.id : g.nodes[0].id;
+    natGraph.expanded = new Set();
+    natGraph.transform = { x: 80, y: 60, scale: 0.7 };
+    rebuildNatVisible();
+    const centerNeighbors = new Set(natGraph.allEdges.filter((e) => e.from === natGraph.centerId || e.to === natGraph.centerId).map((e) => (e.from === natGraph.centerId ? e.to : e.from))).size;
+    $("#nat-graph-title").textContent = `Clique no nó para expandir · ${centerNeighbors} vizinhos diretos`;
+    renderNatGraph();
+  } catch (error) {
+    const empty = $("#nat-graph-empty");
+    if (empty) { empty.classList.remove("hidden"); empty.querySelector("p").textContent = `Falha: ${error.message}`; }
+  }
+}
+
+// Expande um no: revela seus vizinhos diretos a partir do dataset ja carregado.
+function expandNatNode(nodeId) {
+  if (!nodeId) return;
+  natGraph.expanded.add(nodeId);
+  rebuildNatVisible();
+  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexões`;
+  renderNatGraph();
+}
+
+// Colapsa um no: esconde os vizinhos revelados por ele (mantem o central).
+function collapseNatNode(nodeId) {
+  if (!nodeId || nodeId === natGraph.centerId) return;
+  natGraph.expanded.delete(nodeId);
+  rebuildNatVisible();
+  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexões`;
+  renderNatGraph();
+}
+
+// Centraliza/destaca um no cujo titulo casa com o termo de busca.
+function searchNatGraph(term) {
+  const t = term.trim().toLowerCase();
+  if (!t) return;
+  const node = natGraph.nodes.find((n) => (n.title || "").toLowerCase().includes(t));
+  if (!node) return;
+  natGraph.selectedId = node.id;
+  const stage = $("#nat-graph-canvas");
+  const w = stage ? stage.clientWidth : 1000, h = stage ? stage.clientHeight : 700;
+  natGraph.transform = { x: w / 2 - node.x * natGraph.transform.scale, y: h / 2 - node.y * natGraph.transform.scale, scale: natGraph.transform.scale };
+  renderNatGraph();
+}
+
+function wireNatGraph() {
+  const canvas = $("#nat-graph-canvas");
+  if (!canvas) return;
+  canvas.addEventListener("pointerdown", (e) => {
+    const nodeEl = e.target.closest("[data-natnode]");
+    if (nodeEl) {
+      natGraph.selectedId = nodeEl.dataset.natnode;
+      const node = natGraph.nodes.find((n) => n.id === natGraph.selectedId);
+      // Atualiza título imediatamente (síncrono); painel rico carrega async
+      const title = $("#nat-inspector-title");
+      if (title) title.textContent = node?.title || natGraph.selectedId;
+      renderNatInspector(natGraph.selectedId).catch(() => {});
+      natGraph.drag = { id: natGraph.selectedId, startX: e.clientX, startY: e.clientY, ox: node?.x || 0, oy: node?.y || 0 };
+      renderNatGraph();
+    } else {
+      natGraph.pan = { startX: e.clientX, startY: e.clientY, ox: natGraph.transform.x, oy: natGraph.transform.y };
+    }
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (natGraph.drag) {
+      const node = natGraph.nodes.find((n) => n.id === natGraph.drag.id);
+      if (node) { node.x = natGraph.drag.ox + (e.clientX - natGraph.drag.startX) / natGraph.transform.scale; node.y = natGraph.drag.oy + (e.clientY - natGraph.drag.startY) / natGraph.transform.scale; }
+      renderNatGraph();
+    } else if (natGraph.pan) {
+      natGraph.transform.x = natGraph.pan.ox + (e.clientX - natGraph.pan.startX);
+      natGraph.transform.y = natGraph.pan.oy + (e.clientY - natGraph.pan.startY);
+      renderNatGraph();
+    }
+  });
+  canvas.addEventListener("pointerup", () => { natGraph.drag = null; natGraph.pan = null; });
+  canvas.addEventListener("wheel", (e) => { e.preventDefault(); natGraph.transform.scale = Math.min(2, Math.max(0.3, natGraph.transform.scale - e.deltaY * 0.001)); renderNatGraph(); }, { passive: false });
+  $("#nat-zoom-in")?.addEventListener("click", () => { natGraph.transform.scale = Math.min(2, natGraph.transform.scale + 0.12); renderNatGraph(); });
+  $("#nat-zoom-out")?.addEventListener("click", () => { natGraph.transform.scale = Math.max(0.3, natGraph.transform.scale - 0.12); renderNatGraph(); });
+  $("#nat-reset-graph")?.addEventListener("click", () => {
+    // Reset volta ao no central colapsado (Sherlocker).
+    natGraph.expanded = new Set();
+    natGraph.selectedId = null;
+    natGraph.transform = { x: 80, y: 60, scale: 0.7 };
+    rebuildNatVisible();
+    const centerNeighbors = new Set(natGraph.allEdges.filter((e) => e.from === natGraph.centerId || e.to === natGraph.centerId).map((e) => (e.from === natGraph.centerId ? e.to : e.from))).size;
+    $("#nat-graph-title").textContent = `Clique no nó para expandir · ${centerNeighbors} vizinhos diretos`;
+    renderNatGraph();
+  });
+  $("#graph-agency")?.addEventListener("change", () => loadNationalGraph());
+  // Double-click num no tambem expande.
+  canvas.addEventListener("dblclick", (e) => {
+    const nodeEl = e.target.closest("[data-natnode]");
+    if (nodeEl) expandNatNode(nodeEl.dataset.natnode);
+  });
+  // Toggles de tipo (agencia/pessoa/empresa).
+  document.querySelectorAll(".graph-type").forEach((b) => b.addEventListener("change", applyGraphFilters));
+  // Busca no grafo.
+  const search = $("#graph-search");
+  if (search) {
+    search.addEventListener("keydown", (e) => { if (e.key === "Enter") searchNatGraph(search.value); });
+    search.addEventListener("input", () => { if (search.value.length >= 3) searchNatGraph(search.value); });
+  }
+}
+
+async function loadIntelligence() {
+  const score = $("#intel-score"), radar = $("#intel-radar");
+  if (score) score.innerHTML = emptyCard("Score", "Calculando...");
+  if (radar) radar.innerHTML = emptyCard("Radar", "Calculando...");
+  try {
+    const [sc, rd, daily] = await Promise.all([
+      requestJson("/api/intelligence?type=score"),
+      requestJson("/api/intelligence?type=radar"),
+      requestJson("/api/intelligence?type=daily")
+    ]);
+    // Score
+    if (score) {
+      if (!sc.scores?.length) { score.innerHTML = emptyCard("Score", "Sem dados. Rode a ingestao do DOU."); }
+      else score.innerHTML = sc.scores.map((s) => `
+        <article class="news-card">
+          <span class="source-meta">${escapeHtml(s.agency)} | ${s.docs} atos | ${s.open_alerts} alertas abertos | ${s.active_directors} diretores ativos</span>
+          <strong>${escapeHtml(s.name)}</strong>
+          <div class="entity-row">
+            <span class="entity-pill" style="background:${s.score > 60 ? '#ef6760' : s.score > 30 ? '#d7ad4f' : '#61c46e'}">Score ${s.score}/100</span>
+          </div>
+        </article>`).join("");
+    }
+    // Radar
+    if (radar) {
+      const all = [...(rd.radar?.["30d"] || []).map((i) => ({ ...i, window: "30d" })),
+                   ...(rd.radar?.["60d"] || []).map((i) => ({ ...i, window: "60d" })),
+                   ...(rd.radar?.["90d"] || []).map((i) => ({ ...i, window: "90d" }))];
+      if (!all.length) { radar.innerHTML = emptyCard("Radar", "Nenhum contrato a vencer nos proximos 90 dias. Rode ingest-pncp."); }
+      else radar.innerHTML = all.map((c) => `
+        <article class="news-card">
+          <span class="source-meta">${escapeHtml(c.agency || "")} | Vence: ${escapeHtml(c.date || "")} | <strong>${escapeHtml(c.window)}</strong></span>
+          <strong>${escapeHtml(c.label)}</strong>
+          <p>${escapeHtml(c.supplier || "Fornecedor nao identificado")}</p>
+        </article>`).join("");
+    }
+    // Overview daily
+    const dailyEl = $("#overview-daily");
+    if (dailyEl && daily.by_agency) {
+      const entries = Object.entries(daily.by_agency);
+      if (!entries.length) { dailyEl.innerHTML = emptyCard("Diario", "Nenhum ato nas ultimas 24h. O cron roda ao meio-dia UTC."); }
+      else dailyEl.innerHTML = entries.map(([ac, d]) => `
+        <article class="news-card">
+          <span class="source-meta">${escapeHtml(ac)} | ${d.normas} normas · ${d.pessoal} atos pessoal · ${d.contratos} contratos</span>
+          ${(d.destaques || []).slice(0, 2).map((s) => `<p>${escapeHtml(s)}</p>`).join("")}
+        </article>`).join("");
+    }
+  } catch (error) {
+    if (score) score.innerHTML = emptyCard("Score", `Erro: ${error.message}`);
+  }
+}
+
+async function loadConsultas() {
+  const list = $("#consultas-list");
+  if (!list) return;
+  list.innerHTML = emptyCard("Consultas", "Buscando consultas e audiencias publicas abertas...");
+  try {
+    const data = await requestJson("/api/rss-feeds?type=consultas");
+    if (!data.items?.length) { list.innerHTML = emptyCard("Consultas", "Nenhuma consulta identificada nos RSS das agencias no momento."); return; }
+    list.innerHTML = data.items.map((c) => `
+      <article class="news-card">
+        <span class="source-meta">${escapeHtml(c.agency)} | ${escapeHtml(c.date || "sem data")}</span>
+        <strong>${escapeHtml(c.title)}</strong>
+        <p>${escapeHtml(c.summary || "")}</p>
+        <div class="entity-row">
+          ${c.link ? `<a class="entity-pill" href="${escapeHtml(c.link)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+        </div>
+      </article>`).join("");
+  } catch (error) {
+    list.innerHTML = emptyCard("Consultas", `Erro: ${error.message}`);
+  }
+}
+
+async function loadAgenda() {
+  const list = $("#agenda-list");
+  if (!list) return;
+  list.innerHTML = emptyCard("Agenda", "Buscando pautas e reunioes das agencias...");
+  try {
+    const data = await requestJson("/api/rss-feeds?type=agenda");
+    if (!data.items?.length) { list.innerHTML = emptyCard("Agenda", "Nenhuma pauta identificada nos RSS das agencias no momento."); return; }
+    list.innerHTML = data.items.map((c) => `
+      <article class="news-card">
+        <span class="source-meta">${escapeHtml(c.agency)} | ${escapeHtml(c.date || "sem data")}</span>
+        <strong>${escapeHtml(c.title)}</strong>
+        <p>${escapeHtml(c.summary || "")}</p>
+        <div class="entity-row">
+          ${c.link ? `<a class="entity-pill" href="${escapeHtml(c.link)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+        </div>
+      </article>`).join("");
+  } catch (error) {
+    list.innerHTML = emptyCard("Agenda", `Erro: ${error.message}`);
+  }
 }
 
 function renderGraph() {
@@ -647,7 +1301,7 @@ function renderGraph() {
 }
 
 function iconFor(type) {
-  return { company: "C", partner: "S", contact: "@", domain: "D", news: "N" }[type] || "I";
+  return { company: "C", partner: "S", contact: "@", domain: "D", news: "N", agency: "A", person: "P" }[type] || "I";
 }
 
 function renderInspector() {
@@ -754,11 +1408,28 @@ function wireEvents() {
 
   $("#search-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    runSearch($("#global-search").value).catch((error) => {
-      setLoading(false);
-      showInspectorMessage("Erro de consulta", error.message);
-    });
+    const raw = ($("#global-search").value || "").trim();
+    const digits = onlyDigits(raw);
+    if (digits.length === 14) {
+      // CNPJ -> investigação tradicional
+      runSearch(raw).catch((error) => {
+        setLoading(false);
+        showInspectorMessage("Erro de consulta", error.message);
+      });
+    } else if (raw.length >= 3) {
+      // Texto -> busca por palavra-chave nos atos do DOU
+      runKeywordSearch(raw).catch((error) => {
+        showInspectorMessage("Erro de busca", error.message);
+      });
+    } else {
+      showInspectorMessage("Busca", "Informe um CNPJ (14 dígitos) ou termo de busca (mín. 3 letras).");
+    }
   });
+
+  $("#dou-date")?.addEventListener("change", () => loadDouFeed());
+  $("#dou-agency")?.addEventListener("change", () => loadDouFeed());
+  $("#director-search")?.addEventListener("input", debounce(() => loadDirectors(), 300));
+  wireNatGraph();
 
   $("#open-dossier").addEventListener("click", () => setView("dossier"));
   $("#center-graph").addEventListener("click", centerGraph);
@@ -849,9 +1520,151 @@ function centerGraph() {
   renderGraph();
 }
 
+const TREND_MAX_CELLS = 12; // teto de quadradinhos por barra (cada um = bloco de atos)
+
+function renderTrendChart(series) {
+  const chart = $("#trend-chart");
+  if (!chart) return;
+  if (!series?.length) {
+    chart.innerHTML = `<p style="color:var(--faint);padding:20px">Sem atos no periodo. Rode a ingestao do DOU.</p>`;
+    return;
+  }
+  const maxTotal = Math.max(...series.map((d) => d.total), 1);
+  const scale = Math.min(1, TREND_MAX_CELLS / maxTotal);
+  chart.innerHTML = series.map((d) => {
+    const cell = (type, n) => Array.from({ length: Math.round(n * scale) }, () => `<i class="trend-cell ${type}"></i>`).join("");
+    const stack = cell("contrato", d.contrato) + cell("ato_pessoal", d.ato_pessoal) + cell("norma", d.norma);
+    const day = (d.date || "").slice(8, 10);
+    return `<div class="trend-col" title="${escapeHtml(d.date)}: ${d.total} atos">
+      <div class="trend-stack">${stack || '<i class="trend-cell" style="background:#222"></i>'}</div>
+      <span class="trend-x">${day}</span>
+    </div>`;
+  }).join("");
+}
+
+function renderSparkline(series) {
+  const el = $("#spark-docs");
+  if (!el || !series?.length) return;
+  const last = series.slice(-16);
+  const max = Math.max(...last.map((d) => d.total), 1);
+  el.innerHTML = last.map((d, i) => {
+    const h = Math.max(3, Math.round((d.total / max) * 34));
+    const hot = i >= last.length - 3 ? " hot" : "";
+    return `<i class="${hot.trim()}" style="height:${h}px"></i>`;
+  }).join("");
+}
+
+function renderRecentActs(items) {
+  const tbody = $("#recent-tbody");
+  if (!tbody) return;
+  if (!items?.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--faint)">Sem atos ingeridos. Rode <b>npm run ingest:dou</b>.</td></tr>`;
+    return;
+  }
+  const conf = (c) => {
+    if (c == null) return `<span class="conf-badge">regex</span>`;
+    const cls = c >= 0.8 ? "high" : c >= 0.5 ? "mid" : "";
+    return `<span class="conf-badge ${cls}">${Math.round(c * 100)}%</span>`;
+  };
+  tbody.innerHTML = items.map((it) => `
+    <tr>
+      <td><strong>${escapeHtml(it.agency || "?")}</strong></td>
+      <td><span class="tag ${escapeHtml(it.type || "ato")}">${escapeHtml((it.type || "ato").replace("_", " "))}</span></td>
+      <td>${it.link ? `<a href="${escapeHtml(it.link)}" target="_blank" rel="noreferrer" style="color:inherit">${escapeHtml(it.title)}</a>` : escapeHtml(it.title)}</td>
+      <td>${escapeHtml(it.date || "")}</td>
+      <td>${conf(it.confidence)}</td>
+    </tr>`).join("");
+}
+
+async function loadTrend(days = 30) {
+  const trend = await requestJson(`/api/intelligence?type=trend&days=${days}`).catch(() => null);
+  if (trend?.series) { renderTrendChart(trend.series); renderSparkline(trend.series); }
+  const docEl = $("#metric-docs");
+  if (docEl && trend) docEl.textContent = trend.total;
+}
+
+async function loadOverviewMetrics() {
+  try {
+    loadTrend(30);
+    requestJson("/api/intelligence?type=recent&limit=20").then((r) => renderRecentActs(r?.items)).catch(() => {});
+
+    const [score, daily] = await Promise.all([
+      requestJson("/api/intelligence?type=score").catch(() => null),
+      requestJson("/api/intelligence?type=daily").catch(() => null)
+    ]);
+    if (score?.scores) {
+      const people = score.scores.reduce((s, a) => s + a.active_directors, 0);
+      const alerts = score.scores.reduce((s, a) => s + a.open_alerts, 0);
+      const ppEl = $("#metric-people"), alEl = $("#metric-alerts");
+      if (ppEl) ppEl.textContent = people;
+      if (alEl) alEl.textContent = alerts;
+    }
+    const dailyEl = $("#overview-daily");
+    if (dailyEl && daily?.by_agency) {
+      const entries = Object.entries(daily.by_agency);
+      dailyEl.innerHTML = entries.length
+        ? entries.map(([ac, d]) => `<article class="news-card"><span class="source-meta">${escapeHtml(ac)}</span><strong>${d.normas} normas · ${d.pessoal} atos pessoal · ${d.contratos} contratos</strong>${(d.destaques||[]).slice(0,1).map(s=>`<p>${escapeHtml(s)}</p>`).join("")}</article>`).join("")
+        : emptyCard("Diario", "Nenhum ato nas ultimas 24h.");
+    }
+    const contracts = await requestJson("/api/intelligence?type=radar").catch(() => null);
+    if (contracts) {
+      const total = (contracts.radar?.["30d"]?.length || 0) + (contracts.radar?.["60d"]?.length || 0) + (contracts.radar?.["90d"]?.length || 0);
+      const el = $("#metric-contracts");
+      if (el) el.textContent = total;
+    }
+
+    const alertsData = await requestJson("/api/intelligence?type=alerts&limit=10").catch(() => null);
+    const alertsEl = $("#overview-alerts");
+    if (alertsEl && alertsData?.items?.length) {
+      alertsEl.innerHTML = alertsData.items.map((a) => `
+        <div class="activity-alert" data-alert-card="${escapeHtml(a.id)}" ${a.severity !== "high" ? 'style="border-color:var(--line);background:var(--card)"' : ""}>
+          <span class="alert-icon">${a.severity === "high" ? "⚠️" : "ℹ️"}</span>
+          <div style="flex:1;min-width:0">
+            <p style="margin:0;font-size:.78rem;font-weight:700">${escapeHtml(a.title || "")}</p>
+            ${a.body ? `<p style="margin:2px 0 0;font-size:.72rem;opacity:.65">${escapeHtml(a.body.slice(0, 120))}</p>` : ""}
+            <p style="margin:2px 0 0;font-size:.68rem;opacity:.45">${escapeHtml(a.alert_type || "")} · ${escapeHtml((a.created_at || "").slice(0, 10))}</p>
+            <div class="alert-actions">
+              <button type="button" class="alert-btn primary overview-alert-view">Ver atos</button>
+              <button type="button" class="alert-btn overview-alert-dismiss" data-alert-id="${escapeHtml(a.id)}">Dispensar</button>
+            </div>
+          </div>
+        </div>`).join("");
+      // Wire action buttons
+      alertsEl.querySelectorAll(".overview-alert-dismiss").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          btn.disabled = true; btn.textContent = "...";
+          await requestJson(`/api/intelligence?type=dismiss_alert&id=${encodeURIComponent(btn.dataset.alertId)}`).catch(() => {});
+          const card = alertsEl.querySelector(`[data-alert-card="${btn.dataset.alertId}"]`);
+          if (card) { card.style.transition = "opacity .3s"; card.style.opacity = "0"; setTimeout(() => card.remove(), 320); }
+        });
+      });
+      alertsEl.querySelectorAll(".overview-alert-view").forEach((btn) => {
+        btn.addEventListener("click", () => setView("dou"));
+      });
+      const alEl = $("#metric-alerts");
+      if (alEl) alEl.textContent = alertsData.items.length;
+    } else if (alertsEl) {
+      alertsEl.innerHTML = `<p style="color:var(--green);font-size:.85rem">✓ Nenhum alerta pendente.</p>`;
+    }
+  } catch { /* sem dados ainda */ }
+}
+
+function wireTrendToggle() {
+  const toggle = $("#trend-toggle");
+  if (!toggle) return;
+  toggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-days]");
+    if (!btn) return;
+    toggle.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
+    loadTrend(Number(btn.dataset.days));
+  });
+}
+
 function init() {
   renderAll();
   wireEvents();
+  wireTrendToggle();
+  loadOverviewMetrics();
 }
 
 init();

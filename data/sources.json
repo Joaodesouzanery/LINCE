@@ -17,11 +17,13 @@
   },
   {
     "name": "DOU",
-    "priority": 2,
+    "priority": 1,
     "method": "inlabs_xml_zip",
     "cadence": "daily",
-    "entities": ["document", "person", "agency"],
-    "url": "https://github.com/Imprensa-Nacional/inlabs"
+    "entities": ["document", "person", "agency", "alert"],
+    "url": "https://github.com/Imprensa-Nacional/inlabs",
+    "status": "connected",
+    "endpoints": ["/api/ingest-dou", "/api/dou-feed"]
   },
   {
     "name": "Receita Federal CNPJ",
@@ -37,7 +39,9 @@
     "method": "rest_api",
     "cadence": "daily_monthly",
     "entities": ["company", "person", "relationship", "alert"],
-    "url": "https://api.portaldatransparencia.gov.br/swagger-ui/index.html"
+    "url": "https://api.portaldatransparencia.gov.br/swagger-ui/index.html",
+    "status": "connected",
+    "endpoints": ["/api/dossier-person"]
   },
   {
     "name": "CNJ DataJud",
@@ -46,5 +50,25 @@
     "cadence": "continuous",
     "entities": ["company", "document", "relationship"],
     "url": "https://www.cnj.jus.br/sistemas/datajud/api-publica/"
+  },
+  {
+    "name": "PNCP",
+    "priority": 1,
+    "method": "rest_api",
+    "cadence": "weekly",
+    "entities": ["contract", "company", "agency", "relationship"],
+    "url": "https://pncp.gov.br/api/pncp/swagger-ui/index.html",
+    "status": "connected",
+    "endpoints": ["/api/ingest-pncp"]
+  },
+  {
+    "name": "TCU Jurisprudencia",
+    "priority": 3,
+    "method": "public_csv_dump",
+    "cadence": "monthly",
+    "entities": ["jurisprudence"],
+    "url": "https://sites.tcu.gov.br/dados-abertos/jurisprudencia/",
+    "status": "connected",
+    "endpoints": ["scripts/load-tcu.js"]
   }
 ]

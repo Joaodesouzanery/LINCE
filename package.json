@@ -1,0 +1,22 @@
+{
+  "name": "lince",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LINCE - Plataforma de Inteligencia Regulatoria Nacional",
+  "scripts": {
+    "db:setup": "node scripts/setup-db.js",
+    "db:agencies-cnpj": "node scripts/seed-agencies-cnpj.js",
+    "ingest:dou": "node scripts/run-ingest-dou.js",
+    "backfill:people": "node scripts/backfill-people.js",
+    "ingest:pncp": "node scripts/run-ingest-pncp.js",
+    "load:tcu": "node scripts/load-tcu.js",
+    "backfill:dou": "node scripts/backfill-dou.js",
+    "load:receita-socio": "node scripts/load-receita-socio.js",
+    "load:tse-filiacao": "node scripts/load-tse-filiacao.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "adm-zip": "^0.5.16",
+    "dotenv": "^16.4.5"
+  }
+}

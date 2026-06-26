@@ -3,57 +3,96 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>LINCE | Inteligencia Regulatoria</title>
+    <title>LINCE | Inteligência Regulatória</title>
     <meta
       name="description"
-      content="LINCE consulta fontes reais por CNPJ, monta grafo interativo e gera dossies sem dados ficticios."
+      content="LINCE consulta fontes reais por CNPJ, monta grafo interativo e gera dossiês sem dados fictícios."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar">
+      <aside class="sidebar" id="sidebar">
         <div class="brand">
           <span class="brand-icon">L</span>
-          <div>
+          <span class="nav-text brand-text">
             <strong>LINCE</strong>
-            <small>Inteligencia Regulatoria</small>
-          </div>
+            <small>Inteligência Regulatória</small>
+          </span>
         </div>
 
-        <nav class="nav-list" id="view-nav" aria-label="Navegacao principal">
-          <button class="nav-item active" type="button" data-view="overview">
-            <span>01</span>
-            Overview
+        <nav class="nav-list" id="view-nav" aria-label="Navegação principal">
+          <!-- Principal -->
+          <button class="nav-item active" type="button" data-view="overview" title="Overview">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            <span class="nav-text">Overview</span>
           </button>
-          <button class="nav-item" type="button" data-view="investigate">
-            <span>02</span>
-            Investigar
+          <button class="nav-item" type="button" data-view="intelligence" title="Inteligência">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+            <span class="nav-text">Inteligência</span>
           </button>
-          <button class="nav-item" type="button" data-view="dossier">
-            <span>03</span>
-            Dossie
+
+          <hr class="nav-sep" />
+
+          <!-- Monitoramento -->
+          <button class="nav-item" type="button" data-view="dou" title="Monitor DOU">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10l6 6v8a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+            <span class="nav-text">Monitor DOU</span>
           </button>
-          <button class="nav-item" type="button" data-view="sources">
-            <span>04</span>
-            Fontes reais
+          <button class="nav-item" type="button" data-view="directors" title="Diretores">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+            <span class="nav-text">Diretores</span>
+          </button>
+          <button class="nav-item" type="button" data-view="graph" title="Grafo Nacional">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>
+            <span class="nav-text">Grafo Nacional</span>
+          </button>
+
+          <hr class="nav-sep" />
+
+          <!-- Regulatório -->
+          <button class="nav-item" type="button" data-view="consultas" title="Consultas">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+            <span class="nav-text">Consultas</span>
+          </button>
+          <button class="nav-item" type="button" data-view="agenda" title="Agenda">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+            <span class="nav-text">Agenda</span>
+          </button>
+
+          <hr class="nav-sep" />
+
+          <!-- Investigação -->
+          <button class="nav-item" type="button" data-view="investigate" title="Investigar CNPJ">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+            <span class="nav-text">Investigar CNPJ</span>
+          </button>
+          <button class="nav-item" type="button" data-view="dossier" title="Dossiê">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>
+            <span class="nav-text">Dossiê</span>
+          </button>
+          <button class="nav-item" type="button" data-view="sources" title="Fontes">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+            <span class="nav-text">Fontes</span>
           </button>
         </nav>
 
-        <div class="sidebar-section">
-          <p>Fontes no MVP</p>
-          <div class="mini-status"><i class="ok"></i>CNPJ.ws proxy</div>
-          <div class="mini-status"><i class="ok"></i>Registro.br RDAP</div>
-          <div class="mini-status"><i class="ok"></i>Google News RSS</div>
-          <div class="mini-status"><i class="warn"></i>DataJud com chave</div>
-          <div class="mini-status"><i class="wait"></i>PGFN dump</div>
-        </div>
+        <div class="sidebar-bottom">
+          <div class="sidebar-section">
+            <div class="mini-status" title="DOU / INLABS"><i class="ok"></i><span class="nav-text">DOU / INLABS</span></div>
+            <div class="mini-status" title="PNCP Contratos"><i class="ok"></i><span class="nav-text">PNCP Contratos</span></div>
+            <div class="mini-status" title="Portal Transparência"><i class="ok"></i><span class="nav-text">Portal Transparência</span></div>
+            <div class="mini-status" title="CNPJ.ws + RDAP"><i class="ok"></i><span class="nav-text">CNPJ.ws + RDAP</span></div>
+            <div class="mini-status" title="DataJud (chave necessária)"><i class="warn"></i><span class="nav-text">DataJud (chave)</span></div>
+            <div class="mini-status" title="TCU (CSV manual)"><i class="warn"></i><span class="nav-text">TCU (CSV manual)</span></div>
+          </div>
 
-        <div class="user-card">
-          <span class="avatar">RI</span>
-          <div>
-            <strong>Real-only mode</strong>
-            <small>Sem dados ficticios</small>
+          <div class="user-card">
+            <span class="avatar">RI</span>
+            <span class="nav-text user-info">
+              <strong>Real-only mode</strong>
+              <small>Sem dados fictícios</small>
+            </span>
           </div>
         </div>
       </aside>
@@ -73,7 +112,7 @@
             <input
               id="global-search"
               inputmode="numeric"
-              placeholder="Digite um CNPJ real. Ex: 00000000000191"
+              placeholder="CNPJ (14 dígitos) ou termo de busca nos atos do DOU"
               autocomplete="off"
             />
             <button type="submit">Consultar</button>
@@ -81,70 +120,142 @@
 
           <div class="top-actions">
             <button class="ghost-button" type="button" id="center-graph">Centralizar</button>
-            <button class="primary-button" type="button" id="open-dossier">Gerar dossie</button>
+            <button class="primary-button" type="button" id="open-dossier">Gerar dossiê</button>
           </div>
         </header>
 
         <section class="view active" id="view-overview">
           <div class="metric-grid">
             <article class="metric-card">
-              <span>Fonte real ativa</span>
-              <strong id="metric-connected">3</strong>
-              <small>CNPJ.ws, RDAP, News RSS</small>
+              <span>Atos DOU ingeridos</span>
+              <strong id="metric-docs">-</strong>
+              <div class="metric-spark" id="spark-docs"></div>
             </article>
             <article class="metric-card">
-              <span>Exigem chave</span>
-              <strong id="metric-keys">2</strong>
-              <small>DataJud e Portal da Transparencia</small>
+              <span>Diretores mapeados</span>
+              <strong id="metric-people">-</strong>
+              <small>Extraídos de atos de pessoal</small>
             </article>
             <article class="metric-card">
-              <span>Pendente ingestao</span>
-              <strong id="metric-pending">3</strong>
-              <small>PGFN, ANEEL/ARTESP, DOU</small>
+              <span>Contratos PNCP</span>
+              <strong id="metric-contracts">-</strong>
+              <small>Por agências reguladoras</small>
             </article>
             <article class="metric-card">
-              <span>Ultima consulta</span>
-              <strong id="metric-last">-</strong>
-              <small id="metric-last-label">Nenhum CNPJ consultado</small>
+              <span>Alertas abertos</span>
+              <strong id="metric-alerts">-</strong>
+              <small id="metric-alerts-label">Nomeações e normas críticas</small>
             </article>
           </div>
+
+          <section class="panel trend-panel" style="margin-bottom:16px">
+            <div class="panel-header">
+              <div>
+                <p class="kicker">Tendência regulatória</p>
+                <h2>Atos publicados no DOU</h2>
+              </div>
+              <div class="period-toggle" id="trend-toggle">
+                <button type="button" data-days="14">14d</button>
+                <button type="button" data-days="30" class="active">30d</button>
+                <button type="button" data-days="90">90d</button>
+              </div>
+            </div>
+            <div style="padding:16px">
+              <div class="trend-legend">
+                <span><i style="background:var(--accent)"></i>Normas</span>
+                <span><i style="background:var(--purple)"></i>Atos de pessoal</span>
+                <span><i style="background:var(--yellow)"></i>Contratos</span>
+              </div>
+              <div class="trend-chart" id="trend-chart"></div>
+            </div>
+          </section>
 
           <div class="overview-grid">
             <section class="panel">
               <div class="panel-header">
                 <div>
-                  <p class="kicker">Como usar</p>
-                  <h2>Comece por um CNPJ real</h2>
+                  <p class="kicker">Últimos atos</p>
+                  <h2>Atos recentes</h2>
                 </div>
               </div>
-              <div class="empty-guide">
-                <p>
-                  O LINCE agora nao carrega dados ficticios. Informe um CNPJ e o sistema consulta
-                  fontes reais. O que nao estiver conectado aparece como pendente, sem inventar resultado.
-                </p>
-                <div class="guide-row">
-                  <span>1</span>
-                  <p>CNPJ.ws preenche informacoes basicas, CNAEs, socios, endereco, telefone e email quando a fonte retornar.</p>
-                </div>
-                <div class="guide-row">
-                  <span>2</span>
-                  <p>Registro.br RDAP tenta encontrar dominios .br vinculados ao CNPJ.</p>
-                </div>
-                <div class="guide-row">
-                  <span>3</span>
-                  <p>RSS de noticias busca publicacoes recentes sobre o alvo para alimentar alertas.</p>
-                </div>
+              <div style="overflow-x:auto">
+                <table class="data-table" id="recent-table">
+                  <thead>
+                    <tr><th>Agência</th><th>Tipo</th><th>Ato</th><th>Data</th><th>Confiança</th></tr>
+                  </thead>
+                  <tbody id="recent-tbody"></tbody>
+                </table>
               </div>
             </section>
 
             <section class="panel">
               <div class="panel-header">
                 <div>
-                  <p class="kicker">Status por fonte</p>
-                  <h2>O que esta conectado</h2>
+                  <p class="kicker">Resumo do dia</p>
+                  <h2>Inteligência diária</h2>
                 </div>
               </div>
-              <div class="status-list" id="overview-source-list"></div>
+              <div class="news-list" id="overview-daily"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Alertas automáticos</p>
+                  <h2>Alertas recentes</h2>
+                </div>
+              </div>
+              <div id="overview-alerts"><p style="opacity:.5;font-size:.85rem">Carregando alertas...</p></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-intelligence">
+          <div class="sources-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Score de risco por agência</p>
+                  <h2>Mapa de poder regulatório</h2>
+                </div>
+              </div>
+              <div class="news-list" id="intel-score"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Contratos a vencer</p>
+                  <h2>Radar 30 / 60 / 90 dias</h2>
+                </div>
+              </div>
+              <div class="news-list" id="intel-radar"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-consultas">
+          <div class="sources-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Oportunidades abertas (M5)</p>
+                  <h2>Consultas e audiências públicas</h2>
+                </div>
+              </div>
+              <div class="news-list" id="consultas-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-agenda">
+          <div class="sources-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Calendário regulatório (M8)</p>
+                  <h2>Pautas e reuniões</h2>
+                </div>
+              </div>
+              <div class="news-list" id="agenda-list"></div>
             </section>
           </div>
         </section>
@@ -154,7 +265,7 @@
             <section class="panel graph-panel">
               <div class="panel-header graph-header">
                 <div>
-                  <p class="kicker">Grafo de vinculos</p>
+                  <p class="kicker">Grafo de vínculos</p>
                   <h2 id="graph-title">Aguardando CNPJ</h2>
                 </div>
                 <div class="graph-tools">
@@ -180,7 +291,7 @@
               <div class="panel-header">
                 <div>
                   <p class="kicker">Detalhes</p>
-                  <h2 id="inspector-title">Sem selecao</h2>
+                  <h2 id="inspector-title">Sem seleção</h2>
                 </div>
               </div>
               <div class="inspector-body" id="inspector-body"></div>
@@ -192,10 +303,10 @@
           <section class="panel dossier-panel">
             <div class="dossier-cover">
               <div>
-                <p class="kicker">Dossie real-only</p>
+                <p class="kicker">Dossiê real-only</p>
                 <h2 id="dossier-title">Nenhum alvo consultado</h2>
                 <p id="dossier-summary">
-                  As secoes abaixo so serao preenchidas quando houver dado retornado por fonte real.
+                  As seções abaixo só serão preenchidas quando houver dado retornado por fonte real.
                 </p>
               </div>
               <div class="dossier-badge">
@@ -222,12 +333,87 @@
             <section class="panel">
               <div class="panel-header">
                 <div>
-                  <p class="kicker">Noticias reais</p>
+                  <p class="kicker">Notícias reais</p>
                   <h2>RSS por consulta</h2>
                 </div>
               </div>
               <div class="news-list" id="news-list"></div>
             </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-dou">
+          <div class="sources-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Atos das agências reguladoras</p>
+                  <h2>Diário Oficial da União</h2>
+                </div>
+                <div class="graph-tools">
+                  <select id="dou-agency" class="dou-date"><option value="">Todas as agências</option></select>
+                  <input id="dou-date" type="date" class="dou-date" />
+                </div>
+              </div>
+              <div class="news-list" id="dou-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-directors">
+          <div class="sources-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Dossiê de dirigentes (M3)</p>
+                  <h2>Diretores das agências</h2>
+                </div>
+                <input id="director-search" type="search" class="dou-date" placeholder="Buscar por nome" />
+              </div>
+              <div class="news-list" id="directors-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-graph">
+          <div class="investigation-grid">
+            <section class="panel graph-panel">
+              <div class="panel-header graph-header">
+                <div>
+                  <p class="kicker">Rede de influência (M7)</p>
+                  <h2 id="nat-graph-title">Grafo Nacional</h2>
+                </div>
+                <div class="graph-tools">
+                  <select id="graph-agency" class="dou-date" style="width:150px"></select>
+                  <input id="graph-search" type="search" class="dou-date" placeholder="Buscar no grafo" style="width:130px" />
+                  <label class="type-toggle"><input type="checkbox" class="graph-type" value="agency" checked /> Agências</label>
+                  <label class="type-toggle"><input type="checkbox" class="graph-type" value="person" checked /> Pessoas</label>
+                  <label class="type-toggle"><input type="checkbox" class="graph-type" value="company" checked /> Empresas</label>
+                  <button type="button" id="nat-zoom-out">-</button>
+                  <button type="button" id="nat-zoom-in">+</button>
+                  <button type="button" id="nat-reset-graph">Reset</button>
+                </div>
+              </div>
+              <div class="graph-canvas" id="nat-graph-canvas">
+                <div class="graph-stage" id="nat-graph-stage">
+                  <svg id="nat-edge-layer" class="edge-layer"></svg>
+                  <div id="nat-node-layer" class="node-layer"></div>
+                </div>
+                <div class="graph-empty" id="nat-graph-empty">
+                  <strong>Grafo Nacional vazio</strong>
+                  <p>Rode as ingestões (DOU, pessoas, PNCP) para popular o grafo de conexões reais.</p>
+                </div>
+              </div>
+            </section>
+            <aside class="panel inspector">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Entidade selecionada</p>
+                  <h2 id="nat-inspector-title">Sem seleção</h2>
+                </div>
+              </div>
+              <div class="inspector-body" id="nat-inspector-body"></div>
+            </aside>
           </div>
         </section>
       </main>
