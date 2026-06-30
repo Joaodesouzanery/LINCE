@@ -64,9 +64,10 @@ module.exports = async function handler(req, res) {
         agency: d.agencies?.acronym || d.metadata?.agency_acronym || "?",
         summary: d.metadata?.ai_summary || null,
         confidence: d.metadata?.ai_confidence ?? null,
+        origin: d.metadata?.ai_summary ? "ia" : "regex",
         link: d.source_url
       }));
-      return res.status(200).json({ ok: true, type: "recent", items });
+      return res.status(200).json({ ok: true, type: "recent", truncated: (docs || []).length >= limit, items });
     }
 
     if (type === "daily") {
@@ -89,7 +90,7 @@ module.exports = async function handler(req, res) {
         else if (d.document_type === "contrato") byAgency[ac].contratos++;
         if (d.metadata?.ai_summary) byAgency[ac].destaques.push(d.metadata.ai_summary);
       }
-      return res.status(200).json({ ok: true, type: "daily", date: since, by_agency: byAgency });
+      return res.status(200).json({ ok: true, type: "daily", date: since, truncated: (docs || []).length >= 50, by_agency: byAgency });
     }
 
     if (type === "score") {

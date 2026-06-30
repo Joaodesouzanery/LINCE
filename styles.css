@@ -730,7 +730,10 @@ h1 {
 
 .inspector {
   align-self: start;
-  min-height: calc(100vh - 134px);
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
 }
 
 .detail-card,
@@ -1095,3 +1098,81 @@ h1 {
 .conf-badge { font-size: 11px; color: var(--faint); }
 .conf-badge.high { color: var(--green); }
 .conf-badge.mid { color: var(--yellow); }
+
+/* ════════════ Grafo de vínculos (Cytoscape.js) ════════════ */
+.graph-canvas { cursor: default; }
+.graph-cy {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Legenda interativa = filtro por tipo de nó e de vínculo. */
+.graph-legend {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  max-width: 230px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(10, 13, 18, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  backdrop-filter: blur(6px);
+  z-index: 6;
+  font-size: 11px;
+}
+.graph-legend.hidden { display: none; }
+.legend-group { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.legend-h {
+  width: 100%;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 9.5px;
+  font-weight: 800;
+  margin-bottom: 2px;
+}
+.legend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #11151c;
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+  transition: opacity .15s, border-color .15s;
+}
+.legend-chip:hover { border-color: var(--blue); }
+.legend-chip i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.legend-chip.off { opacity: 0.4; text-decoration: line-through; }
+
+/* Tooltip do grafo (hover em nó/aresta). */
+.graph-tip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  max-width: 260px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(8, 11, 16, 0.96);
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.45);
+  font-size: 11.5px;
+  line-height: 1.35;
+  display: grid;
+  gap: 1px;
+}
+.graph-tip strong { color: var(--text); }
+.graph-tip span { color: var(--muted); font-size: 10.5px; }
+
+@media (max-width: 760px) {
+  .graph-legend { max-width: 160px; top: 8px; right: 8px; }
+}

@@ -25,7 +25,10 @@ module.exports = async function handler(req, res) {
       link: d.source_url,
       agency: d.agencies?.acronym || d.metadata?.agency_acronym || null,
       summary: d.metadata?.ai_summary || null,
-      entities: d.metadata?.ai_entities || []
+      entities: d.metadata?.ai_entities || [],
+      // Proveniencia para o front: IA (resumo gerado) x regex (so extracao).
+      origin: d.metadata?.ai_summary ? "ia" : "regex",
+      confidence: d.metadata?.ai_confidence ?? null
     }));
 
     if (req.query.agency) {
@@ -33,7 +36,8 @@ module.exports = async function handler(req, res) {
       items = items.filter((i) => i.agency === acr);
     }
 
-    return res.status(200).json({ ok: true, source: "DOU", fetchedAt: new Date().toISOString(), items });
+    const truncated = (data || []).length >= 100;
+    return res.status(200).json({ ok: true, source: "DOU", fetchedAt: new Date().toISOString(), truncated, items });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message, source: "DOU" });
   }

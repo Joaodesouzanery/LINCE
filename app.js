@@ -88,6 +88,7 @@ const state = {
   dossier: {},
   news: [],
   sources: {},
+  graphView: null,
   transform: { x: 80, y: 60, scale: 1 },
   drag: null,
   pan: null
@@ -98,6 +99,186 @@ const $ = (selector) => document.querySelector(selector);
 function debounce(fn, ms) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+// ════════════════════════ Grafo de vínculos (Cytoscape.js) ════════════════════
+// Controlador único compartilhado pelos dois grafos (Investigar CNPJ e Grafo
+// Nacional). Carrega via CDN (script no index.html). Estilo por tipo de nó e por
+// tipo/forca de vínculo, legenda interativa (= filtro), busca, fit e expansão.
+const NODE_TYPE_META = {
+  company:      { color: "#4e8cff", label: "Empresa" },
+  agency:       { color: "#b48bff", label: "Agência" },
+  person:       { color: "#61c46e", label: "Pessoa" },
+  partner:      { color: "#61c46e", label: "Sócio" },
+  contact:      { color: "#8d7bff", label: "Contato" },
+  domain:       { color: "#d7ad4f", label: "Domínio" },
+  news:         { color: "#ef6760", label: "Notícia" },
+  party:        { color: "#e879b0", label: "Partido" },
+  deliberation: { color: "#38bdb0", label: "Deliberação" },
+  process:      { color: "#e0843d", label: "Processo" },
+  contract:     { color: "#c9a227", label: "Contrato" }
+};
+const nodeColor = (t) => (NODE_TYPE_META[t] || { color: "#7b8794" }).color;
+const nodeTypeLabel = (t) => (NODE_TYPE_META[t] || { label: t }).label;
+
+const REL_META = {
+  socio: { color: "#4e8cff", style: "solid" }, Socio: { color: "#4e8cff", style: "solid" },
+  owns: { color: "#4e8cff", style: "solid" },
+  mandato: { color: "#61c46e", style: "solid" }, employs: { color: "#61c46e", style: "solid" },
+  Contato: { color: "#8d7bff", style: "dashed" }, Dominio: { color: "#d7ad4f", style: "dashed" },
+  "Citado em noticia": { color: "#ef6760", style: "dotted" },
+  filiacao: { color: "#e879b0", style: "solid" }, doacao: { color: "#e879b0", style: "dashed" },
+  reported: { color: "#c9a227", style: "solid" }, Contrato: { color: "#c9a227", style: "solid" },
+  Processo: { color: "#e0843d", style: "solid" },
+  relatou: { color: "#38bdb0", style: "solid" }, votou: { color: "#38bdb0", style: "dashed" },
+  delibera: { color: "#38bdb0", style: "solid" }, afeta: { color: "#38bdb0", style: "dotted" }
+};
+const relColor = (r) => (REL_META[r] || { color: "#5e6470" }).color;
+const relStyle = (r) => (REL_META[r] || { style: "solid" }).style;
+
+let CY_LAYOUT = "cose";
+(function registerCyLayout() {
+  try {
+    if (window.cytoscape && window.cytoscapeFcose) { window.cytoscape.use(window.cytoscapeFcose); CY_LAYOUT = "fcose"; }
+  } catch { /* fallback p/ 'cose' embutido */ }
+})();
+
+const CY_STYLE = [
+  { selector: "node", style: {
+    "background-color": "data(color)", "label": "data(label)", "color": "#e8eef7",
+    "font-size": 11, "font-weight": 600, "text-wrap": "ellipsis", "text-max-width": 140,
+    "text-valign": "center", "text-halign": "right", "text-margin-x": 6,
+    "width": "data(size)", "height": "data(size)", "border-width": 2, "border-color": "#0b0e13", "shape": "ellipse"
+  } },
+  { selector: "node.central", style: { "border-color": "#ffffff", "border-width": 3, "font-size": 12, "font-weight": 800 } },
+  { selector: "node:selected", style: { "border-color": "#ffd166", "border-width": 4 } },
+  { selector: "node.dim", style: { "opacity": 0.12 } },
+  { selector: "node.hidden", style: { "display": "none" } },
+  { selector: "node.highlight", style: { "border-color": "#ffd166", "border-width": 4 } },
+  { selector: "edge", style: {
+    "width": "data(w)", "line-color": "data(lineColor)", "line-style": "data(lineStyle)", "opacity": "data(op)",
+    "curve-style": "bezier", "target-arrow-shape": "triangle", "target-arrow-color": "data(lineColor)", "arrow-scale": 0.7
+  } },
+  { selector: "edge.dim", style: { "opacity": 0.05 } },
+  { selector: "edge.hidden", style: { "display": "none" } }
+];
+
+// Tooltip único reaproveitado por todos os grafos.
+let _graphTip = null;
+function graphTip() {
+  if (!_graphTip) { _graphTip = document.createElement("div"); _graphTip.className = "graph-tip"; _graphTip.style.display = "none"; document.body.appendChild(_graphTip); }
+  return _graphTip;
+}
+function hideGraphTip() { if (_graphTip) _graphTip.style.display = "none"; }
+
+function cyElements(nodes, edges) {
+  const ids = new Set(nodes.map((n) => n.id));
+  const els = [];
+  for (const n of nodes) {
+    els.push({ data: { id: n.id, label: n.title || n.id, sub: n.subtitle || "", type: n.type, color: nodeColor(n.type), size: n.central ? 30 : 20 }, classes: n.central ? "central" : "" });
+  }
+  const seen = new Set();
+  for (const e of edges) {
+    const from = e.from ?? e[0], to = e.to ?? e[1], rel = e.relationship ?? e[2] ?? "";
+    const weight = e.weight ?? e[3] ?? null;
+    if (!ids.has(from) || !ids.has(to)) continue;
+    const id = `e:${from}->${to}:${rel}`;
+    if (seen.has(id)) continue; seen.add(id);
+    const cw = weight == null ? null : Math.max(0, Math.min(1, Number(weight)));
+    els.push({ data: { id, source: from, target: to, rel, weight,
+      w: cw == null ? 2 : 1.5 + cw * 3.5, op: cw == null ? 0.85 : 0.45 + cw * 0.55,
+      lineColor: relColor(rel), lineStyle: relStyle(rel) } });
+  }
+  return els;
+}
+
+// Cria um controlador de grafo ligado a um container. Retorna metodos imperativos.
+function createGraphView({ container, legendEl, onSelect, onExpand }) {
+  let cy = null;
+  const disabledTypes = new Set();
+  const disabledRels = new Set();
+
+  function ensure() {
+    if (cy || !container || !window.cytoscape) return cy;
+    cy = window.cytoscape({ container, elements: [], style: CY_STYLE, layout: { name: "preset" }, minZoom: 0.15, maxZoom: 3, wheelSensitivity: 0.25 });
+    cy.on("tap", "node", (evt) => onSelect && onSelect(evt.target.id()));
+    if (onExpand) cy.on("dbltap", "node", (evt) => onExpand(evt.target.id()));
+    cy.on("mouseover", "node", (evt) => {
+      const d = evt.target.data(), el = graphTip();
+      el.innerHTML = `<strong>${escapeHtml(d.label || "")}</strong><span>${escapeHtml(nodeTypeLabel(d.type))}${d.sub ? " · " + escapeHtml(d.sub) : ""}</span>`;
+      positionTip(evt);
+    });
+    cy.on("mouseover", "edge", (evt) => {
+      const d = evt.target.data(), el = graphTip();
+      const conf = d.weight == null ? "" : ` · confiança ~${Math.round(Math.max(0, Math.min(1, d.weight)) * 100)}%`;
+      el.innerHTML = `<strong>${escapeHtml(d.rel || "vínculo")}</strong><span>${conf}</span>`;
+      positionTip(evt);
+    });
+    cy.on("mouseout", hideGraphTip);
+    cy.on("pan zoom drag", hideGraphTip);
+    return cy;
+  }
+  function positionTip(evt) {
+    const el = graphTip(), rect = container.getBoundingClientRect(), p = evt.renderedPosition || { x: 0, y: 0 };
+    el.style.left = (rect.left + p.x + 14) + "px"; el.style.top = (rect.top + p.y + 6) + "px"; el.style.display = "block";
+  }
+  function runLayout() {
+    if (!cy || cy.elements().length === 0) return;
+    const opts = { name: CY_LAYOUT, animate: false, fit: true, padding: 36 };
+    if (CY_LAYOUT === "fcose") Object.assign(opts, { quality: "default", nodeRepulsion: 9000, idealEdgeLength: 130, nodeSeparation: 90, randomize: true });
+    else Object.assign(opts, { nodeRepulsion: 9000, idealEdgeLength: 130 });
+    cy.layout(opts).run();
+  }
+  function applyFilters() {
+    if (!cy) return;
+    cy.batch(() => {
+      cy.nodes().forEach((n) => n.toggleClass("hidden", disabledTypes.has(n.data("type"))));
+      cy.edges().forEach((e) => e.toggleClass("hidden", disabledRels.has(e.data("rel")) || e.source().hasClass("hidden") || e.target().hasClass("hidden")));
+    });
+  }
+  function renderLegend() {
+    if (!legendEl || !cy) return;
+    const types = [...new Set(cy.nodes().map((n) => n.data("type")))];
+    const rels = [...new Set(cy.edges().map((e) => e.data("rel")).filter(Boolean))].sort();
+    legendEl.innerHTML =
+      `<div class="legend-group"><span class="legend-h">Tipos</span>${types.map((t) =>
+        `<button type="button" class="legend-chip${disabledTypes.has(t) ? " off" : ""}" data-tfilter="${escapeHtml(t)}"><i style="background:${nodeColor(t)}"></i>${escapeHtml(nodeTypeLabel(t))}</button>`).join("")}</div>` +
+      (rels.length ? `<div class="legend-group"><span class="legend-h">Vínculos</span>${rels.map((r) =>
+        `<button type="button" class="legend-chip${disabledRels.has(r) ? " off" : ""}" data-rfilter="${escapeHtml(r)}"><i style="background:${relColor(r)}"></i>${escapeHtml(r)}</button>`).join("")}</div>` : "");
+  }
+  if (legendEl) legendEl.addEventListener("click", (ev) => {
+    const t = ev.target.closest("[data-tfilter]"), r = ev.target.closest("[data-rfilter]");
+    if (t) { const v = t.dataset.tfilter; disabledTypes.has(v) ? disabledTypes.delete(v) : disabledTypes.add(v); }
+    if (r) { const v = r.dataset.rfilter; disabledRels.has(v) ? disabledRels.delete(v) : disabledRels.add(v); }
+    if (t || r) { applyFilters(); renderLegend(); }
+  });
+
+  return {
+    cy: () => cy,
+    setElements(nodes, edges) {
+      if (!ensure()) return;
+      cy.elements().remove();
+      cy.add(cyElements(nodes, edges));
+      cy.resize();
+      runLayout();
+      applyFilters();
+      renderLegend();
+    },
+    fit() { if (cy) cy.animate({ fit: { padding: 36 } }, { duration: 250 }); },
+    zoomBy(f) { if (cy) cy.zoom({ level: cy.zoom() * f, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); },
+    reset() { if (!cy) return; disabledTypes.clear(); disabledRels.clear(); cy.elements().removeClass("hidden dim highlight"); runLayout(); renderLegend(); },
+    select(id) { if (!cy) return; cy.$(":selected").unselect(); const el = cy.getElementById(id); if (el && el.length) el.select(); },
+    search(term) {
+      if (!cy) return;
+      const t = (term || "").trim().toLowerCase();
+      cy.nodes().removeClass("highlight dim");
+      if (!t) return;
+      const matches = cy.nodes().filter((n) => (n.data("label") || "").toLowerCase().includes(t) || (n.data("sub") || "").toLowerCase().includes(t));
+      if (!matches.length) return;
+      cy.nodes().addClass("dim"); matches.removeClass("dim").addClass("highlight");
+      cy.animate({ fit: { eles: matches, padding: 90 } }, { duration: 300 });
+    }
+  };
 }
 
 const realDataProvider = {
@@ -260,7 +441,7 @@ async function runSearch(cnpjInput) {
   const transparency = transparencyResult.ok ? transparencyResult.value.items || [] : [];
 
   buildDossier(company, domains, state.news, processes, transparency);
-  buildGraph(company, domains, state.news);
+  buildGraph(company, domains, state.news, processes, transparency);
   renderAll();
   setLoading(false);
 }
@@ -608,7 +789,7 @@ function compactItems(items) {
   return items.filter((entry) => !entry.empty);
 }
 
-function buildGraph(company, domains, news) {
+function buildGraph(company, domains, news, processes = [], transparency = []) {
   const nodes = [];
   const edges = [];
   nodes.push({
@@ -616,8 +797,6 @@ function buildGraph(company, domains, news) {
     type: "company",
     title: company.legalName || formatCnpj(company.cnpj),
     subtitle: formatCnpj(company.cnpj),
-    x: 120,
-    y: 190,
     central: true,
     status: company.status || "Conectado",
     fields: [
@@ -631,75 +810,50 @@ function buildGraph(company, domains, news) {
   company.partners.slice(0, 10).forEach((partner, index) => {
     const id = `partner-${index}`;
     nodes.push({
-      id,
-      type: "partner",
+      id, type: "partner",
       title: partner.name || "Socio sem nome",
       subtitle: partner.qualification || "QSA",
-      x: 520,
-      y: 90 + index * 108,
       status: "QSA",
       fields: [["Fonte", "CNPJ.ws"], ["Entrada", partner.entryDate || "Sem dado"]]
     });
-    edges.push(["company", id, "Socio"]);
+    edges.push(["company", id, "Socio", 0.9]);
   });
 
   company.phones.forEach((phone, index) => {
     const id = `phone-${index}`;
-    nodes.push({
-      id,
-      type: "contact",
-      title: "Telefone",
-      subtitle: phone,
-      x: 870,
-      y: 90 + index * 108,
-      status: "Fonte publica",
-      fields: [["Fonte", "CNPJ.ws"]]
-    });
-    edges.push(["company", id, "Contato"]);
+    nodes.push({ id, type: "contact", title: "Telefone", subtitle: phone, status: "Fonte publica", fields: [["Fonte", "CNPJ.ws"]] });
+    edges.push(["company", id, "Contato", 0.7]);
   });
 
   if (company.email) {
-    nodes.push({
-      id: "email",
-      type: "contact",
-      title: "Email",
-      subtitle: company.email,
-      x: 870,
-      y: 305,
-      status: "Fonte publica",
-      fields: [["Fonte", "CNPJ.ws"]]
-    });
-    edges.push(["company", "email", "Contato"]);
+    nodes.push({ id: "email", type: "contact", title: "Email", subtitle: company.email, status: "Fonte publica", fields: [["Fonte", "CNPJ.ws"]] });
+    edges.push(["company", "email", "Contato", 0.7]);
   }
 
   domains.slice(0, 8).forEach((domain, index) => {
     const id = `domain-${index}`;
-    nodes.push({
-      id,
-      type: "domain",
-      title: domain.name,
-      subtitle: domain.aggregate ? "Contagem RDAP" : "Registro.br RDAP",
-      x: 240 + index * 150,
-      y: 610,
-      status: "RDAP",
-      fields: [["Fonte", "Registro.br"]]
-    });
-    edges.push(["company", id, "Dominio"]);
+    nodes.push({ id, type: "domain", title: domain.name, subtitle: domain.aggregate ? "Contagem RDAP" : "Registro.br RDAP", status: "RDAP", fields: [["Fonte", "Registro.br"]] });
+    edges.push(["company", id, "Dominio", 0.6]);
   });
 
-  news.slice(0, 4).forEach((newsItem, index) => {
+  news.slice(0, 6).forEach((newsItem, index) => {
     const id = `news-${index}`;
-    nodes.push({
-      id,
-      type: "news",
-      title: newsItem.title,
-      subtitle: newsItem.source,
-      x: 240 + index * 250,
-      y: 20,
-      status: "RSS",
-      fields: [["Data", newsItem.date || "Sem data"], ["Fonte", "Google News RSS"]]
-    });
-    edges.push([id, "company", "Citado em noticia"]);
+    nodes.push({ id, type: "news", title: newsItem.title, subtitle: newsItem.source, status: "RSS", fields: [["Data", newsItem.date || "Sem data"], ["Fonte", "Google News RSS"]] });
+    edges.push([id, "company", "Citado em noticia", 0.5]);
+  });
+
+  // Processos judiciais (DataJud) — antes eram buscados mas descartados do grafo.
+  (processes || []).slice(0, 12).forEach((proc, index) => {
+    const id = `process-${index}`;
+    nodes.push({ id, type: "process", title: proc.title || "Processo", subtitle: proc.description || "CNJ DataJud", status: "DataJud", fields: [["Fonte", "CNJ DataJud"]] });
+    edges.push(["company", id, "Processo", 0.8]);
+  });
+
+  // Contratos/recebimentos públicos (Portal da Transparência) — idem.
+  (transparency || []).slice(0, 12).forEach((c, index) => {
+    const id = `contract-${index}`;
+    nodes.push({ id, type: "contract", title: c.title || "Contrato público", subtitle: c.description || "Portal da Transparência", status: "Transparência", fields: [["Fonte", "Portal da Transparência"]] });
+    edges.push(["company", id, "Contrato", 0.8]);
   });
 
   state.graphNodes = nodes;
@@ -888,23 +1042,22 @@ const natGraph = {
   edges: [],
   expanded: new Set(),
   centerId: null,
+  graphView: null,
   transform: { x: 80, y: 60, scale: 0.7 },
   selectedId: null,
   drag: null,
   pan: null
 };
 
-const NAT_EXPAND_LIMIT = 25; // vizinhos revelados por expansao (legibilidade).
+const NAT_EXPAND_LIMIT = 80; // teto de vizinhos por expansao (legibilidade do grafo).
 
 // Reconstroi nodes/edges visiveis a partir do dataset completo e do conjunto expanded.
 function rebuildNatVisible() {
   const allById = Object.fromEntries(natGraph.allNodes.map((n) => [n.id, n]));
   const visible = new Set();
   if (natGraph.centerId) visible.add(natGraph.centerId);
-  // Para cada no expandido, revela seus vizinhos diretos (ate o limite por no).
   for (const srcId of natGraph.expanded) {
     visible.add(srcId);
-    // Deduplica: usa Set para garantir vizinhos únicos (evita duplicatas de arestas no banco).
     const uniqueNeighbors = [...new Set(
       natGraph.allEdges
         .filter((e) => e.from === srcId || e.to === srcId)
@@ -913,82 +1066,40 @@ function rebuildNatVisible() {
     )];
     uniqueNeighbors.slice(0, NAT_EXPAND_LIMIT).forEach((id) => visible.add(id));
   }
-  natGraph.nodes = [...visible].map((id) => mapGraphNode(allById[id])).filter(Boolean);
+  natGraph.nodes = [...visible].map((id) => allById[id]).filter(Boolean)
+    .map((n) => ({ id: n.id, type: n.type, title: n.title, subtitle: n.subtitle || "", central: n.id === natGraph.centerId }));
   const visibleSet = new Set(visible);
-  natGraph.edges = natGraph.allEdges
-    .filter((e) => visibleSet.has(e.from) && visibleSet.has(e.to))
-    .map((e) => [e.from, e.to, e.relationship]);
-  layoutNatNodes(natGraph.nodes);
-  applyGraphFilters();
+  natGraph.edges = natGraph.allEdges.filter((e) => visibleSet.has(e.from) && visibleSet.has(e.to));
+  renderNatGraph();
 }
 
-function natNodeWidth(node) { return node.type === "agency" ? 270 : 238; }
-
-function layoutNatNodes(nodes) {
-  // Hub-and-spoke legivel: no central no meio, demais em aneis concentricos
-  // com espacamento minimo (anti-sobreposicao). Raio cresce conforme a contagem.
-  const cx = 700, cy = 450;
-  // O no central e o centerId (agencia foco); fallback para agencias / primeiro.
-  const center = nodes.find((n) => n.id === natGraph.centerId)
-    || nodes.find((n) => n.type === "agency")
-    || nodes[0];
-  const centers = center ? [center] : [];
-  const others = nodes.filter((n) => n !== center);
-
-  centers.forEach((n) => { n.x = cx; n.y = cy; });
-
-  // Distribui os demais em aneis: cada anel comporta um numero proporcional ao raio.
-  const perRingBase = 12;
-  let idx = 0, ring = 1;
-  while (idx < others.length) {
-    const radius = 360 + (ring - 1) * 280;
-    const capacity = perRingBase + (ring - 1) * 8;
-    const count = Math.min(capacity, others.length - idx);
-    for (let i = 0; i < count; i++) {
-      const angle = (i / count) * 2 * Math.PI + ring * 0.4;
-      const n = others[idx++];
-      n.x = Math.round(cx + radius * Math.cos(angle));
-      n.y = Math.round(cy + radius * Math.sin(angle));
-    }
-    ring++;
-  }
+function ensureNatGraphView() {
+  if (natGraph.graphView || !$("#nat-graph-cy")) return natGraph.graphView;
+  natGraph.graphView = createGraphView({
+    container: $("#nat-graph-cy"),
+    legendEl: $("#nat-graph-legend"),
+    onSelect: (id) => {
+      natGraph.selectedId = id;
+      const node = natGraph.nodes.find((n) => n.id === id);
+      const title = $("#nat-inspector-title");
+      if (title) title.textContent = node?.title || id;
+      renderNatInspector(id).catch(() => {});
+    },
+    onExpand: (id) => expandNatNode(id)
+  });
+  return natGraph.graphView;
 }
 
 function renderNatGraph() {
-  const stage = $("#nat-graph-stage");
-  const edgeLayer = $("#nat-edge-layer");
-  const nodeLayer = $("#nat-node-layer");
-  if (!stage) return;
-  stage.style.transform = `translate(${natGraph.transform.x}px, ${natGraph.transform.y}px) scale(${natGraph.transform.scale})`;
-  $("#nat-graph-empty").classList.toggle("hidden", natGraph.nodes.length > 0);
-
-  edgeLayer.setAttribute("viewBox", "0 0 1400 900");
-  const nodeById = Object.fromEntries(natGraph.nodes.map((n) => [n.id, n]));
-  edgeLayer.innerHTML = natGraph.edges.map(([from, to, label]) => {
-    const a = nodeById[from], b = nodeById[to];
-    if (!a || !b || a.hidden || b.hidden) return "";
-    const w = natNodeWidth(a);
-    const x1 = a.x + w, y1 = a.y + 48, x2 = b.x, y2 = b.y + 48;
-    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-    return `<line class="edge-line" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"></line>
-            <text class="edge-label" x="${mx + 4}" y="${my - 4}">${escapeHtml(label)}</text>`;
-  }).join("");
-
-  nodeLayer.innerHTML = natGraph.nodes.filter((n) => !n.hidden).map((node) => {
-    const w = natNodeWidth(node);
-    const active = node.id === natGraph.selectedId ? " active" : "";
-    const central = node.type === "agency" ? " central" : "";
-    const fields = (node.fields || []).map(([k, v]) => `<div class="node-field"><span>${escapeHtml(k)}</span><span>${escapeHtml(String(v))}</span></div>`).join("");
-    return `<article class="node-card${central}${active}" data-natnode="${escapeHtml(node.id)}" style="left:${node.x}px;top:${node.y}px;width:${w}px">
-      <div class="node-icon ${escapeHtml(node.type)}">${iconFor(node.type)}</div>
-      <div class="node-body">
-        <strong>${escapeHtml(node.title)}</strong>
-        <span class="node-sub">${escapeHtml(node.subtitle || "")}</span>
-        ${fields}
-        <span class="status-pill ok">${escapeHtml(node.status || node.type)}</span>
-      </div>
-    </article>`;
-  }).join("");
+  const hasNodes = natGraph.nodes.length > 0;
+  if (hasNodes && !window.cytoscape) { showGraphLibError("#nat-graph-empty"); return; }
+  $("#nat-graph-empty")?.classList.toggle("hidden", hasNodes);
+  $("#nat-graph-legend")?.classList.toggle("hidden", !hasNodes);
+  if (!hasNodes) return;
+  const view = ensureNatGraphView();
+  if (!view) return;
+  view.setElements(natGraph.nodes, natGraph.edges);
+  if (natGraph.selectedId) view.select(natGraph.selectedId);
 }
 
 // Popula o dropdown de agencias do grafo (uma vez).
@@ -999,10 +1110,10 @@ async function populateGraphAgencies() {
   if (!sel) return;
   try {
     const sc = await requestJson("/api/intelligence?type=score");
-    const opts = (sc.scores || []).map((s) => `<option value="${escapeHtml(s.agency)}">${escapeHtml(s.agency)}</option>`).join("");
-    sel.innerHTML = opts || `<option value="">(sem agencias)</option>`;
+    const opts = `<option value="">Todas as agências</option>` +
+      (sc.scores || []).map((s) => `<option value="${escapeHtml(s.agency)}">${escapeHtml(s.agency)}</option>`).join("");
+    sel.innerHTML = opts;
     natAgenciesLoaded = true;
-    // Tambem popula o filtro de agencia do Monitor DOU.
     const douSel = $("#dou-agency");
     if (douSel && douSel.options.length <= 1) {
       douSel.innerHTML = `<option value="">Todas as agencias</option>` +
@@ -1011,49 +1122,32 @@ async function populateGraphAgencies() {
   } catch { /* silencioso */ }
 }
 
-function activeGraphTypes() {
-  const boxes = document.querySelectorAll(".graph-type:checked");
-  return new Set([...boxes].map((b) => b.value));
-}
-
-function applyGraphFilters() {
-  // Esconde nos cujo tipo esta desmarcado (filtro client-side, sem refetch).
-  const types = activeGraphTypes();
-  natGraph.nodes.forEach((n) => { n.hidden = !types.has(n.type); });
-  renderNatGraph();
-}
-
-function mapGraphNode(n) {
-  return { id: n.id, type: n.type, title: n.title, subtitle: n.subtitle || "", status: n.type, fields: [["Tipo", n.type]], x: 200, y: 200 };
-}
-
 async function loadNationalGraph() {
   await populateGraphAgencies();
   const agency = $("#graph-agency")?.value?.trim();
-  // Carrega o subgrafo da agencia UMA vez, mas exibe so o no central (Sherlocker).
-  const url = `/api/graph${agency ? `?agency=${encodeURIComponent(agency)}&limit=500` : "?limit=500"}`;
+  const url = `/api/graph${agency ? `?agency=${encodeURIComponent(agency)}&limit=800` : "?limit=800"}`;
   try {
     const g = await requestJson(url);
     if (!g.nodes?.length) {
       natGraph.allNodes = []; natGraph.allEdges = [];
       natGraph.nodes = []; natGraph.edges = []; natGraph.expanded = new Set(); natGraph.centerId = null;
       const empty = $("#nat-graph-empty");
-      if (empty) { empty.classList.remove("hidden"); empty.querySelector("p").textContent = "Sem conexoes para esta agencia ainda."; }
-      renderNatGraph(); return;
+      if (empty) { empty.classList.remove("hidden"); empty.querySelector("p").textContent = "Sem conexões para esta agência ainda. Rode as ingestões (DOU/PNCP/Receita)."; }
+      $("#nat-graph-legend")?.classList.add("hidden");
+      return;
     }
     natGraph.allNodes = g.nodes.slice();
     natGraph.allEdges = g.edges.slice();
-    // No central = a agencia selecionada (ou o primeiro no se nao houver agencia).
     const center = agency
       ? g.nodes.find((n) => n.type === "agency" && (n.subtitle || "").toUpperCase() === agency.toUpperCase())
       : g.nodes[0];
     natGraph.centerId = center ? center.id : g.nodes[0].id;
-    natGraph.expanded = new Set();
-    natGraph.transform = { x: 80, y: 60, scale: 0.7 };
+    natGraph.expanded = new Set([natGraph.centerId]); // ja revela os vizinhos do no central.
+    natGraph.selectedId = null;
     rebuildNatVisible();
-    const centerNeighbors = new Set(natGraph.allEdges.filter((e) => e.from === natGraph.centerId || e.to === natGraph.centerId).map((e) => (e.from === natGraph.centerId ? e.to : e.from))).size;
-    $("#nat-graph-title").textContent = `Clique no nó para expandir · ${centerNeighbors} vizinhos diretos`;
-    renderNatGraph();
+    const trunc = g.meta?.truncated ? ` · amostra de ${g.meta.limit} (refine por agência)` : "";
+    $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos${trunc}`;
+    natGraph.graphView?.fit();
   } catch (error) {
     const empty = $("#nat-graph-empty");
     if (empty) { empty.classList.remove("hidden"); empty.querySelector("p").textContent = `Falha: ${error.message}`; }
@@ -1065,8 +1159,7 @@ function expandNatNode(nodeId) {
   if (!nodeId) return;
   natGraph.expanded.add(nodeId);
   rebuildNatVisible();
-  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexões`;
-  renderNatGraph();
+  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos`;
 }
 
 // Colapsa um no: esconde os vizinhos revelados por ele (mantem o central).
@@ -1074,80 +1167,29 @@ function collapseNatNode(nodeId) {
   if (!nodeId || nodeId === natGraph.centerId) return;
   natGraph.expanded.delete(nodeId);
   rebuildNatVisible();
-  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} conexões`;
-  renderNatGraph();
-}
-
-// Centraliza/destaca um no cujo titulo casa com o termo de busca.
-function searchNatGraph(term) {
-  const t = term.trim().toLowerCase();
-  if (!t) return;
-  const node = natGraph.nodes.find((n) => (n.title || "").toLowerCase().includes(t));
-  if (!node) return;
-  natGraph.selectedId = node.id;
-  const stage = $("#nat-graph-canvas");
-  const w = stage ? stage.clientWidth : 1000, h = stage ? stage.clientHeight : 700;
-  natGraph.transform = { x: w / 2 - node.x * natGraph.transform.scale, y: h / 2 - node.y * natGraph.transform.scale, scale: natGraph.transform.scale };
-  renderNatGraph();
+  $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos`;
 }
 
 function wireNatGraph() {
-  const canvas = $("#nat-graph-canvas");
-  if (!canvas) return;
-  canvas.addEventListener("pointerdown", (e) => {
-    const nodeEl = e.target.closest("[data-natnode]");
-    if (nodeEl) {
-      natGraph.selectedId = nodeEl.dataset.natnode;
-      const node = natGraph.nodes.find((n) => n.id === natGraph.selectedId);
-      // Atualiza título imediatamente (síncrono); painel rico carrega async
-      const title = $("#nat-inspector-title");
-      if (title) title.textContent = node?.title || natGraph.selectedId;
-      renderNatInspector(natGraph.selectedId).catch(() => {});
-      natGraph.drag = { id: natGraph.selectedId, startX: e.clientX, startY: e.clientY, ox: node?.x || 0, oy: node?.y || 0 };
-      renderNatGraph();
-    } else {
-      natGraph.pan = { startX: e.clientX, startY: e.clientY, ox: natGraph.transform.x, oy: natGraph.transform.y };
-    }
-    canvas.setPointerCapture(e.pointerId);
-  });
-  canvas.addEventListener("pointermove", (e) => {
-    if (natGraph.drag) {
-      const node = natGraph.nodes.find((n) => n.id === natGraph.drag.id);
-      if (node) { node.x = natGraph.drag.ox + (e.clientX - natGraph.drag.startX) / natGraph.transform.scale; node.y = natGraph.drag.oy + (e.clientY - natGraph.drag.startY) / natGraph.transform.scale; }
-      renderNatGraph();
-    } else if (natGraph.pan) {
-      natGraph.transform.x = natGraph.pan.ox + (e.clientX - natGraph.pan.startX);
-      natGraph.transform.y = natGraph.pan.oy + (e.clientY - natGraph.pan.startY);
-      renderNatGraph();
-    }
-  });
-  canvas.addEventListener("pointerup", () => { natGraph.drag = null; natGraph.pan = null; });
-  canvas.addEventListener("wheel", (e) => { e.preventDefault(); natGraph.transform.scale = Math.min(2, Math.max(0.3, natGraph.transform.scale - e.deltaY * 0.001)); renderNatGraph(); }, { passive: false });
-  $("#nat-zoom-in")?.addEventListener("click", () => { natGraph.transform.scale = Math.min(2, natGraph.transform.scale + 0.12); renderNatGraph(); });
-  $("#nat-zoom-out")?.addEventListener("click", () => { natGraph.transform.scale = Math.max(0.3, natGraph.transform.scale - 0.12); renderNatGraph(); });
+  ensureNatGraphView();
+  $("#nat-zoom-in")?.addEventListener("click", () => natGraph.graphView?.zoomBy(1.2));
+  $("#nat-zoom-out")?.addEventListener("click", () => natGraph.graphView?.zoomBy(1 / 1.2));
+  $("#nat-fit-graph")?.addEventListener("click", () => natGraph.graphView?.fit());
   $("#nat-reset-graph")?.addEventListener("click", () => {
-    // Reset volta ao no central colapsado (Sherlocker).
-    natGraph.expanded = new Set();
+    // Reset volta ao no central (Sherlocker) e recarrega o layout.
+    natGraph.expanded = new Set(natGraph.centerId ? [natGraph.centerId] : []);
     natGraph.selectedId = null;
-    natGraph.transform = { x: 80, y: 60, scale: 0.7 };
+    natGraph.graphView?.reset();
     rebuildNatVisible();
-    const centerNeighbors = new Set(natGraph.allEdges.filter((e) => e.from === natGraph.centerId || e.to === natGraph.centerId).map((e) => (e.from === natGraph.centerId ? e.to : e.from))).size;
-    $("#nat-graph-title").textContent = `Clique no nó para expandir · ${centerNeighbors} vizinhos diretos`;
-    renderNatGraph();
+    natGraph.graphView?.fit();
+    $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos`;
   });
   $("#graph-agency")?.addEventListener("change", () => loadNationalGraph());
-  // Double-click num no tambem expande.
-  canvas.addEventListener("dblclick", (e) => {
-    const nodeEl = e.target.closest("[data-natnode]");
-    if (nodeEl) expandNatNode(nodeEl.dataset.natnode);
-  });
-  // Toggles de tipo (agencia/pessoa/empresa).
-  document.querySelectorAll(".graph-type").forEach((b) => b.addEventListener("change", applyGraphFilters));
-  // Busca no grafo.
   const search = $("#graph-search");
   if (search) {
-    search.addEventListener("keydown", (e) => { if (e.key === "Enter") searchNatGraph(search.value); });
-    search.addEventListener("input", () => { if (search.value.length >= 3) searchNatGraph(search.value); });
+    const run = () => natGraph.graphView?.search(search.value);
+    search.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+    search.addEventListener("input", debounce(() => { if (search.value.length === 0 || search.value.length >= 3) run(); }, 200));
   }
 }
 
@@ -1244,60 +1286,33 @@ async function loadAgenda() {
   }
 }
 
+function ensureCnpjGraphView() {
+  if (state.graphView || !$("#graph-cy")) return state.graphView;
+  state.graphView = createGraphView({
+    container: $("#graph-cy"),
+    legendEl: $("#graph-legend"),
+    onSelect: (id) => { state.selectedNodeId = id; renderInspector(); }
+  });
+  return state.graphView;
+}
+
 function renderGraph() {
-  const stage = $("#graph-stage");
-  const edgeLayer = $("#edge-layer");
-  const nodeLayer = $("#node-layer");
-  stage.style.transform = `translate(${state.transform.x}px, ${state.transform.y}px) scale(${state.transform.scale})`;
-  $("#graph-empty").classList.toggle("hidden", state.graphNodes.length > 0);
+  const hasNodes = state.graphNodes.length > 0;
   $("#graph-title").textContent = state.target?.legalName || "Aguardando CNPJ";
+  if (hasNodes && !window.cytoscape) { showGraphLibError("#graph-empty"); return; }
+  $("#graph-empty")?.classList.toggle("hidden", hasNodes);
+  $("#graph-legend")?.classList.toggle("hidden", !hasNodes);
+  if (!hasNodes) return;
+  const view = ensureCnpjGraphView();
+  if (!view) return;
+  view.setElements(state.graphNodes, state.graphEdges);
+  if (state.selectedNodeId) view.select(state.selectedNodeId);
+}
 
-  edgeLayer.setAttribute("viewBox", "0 0 1400 900");
-
-  const nodeById = Object.fromEntries(state.graphNodes.map((node) => [node.id, node]));
-  edgeLayer.innerHTML = state.graphEdges
-    .map(([from, to, label]) => {
-      const a = nodeById[from];
-      const b = nodeById[to];
-      if (!a || !b) return "";
-      const x1 = a.x + (a.central ? 270 : 238);
-      const y1 = a.y + 48;
-      const x2 = b.x;
-      const y2 = b.y + 48;
-      const mx = (x1 + x2) / 2;
-      const my = (y1 + y2) / 2;
-      return `
-        <line class="edge-line" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"></line>
-        <text class="edge-label" x="${mx + 8}" y="${my - 5}">${escapeHtml(label)}</text>
-      `;
-    })
-    .join("");
-
-  nodeLayer.innerHTML = state.graphNodes
-    .map((node) => {
-      const fields = node.fields
-        .filter(([, value]) => value)
-        .map(([label, value]) => `<div class="node-field"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
-        .join("");
-      return `
-        <article
-          class="node-card ${node.central ? "central" : ""} ${node.id === state.selectedNodeId ? "active" : ""}"
-          data-node="${node.id}"
-          style="left:${node.x}px; top:${node.y}px"
-        >
-          <div class="node-head">
-            <span class="node-icon ${node.type}">${iconFor(node.type)}</span>
-            <div>
-              <span class="node-title">${escapeHtml(node.title)}</span>
-              <span class="node-subtitle">${escapeHtml(node.subtitle)}</span>
-            </div>
-          </div>
-          <div class="node-fields">${fields}</div>
-          <span class="status-pill status-ok">${escapeHtml(node.status)}</span>
-        </article>
-      `;
-    })
-    .join("");
+// Mensagem amigavel se a lib de grafo (CDN) nao carregar.
+function showGraphLibError(emptySelector) {
+  const el = $(emptySelector);
+  if (el) { el.classList.remove("hidden"); el.innerHTML = `<strong>Não foi possível carregar o grafo</strong><p>A biblioteca de visualização (Cytoscape) não respondeu. Verifique a conexão e recarregue a página.</p>`; }
 }
 
 function iconFor(type) {
@@ -1440,12 +1455,10 @@ function wireEvents() {
 
   $("#open-dossier").addEventListener("click", () => setView("dossier"));
   $("#center-graph").addEventListener("click", centerGraph);
-  $("#reset-graph").addEventListener("click", () => {
-    state.transform = { x: 80, y: 60, scale: 1 };
-    renderGraph();
-  });
-  $("#zoom-in").addEventListener("click", () => zoomGraph(0.12));
-  $("#zoom-out").addEventListener("click", () => zoomGraph(-0.12));
+  $("#reset-graph")?.addEventListener("click", () => state.graphView?.reset());
+  $("#fit-graph")?.addEventListener("click", () => state.graphView?.fit());
+  $("#zoom-in")?.addEventListener("click", () => state.graphView?.zoomBy(1.2));
+  $("#zoom-out")?.addEventListener("click", () => state.graphView?.zoomBy(1 / 1.2));
 
   $("#dossier-tabs").addEventListener("click", (event) => {
     const tab = event.target.closest("[data-dossier-tab]");
@@ -1453,79 +1466,11 @@ function wireEvents() {
     state.activeDossierTab = tab.dataset.dossierTab;
     renderDossier();
   });
-
-  const canvas = $("#graph-canvas");
-  canvas.addEventListener("pointerdown", onPointerDown);
-  canvas.addEventListener("pointermove", onPointerMove);
-  canvas.addEventListener("pointerup", onPointerUp);
-  canvas.addEventListener("pointercancel", onPointerUp);
-  canvas.addEventListener("wheel", onWheel, { passive: false });
-}
-
-function onPointerDown(event) {
-  const nodeEl = event.target.closest("[data-node]");
-  const canvas = $("#graph-canvas");
-  canvas.setPointerCapture(event.pointerId);
-  if (nodeEl) {
-    const node = state.graphNodes.find((entry) => entry.id === nodeEl.dataset.node);
-    if (!node) return;
-    state.selectedNodeId = node.id;
-    state.drag = {
-      id: node.id,
-      startX: event.clientX,
-      startY: event.clientY,
-      nodeX: node.x,
-      nodeY: node.y
-    };
-    renderGraph();
-    renderInspector();
-    return;
-  }
-  state.pan = {
-    startX: event.clientX,
-    startY: event.clientY,
-    x: state.transform.x,
-    y: state.transform.y
-  };
-  canvas.classList.add("dragging");
-}
-
-function onPointerMove(event) {
-  if (state.drag) {
-    const node = state.graphNodes.find((entry) => entry.id === state.drag.id);
-    if (!node) return;
-    node.x = Math.max(0, state.drag.nodeX + (event.clientX - state.drag.startX) / state.transform.scale);
-    node.y = Math.max(0, state.drag.nodeY + (event.clientY - state.drag.startY) / state.transform.scale);
-    renderGraph();
-  }
-  if (state.pan) {
-    state.transform.x = state.pan.x + event.clientX - state.pan.startX;
-    state.transform.y = state.pan.y + event.clientY - state.pan.startY;
-    renderGraph();
-  }
-}
-
-function onPointerUp(event) {
-  $("#graph-canvas").releasePointerCapture?.(event.pointerId);
-  $("#graph-canvas").classList.remove("dragging");
-  state.drag = null;
-  state.pan = null;
-}
-
-function onWheel(event) {
-  event.preventDefault();
-  zoomGraph(event.deltaY > 0 ? -0.08 : 0.08);
-}
-
-function zoomGraph(delta) {
-  state.transform.scale = Math.min(1.8, Math.max(0.45, state.transform.scale + delta));
-  renderGraph();
 }
 
 function centerGraph() {
-  state.transform = { x: 80, y: 60, scale: 1 };
   setView("investigate");
-  renderGraph();
+  state.graphView?.fit();
 }
 
 const TREND_MAX_CELLS = 12; // teto de quadradinhos por barra (cada um = bloco de atos)

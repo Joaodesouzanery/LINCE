@@ -269,17 +269,16 @@
                   <h2 id="graph-title">Aguardando CNPJ</h2>
                 </div>
                 <div class="graph-tools">
-                  <button type="button" id="zoom-out">-</button>
-                  <button type="button" id="zoom-in">+</button>
-                  <button type="button" id="reset-graph">Reset</button>
+                  <button type="button" id="zoom-out" title="Diminuir zoom">−</button>
+                  <button type="button" id="zoom-in" title="Aumentar zoom">+</button>
+                  <button type="button" id="fit-graph" title="Ajustar à tela">Ajustar</button>
+                  <button type="button" id="reset-graph" title="Reorganizar layout">Reset</button>
                 </div>
               </div>
 
               <div class="graph-canvas" id="graph-canvas">
-                <div class="graph-stage" id="graph-stage">
-                  <svg id="edge-layer" class="edge-layer"></svg>
-                  <div id="node-layer" class="node-layer"></div>
-                </div>
+                <div class="graph-cy" id="graph-cy"></div>
+                <div class="graph-legend hidden" id="graph-legend"></div>
                 <div class="graph-empty" id="graph-empty">
                   <strong>Nenhum dado carregado</strong>
                   <p>Digite um CNPJ real para montar o grafo com dados retornados pelas fontes.</p>
@@ -384,21 +383,17 @@
                   <h2 id="nat-graph-title">Grafo Nacional</h2>
                 </div>
                 <div class="graph-tools">
-                  <select id="graph-agency" class="dou-date" style="width:150px"></select>
-                  <input id="graph-search" type="search" class="dou-date" placeholder="Buscar no grafo" style="width:130px" />
-                  <label class="type-toggle"><input type="checkbox" class="graph-type" value="agency" checked /> Agências</label>
-                  <label class="type-toggle"><input type="checkbox" class="graph-type" value="person" checked /> Pessoas</label>
-                  <label class="type-toggle"><input type="checkbox" class="graph-type" value="company" checked /> Empresas</label>
-                  <button type="button" id="nat-zoom-out">-</button>
-                  <button type="button" id="nat-zoom-in">+</button>
-                  <button type="button" id="nat-reset-graph">Reset</button>
+                  <select id="graph-agency" class="dou-date" style="width:160px"></select>
+                  <input id="graph-search" type="search" class="dou-date" placeholder="Buscar no grafo" style="width:140px" />
+                  <button type="button" id="nat-zoom-out" title="Diminuir zoom">−</button>
+                  <button type="button" id="nat-zoom-in" title="Aumentar zoom">+</button>
+                  <button type="button" id="nat-fit-graph" title="Ajustar à tela">Ajustar</button>
+                  <button type="button" id="nat-reset-graph" title="Voltar ao nó central">Reset</button>
                 </div>
               </div>
               <div class="graph-canvas" id="nat-graph-canvas">
-                <div class="graph-stage" id="nat-graph-stage">
-                  <svg id="nat-edge-layer" class="edge-layer"></svg>
-                  <div id="nat-node-layer" class="node-layer"></div>
-                </div>
+                <div class="graph-cy" id="nat-graph-cy"></div>
+                <div class="graph-legend hidden" id="nat-graph-legend"></div>
                 <div class="graph-empty" id="nat-graph-empty">
                   <strong>Grafo Nacional vazio</strong>
                   <p>Rode as ingestões (DOU, pessoas, PNCP) para popular o grafo de conexões reais.</p>
@@ -419,6 +414,11 @@
       </main>
     </div>
 
+    <!-- Cytoscape.js (grafo de vínculos) — UMD via CDN, sem build. -->
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

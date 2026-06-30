@@ -11,7 +11,8 @@ create type relationship_kind as enum (
   'affected_by',
   'published',
   'cites',
-  'succeeded_by'
+  'succeeded_by',
+  'socio'
 );
 
 create table agencies (
@@ -239,11 +240,18 @@ create index company_movements_company_idx on company_movements (company_id, mov
 -- Fases 2-4: diretores (M3), contratos (M6), jurisprudencia (M9)
 -- ============================================================================
 
+-- Migracao p/ bancos ja existentes: vinculo socio (socio<->empresa, dump da Receita).
+-- Sem isso, scripts/load-receita-socio.js falha ao inserir e o vinculo some do grafo.
+alter type relationship_kind add value if not exists 'socio';
+
 -- Entity resolution de pessoas: chave canonica por nome normalizado / CPF.
 alter table people add column if not exists cpf text;
 alter table people add column if not exists normalized_name text;
+-- Chave por token ordenado (dedup tolerante a ordem/conectivo). Ver lib/text.js.
+alter table people add column if not exists normalized_key text;
 alter table people add column if not exists agency_id uuid references agencies(id);
 create index if not exists people_normalized_name_idx on people (normalized_name);
+create index if not exists people_normalized_key_idx on people (normalized_key);
 create index if not exists people_cpf_idx on people (cpf);
 
 -- Mandatos de diretores (nomeacao/exoneracao via DOU Secao 2). M3.

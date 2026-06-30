@@ -87,6 +87,31 @@ npm run load:tcu           <arquivo.csv>
 - **Status do deploy** (sem acesso a conta Vercel):
   `gh api repos/Joaodesouzanery/LINCE/commits/main/status` mostra o contexto `vercel`.
 
+## 6b. Atualização: grafo de vínculos + confiabilidade
+
+O grafo foi reescrito com **Cytoscape.js** (carregado via CDN — sem build) e o
+`api/graph.js` passou a derivar TODOS os vínculos (mandatos, filiação, deliberações,
+votos) além da tabela `relationships`. Para o banco **já existente**, rode no SQL
+Editor do Supabase apenas estas migrações idempotentes (estão em `supabase/schema.sql`):
+
+```sql
+-- habilita o vínculo socio<->empresa (dump da Receita)
+alter type relationship_kind add value if not exists 'socio';
+-- chave de dedup por token ordenado (reduz diretores duplicados)
+alter table people add column if not exists normalized_key text;
+create index if not exists people_normalized_key_idx on people (normalized_key);
+```
+
+Depois, para o vínculo de sócios aparecer no grafo, recarregue o dump:
+`npm run load:receita-socio <arquivo.csv>`. A chave `normalized_key` é preenchida
+automaticamente nas próximas ingestões; para popular as pessoas já existentes, faça
+um backfill (uma vez) recalculando a chave a partir do nome — ou simplesmente deixe
+que novas ingestões a preencham.
+
+**Nota:** os "nomes sujos" da extração do DOU (ex.: "MATRICULA SIAPE DENOMINACAO")
+foram reduzidos por uma stoplist ampliada em `lib/dou.js`. Ligar a `ANTHROPIC_API_KEY`
+(seção 2) melhora ainda mais — limpa nomes e gera resumos por IA.
+
 ## 7. Rollback
 
 ```bash
