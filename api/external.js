@@ -1,7 +1,13 @@
 // DataJud + Portal da Transparencia unificados.
 // GET /api/external?type=datajud&q=nome&tribunal=tjsp
 // GET /api/external?type=transparency&cnpj=00000000000000
+// GET /api/external?type=screening&q=nome | &cpf=11dig | &cnpj=14dig
+// GET /api/external?type=cpf&cpf=11dig  (screening + match na base local people)
+const { screeningByName, screeningByCpf, screeningByCnpj } = require("../lib/transparencia");
+
 function onlyDigits(v) { return String(v||"").replace(/\D/g,""); }
+// Nunca ecoar CPF completo na resposta (LGPD).
+function maskCpf(d) { return `***.${d.slice(3,6)}.${d.slice(6,9)}-**`; }
 
 module.exports = async function handler(req, res) {
   const type = String(req.query.type || "datajud");
@@ -48,5 +54,66 @@ module.exports = async function handler(req, res) {
     } catch(error) { return res.status(502).json({ ok:false, error:error.message }); }
   }
 
-  return res.status(400).json({ ok:false, error:"type invalido. Use: datajud, transparency" });
+  // Screening PEP/sancoes (CEIS/CNEP/CEPIM/CEAF/PEP/servidores) por nome, CPF ou CNPJ.
+  if (type === "screening") {
+    const cpf = onlyDigits(req.query.cpf);
+    const cnpj = onlyDigits(req.query.cnpj);
+    const nome = String(req.query.q || req.query.nome || "").trim();
+    let result, query;
+    try {
+      if (cpf.length === 11) { result = await screeningByCpf(cpf); query = { kind: "cpf", value_masked: maskCpf(cpf) }; }
+      else if (cnpj.length === 14) { result = await screeningByCnpj(cnpj); query = { kind: "cnpj", value_masked: cnpj }; }
+      else if (nome.length >= 3) { result = await screeningByName(nome); query = { kind: "nome", value_masked: nome }; }
+      else return res.status(400).json({ ok:false, error:"Informe q= (nome, min. 3 letras), cpf= (11 digitos) ou cnpj= (14 digitos)." });
+      if (!result.ok && result.status === "requires_key") {
+        return res.status(501).json({ ok:false, status:"requires_key", error:"PORTAL_TRANSPARENCIA_API_KEY nao configurada." });
+      }
+      res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
+      return res.status(200).json({ ok:true, source:"Portal da Transparencia", query, flags: result.flags, sources: result.sources });
+    } catch(error) { return res.status(502).json({ ok:false, error:error.message }); }
+  }
+
+  // Consulta CPF: screening (se houver chave) + match na base local people.
+  // O match local funciona SEM chave do Portal — nao retorna 501 aqui.
+  if (type === "cpf") {
+    const cpf = onlyDigits(req.query.cpf);
+    if (cpf.length !== 11) return res.status(400).json({ ok:false, error:"CPF invalido (11 digitos)." });
+    try {
+      const { getSupabase } = require("../lib/supabase");
+      const { normalizeName } = require("../lib/text");
+      const supabase = getSupabase();
+      const [screening, byCpf] = await Promise.all([
+        screeningByCpf(cpf).catch((e) => ({ ok:false, error:e.message })),
+        supabase.from("people").select("id, full_name, role, agency_id, agencies(acronym)").eq("cpf", cpf).limit(10)
+      ]);
+      let localMatches = (byCpf.data || []).map((p) => ({
+        id: p.id, full_name: p.full_name, role: p.role, agency: p.agencies?.acronym || null
+      }));
+      // Se o screening trouxe um nome (PEP/servidor), tenta 2o match por nome
+      // normalizado para ligar ao grafo local.
+      if (!localMatches.length && screening.ok) {
+        const hit = screening.sources?.peps?.items?.[0] || screening.sources?.servidores?.items?.[0];
+        const nome = hit?.nome || hit?.servidor?.pessoa?.nome;
+        if (nome) {
+          const byName = await supabase.from("people")
+            .select("id, full_name, role, agency_id, agencies(acronym)")
+            .eq("normalized_name", normalizeName(nome)).limit(10);
+          localMatches = (byName.data || []).map((p) => ({
+            id: p.id, full_name: p.full_name, role: p.role, agency: p.agencies?.acronym || null
+          }));
+        }
+      }
+      res.setHeader("Cache-Control", "s-maxage=600, stale-while-revalidate=3600");
+      return res.status(200).json({
+        ok: true,
+        cpf_masked: maskCpf(cpf),
+        screening: screening.ok
+          ? { flags: screening.flags, sources: screening.sources }
+          : { ok:false, status: screening.status || "error", error: screening.error },
+        local_matches: localMatches
+      });
+    } catch(error) { return res.status(502).json({ ok:false, error:error.message }); }
+  }
+
+  return res.status(400).json({ ok:false, error:"type invalido. Use: datajud, transparency, screening, cpf" });
 };
