@@ -1,7 +1,15 @@
 // Motor de Inteligencia Nacional: score de risco por setor/agencia,
-// radar de normas dos proximos 30/60/90 dias, e resumo executivo diario.
-// GET /api/intelligence?type=radar|score|daily
+// radar de normas dos proximos 30/60/90 dias, resumo executivo diario,
+// monitores de vigilancia (CRUD) e resumo executivo de dossie por IA.
+// GET /api/intelligence?type=radar|score|daily|monitors|monitor_alerts|holdings
+// POST /api/intelligence?type=monitor_save|monitor_toggle|monitor_delete|exec_summary
 const { getSupabase } = require("../lib/supabase");
+const { normalizeName, onlyDigits } = require("../lib/text");
+
+// Mutacoes e listas de monitor aceitam POST (body JSON) ou GET (querystring).
+function params(req) {
+  return req.method === "POST" && req.body && typeof req.body === "object" ? req.body : req.query;
+}
 
 module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "s-maxage=1800, stale-while-revalidate=3600");
@@ -245,11 +253,135 @@ module.exports = async function handler(req, res) {
     }
 
     if (type === "dismiss_alert") {
+      // Mutacao: nunca deixar o CDN cachear a resposta.
+      res.setHeader("Cache-Control", "no-store");
       const id = String(req.query.id || "").trim();
       if (!id) return res.status(400).json({ ok: false, error: "Informe ?id=<uuid>" });
       const { error: upErr } = await supabase.from("alerts").update({ acknowledged_at: new Date().toISOString() }).eq("id", id);
       if (upErr) return res.status(500).json({ ok: false, error: upErr.message });
       return res.status(200).json({ ok: true });
+    }
+
+    // ── Monitores de vigilância (estilo Arko Alerta) ────────────────────────
+    if (type === "monitors") {
+      res.setHeader("Cache-Control", "no-store");
+      const { data, error } = await supabase.from("monitors").select("*").order("created_at", { ascending: false });
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, items: data || [] });
+    }
+
+    if (type === "monitor_save") {
+      res.setHeader("Cache-Control", "no-store");
+      const p = params(req);
+      const kind = String(p.kind || "").trim();
+      const label = String(p.label || "").trim();
+      const pattern = String(p.pattern || "").trim();
+      if (!["keyword", "person", "company", "agency"].includes(kind)) {
+        return res.status(400).json({ ok: false, error: "kind invalido. Use: keyword, person, company, agency" });
+      }
+      const normalized = normalizeName(pattern);
+      if (normalized.length < 3) {
+        return res.status(400).json({ ok: false, error: "Padrao muito curto (min. 3 caracteres uteis)." });
+      }
+      const row = {
+        kind,
+        label: label || pattern,
+        pattern,
+        normalized_pattern: normalized,
+        severity: ["info", "medium", "high"].includes(p.severity) ? p.severity : "medium",
+        updated_at: new Date().toISOString()
+      };
+      const digits = onlyDigits(p.cpf_cnpj);
+      if (digits.length === 11 || digits.length === 14) row.cpf_cnpj = digits;
+      // kind=agency: resolve a sigla para agency_id (match por UUID no cron).
+      if (kind === "agency") {
+        const { data: ag } = await supabase.from("agencies").select("id, acronym").eq("acronym", normalized.replace(/\s+/g, "")).maybeSingle();
+        if (!ag) return res.status(400).json({ ok: false, error: `Agencia "${pattern}" nao encontrada. Use a sigla (ex.: ANEEL).` });
+        row.agency_id = ag.id;
+      }
+      let result;
+      if (p.id) {
+        result = await supabase.from("monitors").update(row).eq("id", p.id).select().maybeSingle();
+      } else {
+        result = await supabase.from("monitors").insert(row).select().maybeSingle();
+      }
+      if (result.error) return res.status(500).json({ ok: false, error: result.error.message });
+      if (!result.data) return res.status(404).json({ ok: false, error: "Monitor nao encontrado." });
+      return res.status(200).json({ ok: true, monitor: result.data });
+    }
+
+    if (type === "monitor_toggle") {
+      res.setHeader("Cache-Control", "no-store");
+      const p = params(req);
+      const id = String(p.id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const { data: cur } = await supabase.from("monitors").select("active").eq("id", id).maybeSingle();
+      if (!cur) return res.status(404).json({ ok: false, error: "Monitor nao encontrado." });
+      const active = typeof p.active === "boolean" ? p.active : String(p.active || "") === "true" ? true : String(p.active || "") === "false" ? false : !cur.active;
+      const { error: upErr } = await supabase.from("monitors").update({ active, updated_at: new Date().toISOString() }).eq("id", id);
+      if (upErr) return res.status(500).json({ ok: false, error: upErr.message });
+      return res.status(200).json({ ok: true, active });
+    }
+
+    if (type === "monitor_delete") {
+      res.setHeader("Cache-Control", "no-store");
+      const p = params(req);
+      const id = String(p.id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const { error: delErr } = await supabase.from("monitors").delete().eq("id", id);
+      if (delErr) return res.status(500).json({ ok: false, error: delErr.message });
+      return res.status(200).json({ ok: true });
+    }
+
+    if (type === "monitor_alerts") {
+      res.setHeader("Cache-Control", "no-store");
+      const limit = Math.min(Number(req.query.limit) || 30, 100);
+      const { data, error } = await supabase
+        .from("alerts")
+        .select("id, alert_type, severity, title, body, created_at, metadata, acknowledged_at")
+        .eq("alert_type", "monitor")
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, items: data || [] });
+    }
+
+    // Participacoes societarias locais de uma empresa (base receita_socio).
+    if (type === "holdings") {
+      const cnpj = onlyDigits(req.query.cnpj);
+      if (cnpj.length !== 14) return res.status(400).json({ ok: false, error: "CNPJ invalido." });
+      const { data: company } = await supabase.from("companies").select("id, cnpj, legal_name").eq("cnpj", cnpj).maybeSingle();
+      if (!company) return res.status(200).json({ ok: true, items: [], note: "Empresa fora da base local. Rode load:receita-socio." });
+      const { data: rels } = await supabase
+        .from("relationships")
+        .select("from_id, relationship, metadata, created_at")
+        .eq("to_kind", "company").eq("to_id", company.id).eq("relationship", "socio");
+      const personIds = [...new Set((rels || []).map((r) => r.from_id))];
+      let people = [];
+      if (personIds.length) {
+        const { data: ppl } = await supabase.from("people").select("id, full_name, role").in("id", personIds);
+        people = ppl || [];
+      }
+      const byId = Object.fromEntries(people.map((p) => [p.id, p]));
+      const items = (rels || []).map((r) => ({
+        person_id: r.from_id,
+        name: byId[r.from_id]?.full_name || "?",
+        role: r.metadata?.role || byId[r.from_id]?.role || "Sócio",
+        source: "Receita Federal (dump SOCIO)"
+      }));
+      return res.status(200).json({ ok: true, company: company.legal_name, items });
+    }
+
+    // Resumo executivo IA do dossie de EMPRESA (o front envia o dossie compacto
+    // ja montado em state; o de pessoa usa /api/dossier-person?id=&ai=1).
+    if (type === "exec_summary") {
+      res.setHeader("Cache-Control", "no-store");
+      if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST com o dossie no body." });
+      const { summarizeDossier } = require("../lib/anthropic");
+      const dossier = req.body && typeof req.body === "object" ? req.body : null;
+      if (!dossier) return res.status(400).json({ ok: false, error: "Body JSON ausente." });
+      const ai = await summarizeDossier(dossier);
+      return res.status(200).json({ ok: true, ...ai });
     }
 
     if (type === "search") {
@@ -289,7 +421,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "alerts", items: alerts || [] });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily, trend, recent, giratoria, search, alerts, agency_stats, dismiss_alert" });
+    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily, trend, recent, giratoria, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }

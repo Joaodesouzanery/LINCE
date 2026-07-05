@@ -4,7 +4,7 @@
 const { getSupabase } = require("../lib/supabase");
 const { collectDou } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");
-const { processPeopleFromDoc } = require("../lib/ingest");
+const { processPeopleFromDoc, loadActiveMonitors, matchMonitorsForDoc, flushMonitorAlerts } = require("../lib/ingest");
 
 const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
 
@@ -39,6 +39,9 @@ module.exports = async function handler(req, res) {
     let skipped = 0;
     let directors = 0;
     const alerts = [];
+    const monitors = await loadActiveMonitors(supabase);
+    const monitorAlerts = [];
+    const monitorHits = new Map();
 
     for (const record of records) {
       // Dedupe por content_hash.
@@ -77,6 +80,21 @@ module.exports = async function handler(req, res) {
       if (docErr) throw docErr;
       inserted++;
 
+      // Monitores de vigilancia: testa o doc novo contra todos os ativos.
+      const hits = matchMonitorsForDoc(monitors, {
+        docId: doc.id,
+        title: record.title,
+        text: record.extracted_text,
+        agencyId: record.agency_id,
+        agencyAcronym: record.agency_acronym,
+        publishedAt: record.published_at,
+        aiEntities: ai.entities
+      });
+      for (const h of hits) {
+        monitorAlerts.push(h.alert);
+        monitorHits.set(h.monitorId, (monitorHits.get(h.monitorId) || 0) + 1);
+      }
+
       // Nomeacoes/exoneracoes (Secao 2): alerta + extracao de diretores.
       if (record.section === 2) {
         alerts.push({
@@ -103,6 +121,7 @@ module.exports = async function handler(req, res) {
     if (alerts.length) {
       await supabase.from("alerts").insert(alerts);
     }
+    await flushMonitorAlerts(supabase, monitorAlerts, monitorHits);
 
     return res.status(200).json({
       ok: true,
@@ -111,7 +130,8 @@ module.exports = async function handler(req, res) {
       inserted,
       skipped,
       directors,
-      alerts: alerts.length
+      alerts: alerts.length,
+      monitor_alerts: monitorAlerts.length
     });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message, source: "DOU/INLABS" });

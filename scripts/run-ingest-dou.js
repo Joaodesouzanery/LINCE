@@ -4,7 +4,7 @@ require("dotenv").config();
 const { getSupabase } = require("../lib/supabase");
 const { collectDou } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");
-const { processPeopleFromDoc } = require("../lib/ingest");
+const { processPeopleFromDoc, loadActiveMonitors, matchMonitorsForDoc, flushMonitorAlerts } = require("../lib/ingest");
 
 const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
 
@@ -22,6 +22,10 @@ async function main() {
   console.log(`Atos encontrados: ${records.length}`);
 
   let inserted = 0, skipped = 0, directors = 0;
+  const monitors = await loadActiveMonitors(supabase);
+  const monitorAlerts = [];
+  const monitorHits = new Map();
+  if (monitors.length) console.log(`Monitores ativos: ${monitors.length}`);
 
   for (const r of records) {
     // Dedupe por content_hash
@@ -63,6 +67,22 @@ async function main() {
     console.log(`  + [${r.agency_acronym}] ${r.title}`);
     if (ai.summary) console.log(`    IA: ${ai.summary}`);
 
+    // Monitores de vigilancia: testa o doc novo contra todos os ativos.
+    const hits = matchMonitorsForDoc(monitors, {
+      docId: doc.id,
+      title: r.title,
+      text: r.extracted_text,
+      agencyId: r.agency_id,
+      agencyAcronym: r.agency_acronym,
+      publishedAt: r.published_at,
+      aiEntities: ai.entities
+    });
+    for (const h of hits) {
+      monitorAlerts.push(h.alert);
+      monitorHits.set(h.monitorId, (monitorHits.get(h.monitorId) || 0) + 1);
+      console.log(`    monitor hit: ${h.alert.title}`);
+    }
+
     // Secao 2: extrai diretores (regex + IA), cria mandatos e conexoes.
     if (r.section === 2) {
       const result = await processPeopleFromDoc(supabase, {
@@ -81,7 +101,9 @@ async function main() {
     }
   }
 
-  console.log(`\nConcluido: ${inserted} inseridos, ${skipped} ja existiam, ${directors} diretores criados.`);
+  await flushMonitorAlerts(supabase, monitorAlerts, monitorHits);
+
+  console.log(`\nConcluido: ${inserted} inseridos, ${skipped} ja existiam, ${directors} diretores criados, ${monitorAlerts.length} alertas de monitor.`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
