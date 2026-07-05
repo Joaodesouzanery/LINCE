@@ -40,6 +40,14 @@ const sourceStatus = [
     help: "Endpoint preparado. Requer PORTAL_TRANSPARENCIA_API_KEY."
   },
   {
+    id: "screening",
+    name: "Screening PEP/Sancoes",
+    data: "PEP, CEIS, CNEP, CEPIM, CEAF e vinculo de servidor",
+    method: "/api/external?type=screening",
+    status: "key",
+    help: "Endpoint preparado. Requer PORTAL_TRANSPARENCIA_API_KEY."
+  },
+  {
     id: "pgfn",
     name: "PGFN Divida Ativa",
     data: "Divida ativa da Uniao e FGTS",
@@ -70,6 +78,7 @@ const dossierTabs = [
   ["processes", "Processos"],
   ["debts", "Dividas"],
   ["publicPayments", "Recebimentos Publicos"],
+  ["patrimony", "Patrimonio"],
   ["irregularities", "Irregularidades e Alertas"],
   ["alerts", "Alertas"],
   ["domains", "Dominios"],
@@ -87,6 +96,8 @@ const state = {
   graphEdges: [],
   dossier: {},
   news: [],
+  screening: null,
+  holdings: [],
   sources: {},
   graphView: null,
   transform: { x: 80, y: 60, scale: 1 },
@@ -312,6 +323,21 @@ async function requestJson(url) {
   return payload;
 }
 
+// Mutacoes (monitores, resumo IA) vao por POST com body JSON.
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {})
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload.error || payload.message || `Falha HTTP ${response.status}`;
+    throw Object.assign(new Error(message), { status: response.status, payload });
+  }
+  return payload;
+}
+
 function onlyDigits(value) {
   return String(value || "").replace(/\D/g, "");
 }
@@ -320,6 +346,12 @@ function formatCnpj(value) {
   const digits = onlyDigits(value);
   if (digits.length !== 14) return value || "-";
   return digits.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+}
+
+function formatCpf(value) {
+  const digits = onlyDigits(value);
+  if (digits.length !== 11) return value || "-";
+  return digits.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, "$1.$2.$3-$4");
 }
 
 function money(value) {
@@ -370,7 +402,9 @@ function setView(view) {
     graph: ["Rede de influencia (M7)", "Grafo Nacional"],
     intelligence: ["Inteligencia regulatoria", "Inteligencia Nacional"],
     consultas: ["Participacao social (M5)", "Consultas Publicas"],
-    agenda: ["Calendario regulatorio (M8)", "Agenda e Pautas"]
+    agenda: ["Calendario regulatorio (M8)", "Agenda e Pautas"],
+    monitors: ["Vigilancia continua (M10)", "Central de Monitoramento"],
+    person: ["Screening de pessoa", "Consulta Pessoa"]
   };
   const [kicker, title] = titles[view] || ["LINCE", view];
   if (view === "dou") loadDouFeed();
@@ -379,6 +413,7 @@ function setView(view) {
   if (view === "intelligence") loadIntelligence();
   if (view === "consultas") loadConsultas();
   if (view === "agenda") loadAgenda();
+  if (view === "monitors") loadMonitors();
   $("#view-kicker").textContent = kicker;
   $("#view-title").textContent = title;
 }
@@ -404,18 +439,25 @@ async function runSearch(cnpjInput) {
     realDataProvider.fetchCnpj(cnpj),
     realDataProvider.fetchDomains(cnpj),
     realDataProvider.fetchProcesses(cnpj),
-    realDataProvider.fetchTransparency(cnpj)
+    realDataProvider.fetchTransparency(cnpj),
+    requestJson(`/api/external?type=screening&cnpj=${cnpj}`),
+    requestJson(`/api/intelligence?type=holdings&cnpj=${cnpj}`)
   ]);
 
   const cnpjResult = unwrapResult(results[0]);
   const domainResult = unwrapResult(results[1]);
   const processResult = unwrapResult(results[2]);
   const transparencyResult = unwrapResult(results[3]);
+  const screeningResult = unwrapResult(results[4]);
+  const holdingsResult = unwrapResult(results[5]);
 
   state.sources.cnpj = resultToSource(cnpjResult);
   state.sources.rdap = resultToSource(domainResult);
   state.sources.datajud = resultToSource(processResult, "key");
   state.sources.transparency = resultToSource(transparencyResult, "key");
+  state.sources.screening = resultToSource(screeningResult, "key");
+  state.screening = screeningResult.ok ? screeningResult.value : null;
+  state.holdings = holdingsResult.ok ? holdingsResult.value.items || [] : [];
 
   if (!cnpjResult.ok || !cnpjResult.value?.data) {
     setLoading(false);
@@ -555,6 +597,17 @@ async function renderNatInspector(nodeId) {
         </div>
         <div class="score-bar-wrap"><div class="score-bar-fill" style="width:${score}%"></div></div>
       </div>
+      ${(dossier?.assets?.items || []).length ? (() => {
+        const years = Object.entries(dossier.assets.total_by_year || {}).sort(([a], [b]) => b.localeCompare(a));
+        return `
+      <div class="object-section">
+        <p class="object-section-title">Patrimônio declarado (TSE)${dossier.assets.weak_match ? ' <span class="status-pill status-key" style="font-size:.6rem">match por nome</span>' : ""}</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div class="detail-stat"><span>${escapeHtml(money(years[0]?.[1] ?? 0))}</span><small>total ${escapeHtml(years[0]?.[0] || "")}</small></div>
+          <div class="detail-stat"><span>${dossier.assets.items.length}</span><small>bens declarados</small></div>
+        </div>
+      </div>`;
+      })() : ""}
       ${relPills ? `<div class="object-section"><p class="object-section-title">Relações</p><div class="entity-row">${relPills}</div></div>` : ""}
       <div class="object-section">
         <div class="entity-row">
@@ -786,7 +839,7 @@ function buildDossier(company, domains, news, processes, transparency) {
     social: [],
     documents: [],
     debts: [],
-    irregularities: [],
+    irregularities: screeningToItems(state.screening),
     alerts: [],
     regulatoryHistory: [],
     decisionPattern: []
@@ -795,6 +848,62 @@ function buildDossier(company, domains, news, processes, transparency) {
 
 function item(label, value, source) {
   return { label, value: text(value), source, empty: !value };
+}
+
+// Aba Patrimônio do dossiê de empresa: capital social (CNPJ.ws), participações
+// societárias locais (dump da Receita) e contratos públicos (Transparência).
+function renderCompanyPatrimony() {
+  if (!state.target) {
+    return emptyCard("Patrimonio", emptyMessageForTab("patrimony"));
+  }
+  const capital = `
+    <article class="dossier-item patrimony-block">
+      <span class="field-source">CNPJ.ws / Receita Federal</span>
+      <strong>Capital social: ${escapeHtml(money(state.target.capital))}</strong>
+      <p>Valor declarado no cadastro da Receita Federal.</p>
+    </article>`;
+
+  const holdings = state.holdings.length
+    ? `<article class="dossier-item patrimony-block">
+        <span class="field-source">Receita Federal (dump SOCIO)</span>
+        <strong>Quadro societário local (${state.holdings.length})</strong>
+        <div style="overflow-x:auto">
+          <table class="data-table assets-table">
+            <thead><tr><th>Sócio</th><th>Papel</th><th>Fonte</th></tr></thead>
+            <tbody>${state.holdings.map((h) => `
+              <tr>
+                <td>${escapeHtml(h.name)}</td>
+                <td>${escapeHtml(h.role || "Sócio")}</td>
+                <td>${escapeHtml(h.source || "Receita")}</td>
+              </tr>`).join("")}</tbody>
+          </table>
+        </div>
+      </article>`
+    : `<article class="dossier-item empty patrimony-block">
+        <span class="field-source">Sem dado conectado</span>
+        <strong>Participações societárias</strong>
+        <p>Sem registros na base local. Rode load:receita-socio com o dump da Receita.</p>
+      </article>`;
+
+  const contracts = (state.dossier.publicPayments || []).length
+    ? `<article class="dossier-item patrimony-block">
+        <span class="field-source">Portal da Transparência</span>
+        <strong>Contratos públicos recebidos (${state.dossier.publicPayments.length})</strong>
+        <div style="overflow-x:auto">
+          <table class="data-table assets-table">
+            <thead><tr><th>Objeto</th><th>Órgão</th></tr></thead>
+            <tbody>${state.dossier.publicPayments.map((c) => `
+              <tr><td>${escapeHtml(c.label)}</td><td>${escapeHtml(c.value)}</td></tr>`).join("")}</tbody>
+          </table>
+        </div>
+      </article>`
+    : `<article class="dossier-item empty patrimony-block">
+        <span class="field-source">Sem dado conectado</span>
+        <strong>Contratos públicos</strong>
+        <p>Nenhum contrato retornado pelo Portal da Transparência (ou chave ausente).</p>
+      </article>`;
+
+  return capital + holdings + contracts;
 }
 
 function compactItems(items) {
@@ -879,6 +988,8 @@ function clearResult() {
   state.graphEdges = [];
   state.dossier = {};
   state.news = [];
+  state.screening = null;
+  state.holdings = [];
   state.selectedNodeId = null;
   renderAll();
 }
@@ -1016,7 +1127,9 @@ async function loadDirectors() {
     const data = await requestJson(url);
     const people = data.people || [];
     if (!people.length) {
-      list.innerHTML = emptyCard("Diretores", name ? `Nenhum diretor com "${name}".` : "Nenhum diretor mapeado ainda. Rode a ingestao do DOU.");
+      list.innerHTML = emptyCard("Diretores", name ? `Nenhum diretor com "${name}".` : "Nenhum diretor mapeado ainda. Rode a ingestao do DOU.")
+        + (name ? `<article class="dossier-item"><span class="field-source">Screening externo</span><button type="button" class="alert-btn primary" id="director-screening-btn">Consultar "${escapeHtml(name)}" como pessoa (PEP/sanções)</button></article>` : "");
+      $("#director-screening-btn")?.addEventListener("click", () => runPersonSearch({ name }));
       return;
     }
     list.innerHTML = people
@@ -1054,6 +1167,7 @@ async function openDirectorDossier(id) {
     const mandates = (d.mandates || []).map((m) => `<span class="entity-pill">${escapeHtml(m.agencies?.acronym || "")} ${escapeHtml(m.role || "")}</span>`).join("");
     const parties = (d.party_links || []).map((p) => `<span class="entity-pill">${escapeHtml(p.party)}</span>`).join("");
     const rels = (d.relationships || []).length;
+    const socios = (d.relationships || []).filter((r) => r.relationship === "socio").length;
     list.innerHTML = `
       <article class="news-card">
         <button type="button" class="entity-pill" id="director-back">&larr; Voltar a lista</button>
@@ -1061,11 +1175,460 @@ async function openDirectorDossier(id) {
         <strong>Score de captura: ${intel.capture_score ?? "-"}/100 | Votos vencidos: ${intel.dissent_votes ?? 0}</strong>
         <p>Mandato ativo: ${intel.active_mandate ? "sim" : "nao"} | Conexoes: ${rels} | SIAPE: ${(d.siape || []).length} registro(s)</p>
         <div class="entity-row">${mandates}${parties}</div>
-      </article>`;
+        <div class="entity-row">
+          <button type="button" class="alert-btn primary" id="director-export">Exportar PDF</button>
+        </div>
+      </article>
+      ${renderPersonPatrimony(d, socios)}`;
     $("#director-back")?.addEventListener("click", () => loadDirectors());
+    $("#director-export")?.addEventListener("click", () => exportPersonPdf(d));
   } catch (error) {
     list.innerHTML = emptyCard("Diretores", `Falha: ${error.message}`);
   }
+}
+
+// Patrimônio declarado (TSE) + vínculos societários no dossiê de pessoa.
+function renderPersonPatrimony(d, socios) {
+  const assets = d.assets?.items || [];
+  const totals = d.assets?.total_by_year || {};
+  const weakMatch = d.assets?.weak_match;
+  if (!assets.length) {
+    return `
+      <article class="dossier-item empty">
+        <span class="field-source">Patrimônio (TSE)</span>
+        <strong>Sem bens declarados na base local</strong>
+        <p>Rode load:tse-bens com os dumps do TSE (consulta_cand + bem_candidato) para popular.</p>
+      </article>`;
+  }
+  const totalsLine = Object.entries(totals)
+    .sort(([a], [b]) => b.localeCompare(a))
+    .map(([year, total]) => `<span class="entity-pill">${escapeHtml(year)}: ${escapeHtml(money(total))}</span>`)
+    .join("");
+  return `
+    <article class="news-card">
+      <span class="source-meta">Patrimônio declarado ao TSE${weakMatch ? " | match por nome (possível homônimo)" : ""}</span>
+      <strong>${assets.length} bem(ns) declarado(s)</strong>
+      ${weakMatch ? `<div class="activity-alert info"><span class="alert-icon">ℹ</span><span style="font-size:.78rem">Vínculo por nome normalizado — confirme antes de citar (homônimos possíveis).</span></div>` : ""}
+      <div class="entity-row" style="margin-bottom:8px">${totalsLine}</div>
+      <div style="overflow-x:auto">
+        <table class="data-table assets-table">
+          <thead><tr><th>Bem</th><th>Valor</th><th>Ano</th></tr></thead>
+          <tbody>${assets.slice(0, 30).map((a) => `
+            <tr>
+              <td>${escapeHtml([a.asset_type, a.description].filter(Boolean).join(" — ").slice(0, 120))}</td>
+              <td>${escapeHtml(money(a.value))}</td>
+              <td>${escapeHtml(String(a.reference_year || "-"))}</td>
+            </tr>`).join("")}</tbody>
+        </table>
+      </div>
+      ${socios ? `<div class="entity-row"><span class="entity-pill">${socios} participação(ões) societária(s) na base local</span></div>` : ""}
+    </article>`;
+}
+
+// ══════════════════ Central de Monitoramento (M10) ═════════════════════════
+// Monitores de vigilância estilo Arko Alerta: o matcher roda a cada ingestão
+// do DOU e gera alertas com alert_type='monitor'.
+const MONITOR_TYPE_LABEL = { keyword: "Palavra-chave", person: "Pessoa", company: "Empresa", agency: "Agência" };
+const MONITOR_TYPE_COLOR = { keyword: "var(--blue)", person: "var(--green)", company: "var(--blue-bright)", agency: "var(--purple)" };
+
+async function loadMonitors() {
+  const list = $("#monitors-list");
+  const feed = $("#monitor-alerts");
+  if (!list) return;
+  list.innerHTML = emptyCard("Monitores", "Carregando monitores...");
+  if (feed) feed.innerHTML = emptyCard("Alertas", "Carregando disparos...");
+  const [monitors, alerts] = await Promise.allSettled([
+    requestJson("/api/intelligence?type=monitors"),
+    requestJson("/api/intelligence?type=monitor_alerts&limit=30")
+  ]);
+  if (monitors.status === "fulfilled") {
+    renderMonitorCards(monitors.value.items || []);
+  } else {
+    list.innerHTML = emptyCard("Monitores", `Falha: ${monitors.reason?.message || "erro"}. A tabela monitors existe? Rode a migração (Fase 5) no Supabase.`);
+  }
+  if (feed) {
+    if (alerts.status === "fulfilled") renderMonitorAlerts(alerts.value.items || []);
+    else feed.innerHTML = emptyCard("Alertas", `Falha: ${alerts.reason?.message || "erro"}`);
+  }
+}
+
+function renderMonitorCards(monitors) {
+  const list = $("#monitors-list");
+  const count = $("#monitors-count");
+  if (count) {
+    const actives = monitors.filter((m) => m.active).length;
+    count.hidden = !monitors.length;
+    count.textContent = `${actives} ativo${actives === 1 ? "" : "s"}`;
+  }
+  if (!monitors.length) {
+    list.innerHTML = emptyCard("Monitores", "Nenhum monitor criado. Use o formulário acima — leva menos de 1 minuto.");
+    return;
+  }
+  list.innerHTML = monitors
+    .map((m) => `
+      <article class="news-card target-card monitor-card${m.active ? "" : " inactive"}" data-monitor-id="${escapeHtml(m.id)}">
+        <div class="card-body">
+          <div class="card-head">
+            ${TARGET_ICO}
+            <div>
+              <strong>${escapeHtml(m.label)}</strong>
+              <span class="card-sub">${escapeHtml(MONITOR_TYPE_LABEL[m.kind] || m.kind)} · <code>${escapeHtml(m.pattern)}</code></span>
+            </div>
+            <span class="card-prio">${m.hit_count ?? 0} hit${(m.hit_count ?? 0) === 1 ? "" : "s"}</span>
+          </div>
+          <div class="entity-row">
+            <span class="entity-pill">${m.last_hit_at ? `Último disparo: ${escapeHtml(String(m.last_hit_at).slice(0, 10))}` : "Nunca disparou"}</span>
+            <label class="switch-wrap" title="${m.active ? "Desativar" : "Ativar"}">
+              <input type="checkbox" class="mon-toggle" ${m.active ? "checked" : ""} />
+              <span class="switch"></span>
+            </label>
+            <button type="button" class="alert-btn mon-delete">Excluir</button>
+          </div>
+        </div>
+        ${cardFoot(MONITOR_TYPE_COLOR[m.kind] || "var(--muted)", MONITOR_TYPE_LABEL[m.kind] || "Monitor", "LINCE//MON")}
+      </article>`)
+    .join("");
+}
+
+function renderMonitorAlerts(items) {
+  const feed = $("#monitor-alerts");
+  if (!feed) return;
+  if (!items.length) {
+    feed.innerHTML = emptyCard("Alertas", "Nenhum alerta disparado ainda. Os monitores rodam junto com a ingestão diária do DOU.");
+    return;
+  }
+  feed.innerHTML = items
+    .map((a) => `
+      <article class="news-card target-card">
+        <div class="card-body">
+          <div class="card-head">
+            <div>
+              <strong>${escapeHtml(a.title || "Monitor")}</strong>
+              <span class="card-sub">${escapeHtml((a.created_at || "").slice(0, 10))}${a.acknowledged_at ? " · dispensado" : ""}</span>
+            </div>
+            <span class="card-prio">${escapeHtml(a.metadata?.agency_acronym || "DOU")}</span>
+          </div>
+          <p>${escapeHtml(a.body || "")}</p>
+        </div>
+        ${cardFoot(a.severity === "high" ? "var(--red)" : "var(--yellow)", `match: ${a.metadata?.matched || "texto"}`, "LINCE//MON")}
+      </article>`)
+    .join("");
+}
+
+async function saveMonitorFromForm(event) {
+  event.preventDefault();
+  const button = event.target.querySelector("button[type=submit]");
+  const label = $("#mon-name")?.value?.trim();
+  const kind = $("#mon-type")?.value;
+  const pattern = $("#mon-pattern")?.value?.trim();
+  if (!pattern) return;
+  button.disabled = true;
+  button.textContent = "Criando...";
+  try {
+    await postJson("/api/intelligence?type=monitor_save", {
+      kind,
+      label: label || pattern,
+      pattern,
+      active: $("#mon-active")?.checked ?? true
+    });
+    event.target.reset();
+    const active = $("#mon-active");
+    if (active) active.checked = true;
+    await loadMonitors();
+  } catch (error) {
+    $("#monitors-list").insertAdjacentHTML("afterbegin", `<div class="activity-alert"><span class="alert-icon">⚠</span><span style="font-size:.78rem">${escapeHtml(error.message)}</span></div>`);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Criar monitor";
+  }
+}
+
+function wireMonitorList() {
+  const list = $("#monitors-list");
+  if (!list) return;
+  list.addEventListener("change", async (event) => {
+    const toggle = event.target.closest(".mon-toggle");
+    if (!toggle) return;
+    const card = toggle.closest("[data-monitor-id]");
+    const id = card?.dataset.monitorId;
+    if (!id) return;
+    const wanted = toggle.checked;
+    card.classList.toggle("inactive", !wanted);
+    try {
+      await postJson("/api/intelligence?type=monitor_toggle", { id, active: wanted });
+    } catch {
+      toggle.checked = !wanted;
+      card.classList.toggle("inactive", wanted);
+    }
+  });
+  list.addEventListener("click", async (event) => {
+    const del = event.target.closest(".mon-delete");
+    if (!del) return;
+    const card = del.closest("[data-monitor-id]");
+    const id = card?.dataset.monitorId;
+    if (!id || !confirm("Excluir este monitor? O histórico de hits será perdido.")) return;
+    del.disabled = true;
+    try {
+      await postJson("/api/intelligence?type=monitor_delete", { id });
+      card.style.transition = "opacity .3s";
+      card.style.opacity = "0";
+      setTimeout(() => card.remove(), 320);
+    } catch (error) {
+      del.disabled = false;
+      alert(`Falha ao excluir: ${error.message}`);
+    }
+  });
+}
+
+// ══════════════════ Dossiê exportável (versão de impressão) ════════════════
+// Estratégia: #print-root oculto + window.print() — sem popup blocker, um CSS
+// só (@media print). O resumo executivo IA nunca bloqueia a exportação.
+
+function printItemsTable(items) {
+  return `<table class="print-table">
+    <thead><tr><th>Campo</th><th>Valor</th><th>Fonte</th></tr></thead>
+    <tbody>${items.map((entry) => `
+      <tr>
+        <td>${escapeHtml(entry.label)}</td>
+        <td>${escapeHtml(entry.value)}</td>
+        <td>${escapeHtml(entry.source || "")}</td>
+      </tr>`).join("")}</tbody>
+  </table>`;
+}
+
+function sourceNamesInUse() {
+  const used = new Set();
+  for (const [id, runtime] of Object.entries(state.sources)) {
+    if (runtime?.status === "connected" || runtime?.status === "empty") {
+      const meta = sourceStatus.find((s) => s.id === id);
+      used.add(meta?.name || id);
+    }
+  }
+  return used.size ? [...used] : ["Fontes públicas conectadas"];
+}
+
+function buildPrintDoc({ title, subtitle, classification, ai, sections, sourcesUsed }) {
+  const summaryBlock = ai?.summary
+    ? `<section class="print-summary">
+        <h2>Resumo executivo (IA)</h2>
+        <p>${escapeHtml(ai.summary)}</p>
+        ${(ai.risk_flags || []).length ? `<p><strong>Riscos:</strong> ${ai.risk_flags.map((r) => escapeHtml(r)).join(" · ")}</p>` : ""}
+        ${(ai.highlights || []).length ? `<p><strong>Destaques:</strong> ${ai.highlights.map((h) => escapeHtml(h)).join(" · ")}</p>` : ""}
+      </section>`
+    : `<section class="print-summary"><h2>Resumo executivo</h2><p>Resumo por IA indisponível (configure ANTHROPIC_API_KEY para habilitar).</p></section>`;
+  return `
+    <div class="print-doc">
+      <div class="print-class-bar">${escapeHtml(classification)} — USO RESTRITO</div>
+      <header class="print-head">
+        <div>
+          <p class="print-kicker">LINCE · INTELIGÊNCIA REGULATÓRIA · REAL-ONLY</p>
+          <h1>${escapeHtml(title)}</h1>
+          <p class="print-sub">${escapeHtml(subtitle)}</p>
+        </div>
+        <div class="print-badge"><span>Classificação</span><strong>${escapeHtml(classification)}</strong></div>
+      </header>
+      ${summaryBlock}
+      ${sections.map((s) => `<section class="print-section"><h2>${escapeHtml(s.heading)}</h2>${s.html}</section>`).join("")}
+      <footer class="print-foot">
+        <p>Fontes consultadas: ${sourcesUsed.map((s) => escapeHtml(s)).join(" · ")}</p>
+        <p>Gerado em ${new Date().toLocaleString("pt-BR")} · LINCE real-only — sem dados fictícios · ${escapeHtml(classification)}</p>
+      </footer>
+    </div>`;
+}
+
+function runPrint(html) {
+  const root = $("#print-root");
+  if (!root) return;
+  root.innerHTML = html;
+  requestAnimationFrame(() => window.print());
+}
+
+window.addEventListener("afterprint", () => {
+  const root = $("#print-root");
+  if (root) root.innerHTML = "";
+});
+
+// Empresa: dossiê montado em state; resumo IA via POST exec_summary.
+async function exportDossierPdf() {
+  if (!state.target) return;
+  const btn = $("#export-dossier");
+  if (btn) { btn.disabled = true; btn.textContent = "Gerando..."; }
+  const compact = {
+    kind: "company",
+    company: { name: state.target.legalName, cnpj: formatCnpj(state.target.cnpj), status: state.target.status },
+    dossier: Object.fromEntries(Object.entries(state.dossier).filter(([, v]) => (v || []).length)),
+    screening_flags: state.screening?.flags || null,
+    holdings: state.holdings
+  };
+  const ai = await postJson("/api/intelligence?type=exec_summary", compact).catch(() => null);
+  const sections = dossierTabs
+    .map(([id, label]) => ({ heading: label, items: id === "patrimony" ? [] : state.dossier[id] || [] }))
+    .filter((s) => s.items.length)
+    .map((s) => ({ heading: s.heading, html: printItemsTable(s.items) }));
+  if (state.holdings.length) {
+    sections.push({
+      heading: "Patrimônio — Quadro societário local",
+      html: printItemsTable(state.holdings.map((h) => item(h.name, h.role, h.source)))
+    });
+  }
+  runPrint(buildPrintDoc({
+    title: state.target.legalName || "Empresa",
+    subtitle: `CNPJ ${formatCnpj(state.target.cnpj)}`,
+    classification: "LINCE//REAL",
+    ai,
+    sections,
+    sourcesUsed: sourceNamesInUse()
+  }));
+  if (btn) { btn.disabled = false; btn.textContent = "Exportar PDF"; }
+}
+
+// Pessoa: dossiê vem do backend; resumo IA via ?ai=1 (dossiê já montado lá).
+async function exportPersonPdf(d) {
+  const withAi = await requestJson(`/api/dossier-person?id=${encodeURIComponent(d.person.id)}&ai=1`).catch(() => null);
+  const ai = withAi?.ai || null;
+  const intel = d.intelligence || {};
+  const sections = [];
+  sections.push({
+    heading: "Perfil",
+    html: printItemsTable([
+      item("Nome", d.person.full_name, "LINCE / DOU"),
+      item("Cargo", d.person.role, "DOU Seção 2"),
+      item("Score de captura", `${intel.capture_score ?? "-"}/100`, "LINCE"),
+      item("Mandato ativo", intel.active_mandate ? "Sim" : "Não", "LINCE"),
+      item("Votos divergentes", String(intel.dissent_votes ?? 0), "LINCE")
+    ])
+  });
+  if ((d.mandates || []).length) {
+    sections.push({
+      heading: "Mandatos",
+      html: printItemsTable(d.mandates.map((m) => item(m.agencies?.acronym || "Agência", `${m.role || ""} ${m.started_at ? `desde ${m.started_at}` : ""}`.trim(), "DOU Seção 2")))
+    });
+  }
+  if ((d.party_links || []).length) {
+    sections.push({
+      heading: "Filiação partidária",
+      html: printItemsTable(d.party_links.map((p) => item(p.party, p.joined_at ? `Filiado desde ${p.joined_at}` : "Filiação registrada", "TSE")))
+    });
+  }
+  const assets = d.assets?.items || [];
+  if (assets.length) {
+    sections.push({
+      heading: `Patrimônio declarado (TSE)${d.assets.weak_match ? " — match por nome (verificar homônimo)" : ""}`,
+      html: printItemsTable(assets.slice(0, 40).map((a) => item(
+        [a.asset_type, a.description].filter(Boolean).join(" — ").slice(0, 120),
+        money(a.value),
+        `TSE ${a.reference_year || ""}`
+      )))
+    });
+  }
+  runPrint(buildPrintDoc({
+    title: d.person.full_name,
+    subtitle: d.person.role || "Dirigente de agência reguladora",
+    classification: "LINCE//DIR",
+    ai,
+    sections,
+    sourcesUsed: ["DOU / INLABS", "TSE", "Portal da Transparência", "LINCE (base local)"]
+  }));
+}
+
+// ══════════════════ Consulta de pessoa (CPF ou nome) ═══════════════════════
+// CPF (11 dígitos) na busca global ou prefixo "p: nome". Fontes públicas
+// (Portal da Transparência) + match na base local de dirigentes.
+async function runPersonSearch({ cpf, name }) {
+  setView("person");
+  $("#person-title").textContent = cpf ? formatCpf(cpf) : name;
+  const scrEl = $("#person-screening");
+  const localEl = $("#person-local");
+  scrEl.innerHTML = emptyCard("Screening", "Consultando listas do Portal da Transparência...");
+  localEl.innerHTML = emptyCard("Base local", "Buscando na base de diretores...");
+
+  if (cpf) {
+    try {
+      const data = await requestJson(`/api/external?type=cpf&cpf=${cpf}`);
+      $("#person-title").textContent = `CPF ${data.cpf_masked || formatCpf(cpf)}`;
+      renderPersonScreening(data.screening);
+      renderPersonLocal(data.local_matches || []);
+    } catch (error) {
+      scrEl.innerHTML = emptyCard("Screening", `Falha: ${error.message}`);
+      localEl.innerHTML = emptyCard("Base local", "Consulta não executada.");
+    }
+    return;
+  }
+
+  const [scr, local] = await Promise.allSettled([
+    requestJson(`/api/external?type=screening&q=${encodeURIComponent(name)}`),
+    requestJson(`/api/dossier-person?q=${encodeURIComponent(name)}`)
+  ]);
+  if (scr.status === "fulfilled") renderPersonScreening(scr.value);
+  else renderPersonScreening({ ok: false, status: scr.reason?.payload?.status, error: scr.reason?.message });
+  renderPersonLocal(local.status === "fulfilled" ? local.value.people || [] : []);
+}
+
+// screening: {flags, sources} | {ok:false, status:"requires_key"} | {ok:false, error}
+function renderPersonScreening(screening) {
+  const el = $("#person-screening");
+  if (!el) return;
+  const mode = screening?.sources ? "ok" : screening?.status === "requires_key" ? "key" : "err";
+  const flags = screening?.flags || {};
+  const flagPills = mode === "ok"
+    ? `<div class="entity-row" style="margin-bottom:10px">
+        ${flags.is_pep ? `<span class="entity-pill score-high">PEP</span>` : ""}
+        ${flags.has_sanctions ? `<span class="entity-pill score-high">SANCIONADO</span>` : ""}
+        ${flags.is_servidor ? `<span class="entity-pill score-mid">SERVIDOR FEDERAL</span>` : ""}
+        ${!flags.is_pep && !flags.has_sanctions && !flags.is_servidor ? `<span class="entity-pill score-low">SEM APONTAMENTOS</span>` : ""}
+      </div>`
+    : "";
+  // Matches detalhados (até 5 por lista com registro).
+  let details = "";
+  if (mode === "ok") {
+    for (const [key, label] of SCREENING_LISTS.map(([k, l]) => [k, l])) {
+      const src = screening.sources[key];
+      if (!src?.ok || !src.total) continue;
+      details += (src.items || []).slice(0, 5).map((entry) => {
+        const info = screeningMatchInfo(entry);
+        return `<article class="dossier-item">
+          <span class="field-source">${escapeHtml(label)} | Portal da Transparência</span>
+          <strong>${escapeHtml(info.name)}</strong>
+          <p>${escapeHtml(info.detail || `Registro na lista ${label}.`)}</p>
+        </article>`;
+      }).join("");
+    }
+  }
+  const errNote = mode === "err" && screening?.error
+    ? `<p class="screening-note">Falha na consulta: ${escapeHtml(screening.error)}</p>`
+    : "";
+  el.innerHTML = flagPills + renderScreeningPanel(screening, "person", mode) + errNote + details;
+}
+
+function renderPersonLocal(matches) {
+  const el = $("#person-local");
+  if (!el) return;
+  if (!matches.length) {
+    el.innerHTML = emptyCard("Base local", "Sem correspondência na base local de dirigentes.");
+    return;
+  }
+  el.innerHTML = matches
+    .map((p) => `
+      <article class="news-card target-card director-row selectable" data-person-id="${escapeHtml(p.id)}">
+        <div class="card-body">
+          <div class="card-head">
+            ${TARGET_ICO}
+            <div>
+              <strong>${escapeHtml(p.full_name)}</strong>
+              <span class="card-sub">${escapeHtml(p.role || "Dirigente")}</span>
+            </div>
+            <span class="card-prio">${escapeHtml(p.agency || "?")}</span>
+          </div>
+        </div>
+        ${cardFoot("var(--red)", p.agency || "Agência", "LINCE//DIR")}
+      </article>`)
+    .join("");
+  el.querySelectorAll(".director-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      setView("directors");
+      openDirectorDossier(row.dataset.personId);
+    });
+  });
 }
 
 // Estado do grafo nacional (separado do estado do grafo CNPJ).
@@ -1399,12 +1962,20 @@ function renderInspector() {
     return;
   }
   $("#inspector-title").textContent = node.title;
+  // Screening de sanções da empresa central (Portal da Transparência).
+  const screeningSection = node.id === "company"
+    ? `<div class="object-section">
+        <p class="object-section-title">Screening de sanções</p>
+        ${renderScreeningPanel(state.screening, "company", state.sources.screening?.status === "key" ? "key" : state.screening ? "ok" : "err")}
+      </div>`
+    : "";
   $("#inspector-body").innerHTML = `
     <article class="detail-card">
       <span class="field-source">${escapeHtml(node.type)} | ${escapeHtml(node.status)}</span>
       <strong>${escapeHtml(node.subtitle)}</strong>
       <p>Dado exibido somente porque foi retornado por fonte real conectada.</p>
     </article>
+    ${screeningSection}
     ${node.fields
       .filter(([, value]) => value)
       .map(
@@ -1429,9 +2000,17 @@ function renderDossier() {
   renderDossierTabs();
   const title = state.target?.legalName || "Nenhum alvo consultado";
   $("#dossier-title").textContent = title;
+  const exportBtn = $("#export-dossier");
+  if (exportBtn) exportBtn.hidden = !state.target;
   $("#dossier-summary").textContent = state.target
     ? `Dossie real-only para ${formatCnpj(state.target.cnpj)}. Secoes sem retorno real aparecem como vazias.`
     : "As secoes abaixo so serao preenchidas quando houver dado retornado por fonte real.";
+
+  // Aba Patrimônio tem layout próprio (blocos de largura total).
+  if (state.activeDossierTab === "patrimony") {
+    $("#dossier-content").innerHTML = renderCompanyPatrimony();
+    return;
+  }
 
   const items = state.dossier[state.activeDossierTab] || [];
   if (!items.length) {
@@ -1471,7 +2050,10 @@ function emptyMessageForTab(tab) {
     processes: "DataJud esta preparado, mas requer chave no ambiente para consulta real.",
     debts: "PGFN exige ingestao do dump trimestral ou API contratada. Ainda nao conectado.",
     publicPayments: "Portal da Transparencia requer chave gratuita no ambiente.",
-    irregularities: "Alertas reais dependem de dados conectados e regras aplicadas.",
+    patrimony: "Patrimonio exige consulta de CNPJ executada. Participacoes societarias dependem do dump da Receita (load:receita-socio).",
+    irregularities: state.screening
+      ? "Screening executado no Portal da Transparencia: nada consta nas listas consultadas (CEIS, CNEP, CEPIM)."
+      : "Screening PEP/sancoes requer PORTAL_TRANSPARENCIA_API_KEY no ambiente da Vercel.",
     alerts: "Sem alerta real gerado para este alvo.",
     regulatoryHistory: "Historico regulatorio e exclusivo LINCE, mas exige ingestao de deliberações.",
     decisionPattern: "Padrao decisorio exige votos/deliberacoes ingeridos."
@@ -1496,6 +2078,68 @@ function cardFoot(queueColor, queueLabel, classification) {
 
 // Ícone de alvo (crosshair vermelho em círculo, como no Gotham).
 const TARGET_ICO = `<span class="target-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg></span>`;
+
+// ── Screening PEP/Sanções (badges por lista consultada) ───────────────────
+const SCREENING_LISTS = [
+  ["peps", "PEP", "Pessoa exposta politicamente"],
+  ["ceis", "CEIS", "Inidôneas e suspensas"],
+  ["cnep", "CNEP", "Punidas — Lei Anticorrupção"],
+  ["cepim", "CEPIM", "Entidades impedidas"],
+  ["ceaf", "CEAF", "Expulsos da adm. federal"],
+  ["servidores", "SIAPE", "Vínculo de servidor federal"]
+];
+const SCREENING_SUBSET = {
+  company: ["ceis", "cnep", "cepim"],
+  person: ["peps", "ceis", "cnep", "ceaf", "servidores"]
+};
+
+// Extrai nome/descrição de um registro (campos variam por lista do Portal).
+function screeningMatchInfo(entry) {
+  const name = entry?.sancionado?.nome || entry?.pessoaJuridica?.nome || entry?.pessoa?.nome
+    || entry?.servidor?.pessoa?.nome || entry?.nome || entry?.nomeSancionado || "Registro";
+  const detail = entry?.tipoSancao?.descricaoResumida || entry?.motivo || entry?.descricaoFuncao
+    || entry?.punicao?.descricao || entry?.cargo?.descricao || entry?.orgaoSancionador?.nome || "";
+  return { name: String(name), detail: String(detail || "") };
+}
+
+// screening = payload de /api/external?type=screening ({flags, sources}) ou
+// null. mode: "ok" | "key" (requer chave) | "err".
+function renderScreeningPanel(screening, kind, mode) {
+  const keys = SCREENING_SUBSET[kind] || SCREENING_LISTS.map(([k]) => k);
+  const lists = SCREENING_LISTS.filter(([k]) => keys.includes(k));
+  const badges = lists.map(([key, label, desc]) => {
+    const src = screening?.sources?.[key];
+    let cls = "err", verdict = "SEM DADO";
+    if (mode === "key") { cls = "key"; verdict = "REQUER CHAVE"; }
+    else if (src?.ok && src.total > 0) { cls = "hit"; verdict = `${src.total}${src.truncated ? "+" : ""} REGISTRO(S)`; }
+    else if (src?.ok) { cls = "clear"; verdict = "NADA CONSTA"; }
+    else if (src) { cls = "err"; verdict = "FALHA NA FONTE"; }
+    return `<div class="screening-badge ${cls}">
+      <span class="sb-list">${escapeHtml(label)}</span>
+      <span class="sb-verdict">${escapeHtml(verdict)}</span>
+      <span class="sb-desc">${escapeHtml(desc)}</span>
+    </div>`;
+  }).join("");
+  const note = mode === "key"
+    ? `<p class="screening-note">Configure PORTAL_TRANSPARENCIA_API_KEY no ambiente da Vercel para habilitar o screening.</p>`
+    : "";
+  return `<div class="screening-grid">${badges}</div>${note}`;
+}
+
+// Hits do screening viram itens da aba Irregularidades do dossiê.
+function screeningToItems(screening) {
+  if (!screening?.sources) return [];
+  const items = [];
+  for (const [key, label] of SCREENING_LISTS.map(([k, l]) => [k, l])) {
+    const src = screening.sources[key];
+    if (!src?.ok || !src.total) continue;
+    for (const entry of (src.items || []).slice(0, 5)) {
+      const info = screeningMatchInfo(entry);
+      items.push(item(`${label}: ${info.name}`, info.detail || `Registro na lista ${label}`, "Portal da Transparencia"));
+    }
+  }
+  return items;
+}
 
 // Destaca nomes de entidades dentro do texto com <mark> azul.
 // Escapa o texto ANTES e o nome ao montar o regex — sem risco de XSS.
@@ -1528,10 +2172,21 @@ function wireEvents() {
     event.preventDefault();
     const raw = ($("#global-search").value || "").trim();
     const digits = onlyDigits(raw);
+    const personPrefix = raw.match(/^p(?:essoa)?:\s*(.+)$/i);
     if (digits.length === 14) {
       // CNPJ -> investigação tradicional
       runSearch(raw).catch((error) => {
         setLoading(false);
+        showInspectorMessage("Erro de consulta", error.message);
+      });
+    } else if (digits.length === 11) {
+      // CPF -> screening de pessoa (fontes públicas + base local)
+      runPersonSearch({ cpf: digits }).catch((error) => {
+        showInspectorMessage("Erro de consulta", error.message);
+      });
+    } else if (personPrefix) {
+      // "p: fulano" -> screening de pessoa por nome
+      runPersonSearch({ name: personPrefix[1] }).catch((error) => {
         showInspectorMessage("Erro de consulta", error.message);
       });
     } else if (raw.length >= 3) {
@@ -1540,7 +2195,7 @@ function wireEvents() {
         showInspectorMessage("Erro de busca", error.message);
       });
     } else {
-      showInspectorMessage("Busca", "Informe um CNPJ (14 dígitos) ou termo de busca (mín. 3 letras).");
+      showInspectorMessage("Busca", "Informe CNPJ (14 dígitos), CPF (11 dígitos), termo (mín. 3 letras) ou p: nome.");
     }
   });
 
@@ -1569,6 +2224,12 @@ function wireEvents() {
       event.preventDefault();
       $("#global-search")?.focus();
     }
+  });
+
+  $("#monitor-form")?.addEventListener("submit", saveMonitorFromForm);
+  wireMonitorList();
+  $("#export-dossier")?.addEventListener("click", () => {
+    exportDossierPdf().catch((error) => alert(`Falha ao exportar: ${error.message}`));
   });
 }
 
@@ -1722,6 +2383,9 @@ function init() {
   wireEvents();
   wireTrendToggle();
   loadOverviewMetrics();
+  // Deep-link/QA: #view=monitors abre a view direto (não há roteamento por URL).
+  const hashParams = new URLSearchParams(location.hash.slice(1));
+  if (hashParams.get("view")) setView(hashParams.get("view"));
 }
 
 init();

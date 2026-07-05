@@ -908,6 +908,13 @@ mark.entity-mark {
   max-width: 850px;
 }
 
+.dossier-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
 .dossier-badge {
   background: var(--bg-deep);
   border: 1px solid var(--blue-line);
@@ -1465,6 +1472,205 @@ button.entity-pill:hover {
   font-size: 10.5px;
 }
 
+/* ── Central de Monitoramento (M10) ───────────────────────────────────────── */
+.monitors-grid,
+.person-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.monitors-grid {
+  grid-template-columns: minmax(0, 1fr) 420px;
+}
+
+.person-grid {
+  grid-template-columns: minmax(0, 1fr) 380px;
+}
+
+.monitor-form {
+  display: grid;
+  grid-template-columns: 1.1fr 0.7fr 1.4fr auto auto;
+  gap: 10px;
+  align-items: end;
+  padding: 14px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+
+.monitor-form .field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.monitor-form .field label {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.monitor-form .primary-button {
+  min-height: 32px;
+}
+
+.monitor-card code {
+  font-family: var(--font-mono);
+  color: var(--blue-bright);
+  font-size: 11px;
+}
+
+.monitor-card.inactive {
+  opacity: 0.55;
+}
+
+/* Toggle switch estilo Gotham (ativo = oliva) */
+.switch-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.switch-wrap input {
+  position: absolute;
+  opacity: 0;
+}
+
+.switch {
+  width: 30px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--bg-deep);
+  border: 1px solid var(--line);
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--faint);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.switch-wrap input:checked + .switch {
+  background: var(--olive-soft);
+  border-color: var(--olive);
+}
+
+.switch-wrap input:checked + .switch::after {
+  transform: translateX(14px);
+  background: var(--olive);
+}
+
+.switch-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.nav-item[data-view="monitors"] {
+  color: var(--yellow);
+}
+
+/* ── Screening PEP/Sanções ────────────────────────────────────────────────── */
+.screening-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.screening-badge {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 9px 10px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.screening-badge .sb-list {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.screening-badge .sb-verdict {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.screening-badge .sb-desc {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.screening-badge.clear {
+  border-color: var(--green);
+}
+.screening-badge.clear .sb-verdict {
+  color: var(--green);
+}
+
+.screening-badge.hit {
+  background: var(--red-soft);
+  border-color: var(--red);
+}
+.screening-badge.hit .sb-verdict {
+  color: var(--red);
+}
+
+.screening-badge.key {
+  border-color: var(--amber);
+}
+.screening-badge.key .sb-verdict {
+  color: var(--amber-text);
+}
+
+.screening-badge.err .sb-verdict {
+  color: var(--muted);
+}
+
+.screening-note {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin: 8px 0 0;
+}
+
+/* ── Patrimônio ───────────────────────────────────────────────────────────── */
+.assets-table td:nth-child(2) {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.assets-table tr.assets-total td {
+  border-top: 2px solid var(--line-strong);
+  border-bottom: 0;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.patrimony-block {
+  grid-column: 1 / -1;
+}
+
 /* ── Inputs de filtro (data, agência, busca) ──────────────────────────────── */
 .dou-date {
   background: var(--bg-deep);
@@ -1486,7 +1692,9 @@ button.entity-pill:hover {
   .app-shell,
   .overview-grid,
   .investigation-grid,
-  .sources-grid {
+  .sources-grid,
+  .monitors-grid,
+  .person-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1592,6 +1800,15 @@ button.entity-pill:hover {
     flex-wrap: wrap;
   }
 
+  .monitor-form {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .screening-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .graph-canvas {
     min-height: 640px;
   }
@@ -1605,5 +1822,153 @@ button.entity-pill:hover {
     max-width: 160px;
     top: 8px;
     right: 8px;
+  }
+}
+
+/* ── Dossiê exportável (versão de impressão) ──────────────────────────────── */
+#print-root {
+  display: none;
+}
+
+@media print {
+  :root {
+    color-scheme: light;
+  }
+  @page {
+    margin: 16mm 14mm;
+  }
+  body {
+    background: #fff !important;
+    color: #111 !important;
+    font-size: 11pt;
+  }
+  .app-shell,
+  .graph-tip {
+    display: none !important;
+  }
+  #print-root {
+    display: block !important;
+  }
+
+  .print-doc {
+    color: #111;
+    font-family: var(--font-ui);
+  }
+  .print-class-bar {
+    background: #111 !important;
+    color: #fff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    font-family: var(--font-mono);
+    font-size: 9pt;
+    font-weight: 600;
+    letter-spacing: 0.25em;
+    text-align: center;
+    text-transform: uppercase;
+    padding: 4px 0;
+  }
+  .print-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 20px;
+    border-bottom: 2px solid #111;
+    padding: 14px 0 10px;
+    margin-bottom: 12px;
+  }
+  .print-kicker {
+    font-family: var(--font-mono);
+    font-size: 8pt;
+    letter-spacing: 0.14em;
+    color: #555;
+    margin: 0 0 4px;
+  }
+  .print-doc h1 {
+    font-size: 19pt;
+    margin: 0;
+    color: #111;
+  }
+  .print-sub {
+    font-family: var(--font-mono);
+    font-size: 10pt;
+    color: #333;
+    margin: 4px 0 0;
+  }
+  .print-badge {
+    border: 1.5px solid #111;
+    padding: 8px 12px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .print-badge span {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 7.5pt;
+    letter-spacing: 0.1em;
+    color: #555;
+    text-transform: uppercase;
+  }
+  .print-badge strong {
+    font-family: var(--font-mono);
+    font-size: 10pt;
+  }
+  .print-summary {
+    border: 1px solid #999;
+    background: #f4f4f4 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    padding: 10px 14px;
+    margin-bottom: 14px;
+  }
+  .print-summary p {
+    margin: 4px 0 0;
+  }
+  .print-section {
+    break-inside: avoid;
+    margin-bottom: 12px;
+  }
+  .print-doc h2 {
+    font-family: var(--font-mono);
+    font-size: 10pt;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    border-bottom: 1px solid #999;
+    padding-bottom: 3px;
+    margin: 0 0 6px;
+    color: #111;
+  }
+  .print-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5pt;
+  }
+  .print-table th {
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: 8pt;
+    text-transform: uppercase;
+    color: #555;
+    border-bottom: 1px solid #999;
+    padding: 4px 6px;
+  }
+  .print-table td {
+    border-bottom: 0.5pt solid #ccc;
+    padding: 4px 6px;
+    vertical-align: top;
+  }
+  .print-foot {
+    border-top: 1px solid #111;
+    margin-top: 16px;
+    padding-top: 6px;
+    font-family: var(--font-mono);
+    font-size: 8pt;
+    color: #555;
+  }
+  .print-foot p {
+    margin: 2px 0;
+  }
+  .print-doc a {
+    color: #111;
+    text-decoration: none;
   }
 }

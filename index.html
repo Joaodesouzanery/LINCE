@@ -45,6 +45,10 @@
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10l6 6v8a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
             <span class="nav-text">Monitor DOU</span>
           </button>
+          <button class="nav-item" type="button" data-view="monitors" title="Central de Monitoramento">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+            <span class="nav-text">Monitores</span>
+          </button>
           <button class="nav-item" type="button" data-view="directors" title="Diretores">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
             <span class="nav-text">Diretores</span>
@@ -118,7 +122,7 @@
             <div class="search-wrap">
               <input
                 id="global-search"
-                placeholder="Buscar CNPJ ou termo nos atos do DOU"
+                placeholder="Buscar CNPJ, CPF, termo — ou p: nome para pessoa"
                 autocomplete="off"
               />
               <kbd class="search-hint">Ctrl Space</kbd>
@@ -321,9 +325,12 @@
                   As seções abaixo só serão preenchidas quando houver dado retornado por fonte real.
                 </p>
               </div>
-              <div class="dossier-badge">
-                <span>Classificação</span>
-                <strong>DOU//REAL</strong>
+              <div class="dossier-actions">
+                <button class="ghost-button" type="button" id="export-dossier" hidden>Exportar PDF</button>
+                <div class="dossier-badge">
+                  <span>Classificação</span>
+                  <strong>DOU//REAL</strong>
+                </div>
               </div>
             </div>
             <div class="dossier-tabs" id="dossier-tabs"></div>
@@ -387,6 +394,78 @@
           </div>
         </section>
 
+        <section class="view" id="view-monitors">
+          <div class="monitors-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Criação rápida (M10)</p>
+                  <h2>Monitores de vigilância</h2>
+                </div>
+                <span class="status-pill status-ok" id="monitors-count" hidden>0 ativos</span>
+              </div>
+              <form class="monitor-form" id="monitor-form">
+                <div class="field">
+                  <label for="mon-name">Nome</label>
+                  <input id="mon-name" class="dou-date" maxlength="80" placeholder="Ex.: Sanções ANEEL" />
+                </div>
+                <div class="field">
+                  <label for="mon-type">Tipo</label>
+                  <select id="mon-type" class="dou-date">
+                    <option value="keyword">Palavra-chave</option>
+                    <option value="person">Pessoa</option>
+                    <option value="company">Empresa</option>
+                    <option value="agency">Agência</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="mon-pattern">Padrão de busca</label>
+                  <input id="mon-pattern" class="dou-date" required placeholder="termo, nome, CNPJ ou sigla" />
+                </div>
+                <label class="switch-wrap">
+                  <input type="checkbox" id="mon-active" checked />
+                  <span class="switch"></span>
+                  <span class="switch-label">Ativo</span>
+                </label>
+                <button type="submit" class="primary-button">Criar monitor</button>
+              </form>
+              <div class="news-list" id="monitors-list"></div>
+            </section>
+            <aside class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Feed por monitor</p>
+                  <h2>Alertas disparados</h2>
+                </div>
+              </div>
+              <div class="news-list" id="monitor-alerts"></div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view" id="view-person">
+          <div class="person-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Screening PEP / Sanções</p>
+                  <h2 id="person-title">Nenhuma pessoa consultada</h2>
+                </div>
+              </div>
+              <div class="news-list" id="person-screening"></div>
+            </section>
+            <aside class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Base local (M3)</p>
+                  <h2>Diretores correspondentes</h2>
+                </div>
+              </div>
+              <div class="news-list" id="person-local"></div>
+            </aside>
+          </div>
+        </section>
+
         <section class="view" id="view-graph">
           <div class="investigation-grid">
             <section class="panel graph-panel">
@@ -426,6 +505,9 @@
         </section>
       </main>
     </div>
+
+    <!-- Documento de impressão (Exportar PDF) — preenchido sob demanda pelo app.js. -->
+    <div id="print-root" aria-hidden="true"></div>
 
     <!-- Cytoscape.js (grafo de vínculos) — UMD via CDN, sem build. -->
     <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
