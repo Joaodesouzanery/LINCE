@@ -105,35 +105,37 @@ function debounce(fn, ms) {
 // Controlador único compartilhado pelos dois grafos (Investigar CNPJ e Grafo
 // Nacional). Carrega via CDN (script no index.html). Estilo por tipo de nó e por
 // tipo/forca de vínculo, legenda interativa (= filtro), busca, fit e expansão.
+// Hexes literais sincronizados com os tokens do styles.css (Cytoscape não
+// resolve var(--x) em estilos de nó/aresta — manter os dois lados alinhados).
 const NODE_TYPE_META = {
-  company:      { color: "#4e8cff", label: "Empresa" },
-  agency:       { color: "#b48bff", label: "Agência" },
-  person:       { color: "#61c46e", label: "Pessoa" },
-  partner:      { color: "#61c46e", label: "Sócio" },
-  contact:      { color: "#8d7bff", label: "Contato" },
-  domain:       { color: "#d7ad4f", label: "Domínio" },
-  news:         { color: "#ef6760", label: "Notícia" },
-  party:        { color: "#e879b0", label: "Partido" },
-  deliberation: { color: "#38bdb0", label: "Deliberação" },
-  process:      { color: "#e0843d", label: "Processo" },
-  contract:     { color: "#c9a227", label: "Contrato" }
+  company:      { color: "#2d72d2", label: "Empresa" },
+  agency:       { color: "#9881f3", label: "Agência" },
+  person:       { color: "#32a467", label: "Pessoa" },
+  partner:      { color: "#32a467", label: "Sócio" },
+  contact:      { color: "#48a4dc", label: "Contato" },
+  domain:       { color: "#ecaa3b", label: "Domínio" },
+  news:         { color: "#d5605c", label: "Notícia" },
+  party:        { color: "#d2699e", label: "Partido" },
+  deliberation: { color: "#2ea89d", label: "Deliberação" },
+  process:      { color: "#c78a3b", label: "Processo" },
+  contract:     { color: "#b0b352", label: "Contrato" }
 };
-const nodeColor = (t) => (NODE_TYPE_META[t] || { color: "#7b8794" }).color;
+const nodeColor = (t) => (NODE_TYPE_META[t] || { color: "#6b757d" }).color;
 const nodeTypeLabel = (t) => (NODE_TYPE_META[t] || { label: t }).label;
 
 const REL_META = {
-  socio: { color: "#4e8cff", style: "solid" }, Socio: { color: "#4e8cff", style: "solid" },
-  owns: { color: "#4e8cff", style: "solid" },
-  mandato: { color: "#61c46e", style: "solid" }, employs: { color: "#61c46e", style: "solid" },
-  Contato: { color: "#8d7bff", style: "dashed" }, Dominio: { color: "#d7ad4f", style: "dashed" },
-  "Citado em noticia": { color: "#ef6760", style: "dotted" },
-  filiacao: { color: "#e879b0", style: "solid" }, doacao: { color: "#e879b0", style: "dashed" },
-  reported: { color: "#c9a227", style: "solid" }, Contrato: { color: "#c9a227", style: "solid" },
-  Processo: { color: "#e0843d", style: "solid" },
-  relatou: { color: "#38bdb0", style: "solid" }, votou: { color: "#38bdb0", style: "dashed" },
-  delibera: { color: "#38bdb0", style: "solid" }, afeta: { color: "#38bdb0", style: "dotted" }
+  socio: { color: "#2d72d2", style: "solid" }, Socio: { color: "#2d72d2", style: "solid" },
+  owns: { color: "#2d72d2", style: "solid" },
+  mandato: { color: "#32a467", style: "solid" }, employs: { color: "#32a467", style: "solid" },
+  Contato: { color: "#48a4dc", style: "dashed" }, Dominio: { color: "#ecaa3b", style: "dashed" },
+  "Citado em noticia": { color: "#d5605c", style: "dotted" },
+  filiacao: { color: "#d2699e", style: "solid" }, doacao: { color: "#d2699e", style: "dashed" },
+  reported: { color: "#b0b352", style: "solid" }, Contrato: { color: "#b0b352", style: "solid" },
+  Processo: { color: "#c78a3b", style: "solid" },
+  relatou: { color: "#2ea89d", style: "solid" }, votou: { color: "#2ea89d", style: "dashed" },
+  delibera: { color: "#2ea89d", style: "solid" }, afeta: { color: "#2ea89d", style: "dotted" }
 };
-const relColor = (r) => (REL_META[r] || { color: "#5e6470" }).color;
+const relColor = (r) => (REL_META[r] || { color: "#4a545c" }).color;
 const relStyle = (r) => (REL_META[r] || { style: "solid" }).style;
 
 let CY_LAYOUT = "cose";
@@ -145,16 +147,17 @@ let CY_LAYOUT = "cose";
 
 const CY_STYLE = [
   { selector: "node", style: {
-    "background-color": "data(color)", "label": "data(label)", "color": "#e8eef7",
+    "background-color": "data(color)", "label": "data(label)", "color": "#e8eaed",
+    "font-family": "IBM Plex Sans, Inter, sans-serif",
     "font-size": 11, "font-weight": 600, "text-wrap": "ellipsis", "text-max-width": 140,
     "text-valign": "center", "text-halign": "right", "text-margin-x": 6,
-    "width": "data(size)", "height": "data(size)", "border-width": 2, "border-color": "#0b0e13", "shape": "ellipse"
+    "width": "data(size)", "height": "data(size)", "border-width": 2, "border-color": "#10151a", "shape": "ellipse"
   } },
-  { selector: "node.central", style: { "border-color": "#ffffff", "border-width": 3, "font-size": 12, "font-weight": 800 } },
-  { selector: "node:selected", style: { "border-color": "#ffd166", "border-width": 4 } },
+  { selector: "node.central", style: { "border-color": "#e8eaed", "border-width": 3, "font-size": 12, "font-weight": 800 } },
+  { selector: "node:selected", style: { "border-color": "#b0b352", "border-width": 4 } },
   { selector: "node.dim", style: { "opacity": 0.12 } },
   { selector: "node.hidden", style: { "display": "none" } },
-  { selector: "node.highlight", style: { "border-color": "#ffd166", "border-width": 4 } },
+  { selector: "node.highlight", style: { "border-color": "#b0b352", "border-width": 4 } },
   { selector: "edge", style: {
     "width": "data(w)", "line-color": "data(lineColor)", "line-style": "data(lineStyle)", "opacity": "data(op)",
     "curve-style": "bezier", "target-arrow-shape": "triangle", "target-arrow-color": "data(lineColor)", "arrow-scale": 0.7
@@ -458,11 +461,11 @@ function buildMiniChart(series, baseline) {
     const x = pad + i * colW;
     const y = H - pad - bh;
     const hot = baseline > 0 && s.total > baseline * 1.5;
-    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="${hot ? "var(--accent)" : "var(--blue)"}" rx="2"/>`;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" fill="${hot ? "var(--amber)" : "var(--blue)"}" rx="1"/>`;
   }).join("");
   const baseY = baseline > 0 ? H - pad - (baseline / maxVal) * (H - pad * 2) : null;
   const line = baseY !== null
-    ? `<line x1="${pad}" y1="${baseY.toFixed(1)}" x2="${W - pad}" y2="${baseY.toFixed(1)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3,2"/>`
+    ? `<line x1="${pad}" y1="${baseY.toFixed(1)}" x2="${W - pad}" y2="${baseY.toFixed(1)}" stroke="var(--blue-bright)" stroke-width="1" stroke-dasharray="3,2"/>`
     : "";
   return `<svg class="mini-chart" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">${bars}${line}</svg>`;
 }
@@ -492,8 +495,8 @@ async function renderNatInspector(nodeId) {
     const lastWeek = series[series.length - 1]?.total ?? 0;
     const aboveBaseline = stats?.baseline_avg > 0 && lastWeek > stats.baseline_avg * 1.5;
     const alertItems = (stats?.alerts || []).map((a) => `
-      <div class="activity-alert" ${a.severity !== "high" ? 'style="border-color:var(--line);background:var(--card)"' : ""}>
-        <span class="alert-icon">${a.severity === "high" ? "⚠️" : "ℹ️"}</span>
+      <div class="activity-alert${a.severity !== "high" ? " info" : ""}">
+        <span class="alert-icon">${a.severity === "high" ? "⚠" : "ℹ"}</span>
         <div style="flex:1;min-width:0">
           <p style="margin:0;font-size:.78rem;font-weight:700">${escapeHtml(a.title || "")}</p>
           ${a.body ? `<p style="margin:2px 0 0;font-size:.72rem;opacity:.65">${escapeHtml(a.body.slice(0, 100))}</p>` : ""}
@@ -517,7 +520,7 @@ async function renderNatInspector(nodeId) {
       ${series.length ? `
       <div class="object-section">
         <p class="object-section-title">Atividade semanal ${aboveBaseline ? '<span class="status-pill status-error" style="font-size:.65rem">Acima do baseline</span>' : ""}</p>
-        ${aboveBaseline ? `<div class="activity-alert" style="margin-bottom:8px"><span class="alert-icon">⚠️</span><span style="font-size:.78rem">Volume atual &gt;1,5× a média histórica</span></div>` : ""}
+        ${aboveBaseline ? `<div class="activity-alert" style="margin-bottom:8px"><span class="alert-icon">⚠</span><span style="font-size:.78rem">Volume atual &gt;1,5× a média histórica</span></div>` : ""}
         ${buildMiniChart(series, stats.baseline_avg)}
         <p style="font-size:.68rem;opacity:.45;margin:2px 0 0">— baseline avg: ${stats.baseline_avg} atos/sem.</p>
       </div>` : ""}
@@ -610,18 +613,27 @@ async function runKeywordSearch(query) {
   const url = `/api/intelligence?type=search&q=${encodeURIComponent(query)}&limit=30`;
   const r = await requestJson(url).catch(() => null);
   const items = r?.items || [];
-  const douFeed = $("#dou-feed");
+  const douFeed = $("#dou-list");
   if (!douFeed) return;
   if (!items.length) {
     douFeed.innerHTML = emptyCard("Busca", `Nenhum ato encontrado para "${escapeHtml(query)}".`);
     return;
   }
-  douFeed.innerHTML = `<p style="margin:0 0 12px;opacity:.7">${items.length} resultado(s) para <strong>"${escapeHtml(query)}"</strong></p>` +
+  douFeed.innerHTML = `<p style="margin:0 0 12px;color:var(--muted)">${items.length} resultado(s) para <strong>"${escapeHtml(query)}"</strong></p>` +
     items.map((d) => `
-      <article class="news-card">
-        <span class="source-meta">${escapeHtml(d.agency)} · ${escapeHtml(d.date || "")} · <span class="type-pill ${d.type}">${escapeHtml(d.type || "")}</span></span>
-        <strong>${escapeHtml(d.title || "Sem título")}</strong>
-        ${d.link ? `<a href="${escapeHtml(d.link)}" target="_blank" rel="noopener" style="font-size:.8rem">Abrir no DOU ↗</a>` : ""}
+      <article class="news-card target-card">
+        <div class="card-body">
+          <div class="card-head">
+            ${TARGET_ICO}
+            <div>
+              <strong>${escapeHtml(d.title || "Sem título")}</strong>
+              <span class="card-sub">${escapeHtml(d.date || "sem data")} ${d.type ? `· <span class="tag ${escapeHtml(d.type)}">${escapeHtml(d.type.replace("_", " "))}</span>` : ""}</span>
+            </div>
+            <span class="card-prio">${escapeHtml(d.agency || "DOU")}</span>
+          </div>
+          ${d.link ? `<div class="entity-row"><a class="entity-pill" href="${escapeHtml(d.link)}" target="_blank" rel="noopener">Abrir no DOU</a></div>` : ""}
+        </div>
+        ${cardFoot("var(--blue)", "Busca textual", `DOU//${d.agency || "BR"}`)}
       </article>`).join("");
 }
 
@@ -923,14 +935,20 @@ function renderSources() {
   $("#news-list").innerHTML = state.news
     .map(
       (entry) => `
-        <article class="news-card">
-          <span class="source-meta">${escapeHtml(entry.source)} | ${escapeHtml(entry.date || "sem data")}</span>
-          <strong>${escapeHtml(entry.title)}</strong>
-          <p>${escapeHtml(entry.summary || "Sem resumo disponivel no RSS.")}</p>
-          <div class="entity-row">
-            <span class="entity-pill">RSS real</span>
-            ${safeUrl(entry.link) ? `<a class="entity-pill" href="${escapeHtml(safeUrl(entry.link))}" target="_blank" rel="noreferrer">Abrir fonte</a>` : ""}
+        <article class="news-card target-card">
+          <div class="card-body">
+            <div class="card-head">
+              <div>
+                <strong>${escapeHtml(entry.title)}</strong>
+                <span class="card-sub">${escapeHtml(entry.date || "sem data")}</span>
+              </div>
+            </div>
+            <p>${escapeHtml(entry.summary || "Sem resumo disponivel no RSS.")}</p>
+            <div class="entity-row">
+              ${safeUrl(entry.link) ? `<a class="entity-pill" href="${escapeHtml(safeUrl(entry.link))}" target="_blank" rel="noreferrer">Abrir fonte</a>` : ""}
+            </div>
           </div>
+          ${cardFoot("var(--red)", entry.source || "RSS", "RSS//OSINT")}
         </article>
       `
     )
@@ -957,16 +975,26 @@ async function loadDouFeed() {
       list.innerHTML = emptyCard("Monitor DOU", "Sem atos das agencias ingeridos para este periodo. Rode /api/ingest-dou.");
       return;
     }
+    const queueColor = (type) => ({ norma: "var(--blue)", ato_pessoal: "var(--purple)", contrato: "var(--yellow)" }[type] || "var(--muted)");
     list.innerHTML = items
       .map((entry) => `
-        <article class="news-card">
-          <span class="source-meta">${escapeHtml(entry.agency || "DOU")} | ${escapeHtml(DOU_TYPE_LABEL[entry.type] || entry.type)} | ${escapeHtml(entry.date || "sem data")}</span>
-          <strong>${escapeHtml(entry.title)}</strong>
-          <p>${escapeHtml(entry.summary || "Sem resumo de IA.")}</p>
-          <div class="entity-row">
-            ${(entry.entities || []).slice(0, 4).map((e) => `<span class="entity-pill">${escapeHtml(e.name || "")}</span>`).join("")}
-            ${entry.link ? `<a class="entity-pill" href="${escapeHtml(entry.link)}" target="_blank" rel="noreferrer">Abrir DOU</a>` : ""}
+        <article class="news-card target-card">
+          <div class="card-body">
+            <div class="card-head">
+              ${TARGET_ICO}
+              <div>
+                <strong>${escapeHtml(entry.title)}</strong>
+                <span class="card-sub">${escapeHtml(DOU_TYPE_LABEL[entry.type] || entry.type)} · ${escapeHtml(entry.date || "sem data")}</span>
+              </div>
+              <span class="card-prio">${escapeHtml(entry.agency || "DOU")}</span>
+            </div>
+            <p>${highlightEntities(entry.summary || "Sem resumo de IA.", entry.entities)}</p>
+            <div class="entity-row">
+              ${(entry.entities || []).slice(0, 4).map((e) => `<span class="entity-pill">${escapeHtml(e.name || "")}</span>`).join("")}
+              ${entry.link ? `<a class="entity-pill" href="${escapeHtml(entry.link)}" target="_blank" rel="noreferrer">Abrir DOU</a>` : ""}
+            </div>
           </div>
+          ${cardFoot(queueColor(entry.type), DOU_TYPE_LABEL[entry.type] || entry.type || "Ato", `DOU//${entry.agency || "BR"}`)}
         </article>
       `)
       .join("");
@@ -993,10 +1021,18 @@ async function loadDirectors() {
     }
     list.innerHTML = people
       .map((p) => `
-        <article class="news-card director-row" data-person-id="${escapeHtml(p.id)}" style="cursor:pointer">
-          <span class="source-meta">${escapeHtml(p.agency || "?")} | ${escapeHtml(p.role || "dirigente")}</span>
-          <strong>${escapeHtml(p.full_name)}</strong>
-          <p>Clique para abrir o dossie completo.</p>
+        <article class="news-card target-card director-row selectable" data-person-id="${escapeHtml(p.id)}">
+          <div class="card-body">
+            <div class="card-head">
+              ${TARGET_ICO}
+              <div>
+                <strong>${escapeHtml(p.full_name)}</strong>
+                <span class="card-sub">${escapeHtml(p.role || "Dirigente")}</span>
+              </div>
+              <span class="card-prio">${escapeHtml(p.agency || "?")}</span>
+            </div>
+          </div>
+          ${cardFoot("var(--red)", p.agency || "Agência", "LINCE//DIR")}
         </article>`)
       .join("");
     list.querySelectorAll(".director-row").forEach((el) => {
@@ -1206,14 +1242,27 @@ async function loadIntelligence() {
     // Score
     if (score) {
       if (!sc.scores?.length) { score.innerHTML = emptyCard("Score", "Sem dados. Rode a ingestao do DOU."); }
-      else score.innerHTML = sc.scores.map((s) => `
-        <article class="news-card">
-          <span class="source-meta">${escapeHtml(s.agency)} | ${s.docs} atos | ${s.open_alerts} alertas abertos | ${s.active_directors} diretores ativos</span>
-          <strong>${escapeHtml(s.name)}</strong>
-          <div class="entity-row">
-            <span class="entity-pill" style="background:${s.score > 60 ? '#ef6760' : s.score > 30 ? '#d7ad4f' : '#61c46e'}">Score ${s.score}/100</span>
+      else score.innerHTML = sc.scores.map((s) => {
+        const level = s.score > 60 ? "high" : s.score > 30 ? "mid" : "low";
+        const qColor = s.score > 60 ? "var(--red)" : s.score > 30 ? "var(--yellow)" : "var(--green)";
+        return `
+        <article class="news-card target-card">
+          <div class="card-body">
+            <div class="card-head">
+              ${TARGET_ICO}
+              <div>
+                <strong>${escapeHtml(s.name)}</strong>
+                <span class="card-sub">${s.docs} atos · ${s.open_alerts} alertas abertos · ${s.active_directors} diretores ativos</span>
+              </div>
+              <span class="card-prio">P${Math.max(1, Math.min(5, Math.ceil(s.score / 20)))}</span>
+            </div>
+            <div class="entity-row">
+              <span class="entity-pill score-${level}">Score ${s.score}/100</span>
+            </div>
           </div>
-        </article>`).join("");
+          ${cardFoot(qColor, s.agency || "Agência", `LINCE//${s.agency || "AG"}`)}
+        </article>`;
+      }).join("");
     }
     // Radar
     if (radar) {
@@ -1222,10 +1271,18 @@ async function loadIntelligence() {
                    ...(rd.radar?.["90d"] || []).map((i) => ({ ...i, window: "90d" }))];
       if (!all.length) { radar.innerHTML = emptyCard("Radar", "Nenhum contrato a vencer nos proximos 90 dias. Rode ingest-pncp."); }
       else radar.innerHTML = all.map((c) => `
-        <article class="news-card">
-          <span class="source-meta">${escapeHtml(c.agency || "")} | Vence: ${escapeHtml(c.date || "")} | <strong>${escapeHtml(c.window)}</strong></span>
-          <strong>${escapeHtml(c.label)}</strong>
-          <p>${escapeHtml(c.supplier || "Fornecedor nao identificado")}</p>
+        <article class="news-card target-card">
+          <div class="card-body">
+            <div class="card-head">
+              <div>
+                <strong>${escapeHtml(c.label)}</strong>
+                <span class="card-sub">Vence: ${escapeHtml(c.date || "sem data")}</span>
+              </div>
+              <span class="card-prio">${escapeHtml(c.window)}</span>
+            </div>
+            <p>${escapeHtml(c.supplier || "Fornecedor nao identificado")}</p>
+          </div>
+          ${cardFoot(c.window === "30d" ? "var(--red)" : c.window === "60d" ? "var(--yellow)" : "var(--green)", `Vencimento ${c.window}`, `PNCP//${c.agency || "BR"}`)}
         </article>`).join("");
     }
     // Overview daily
@@ -1252,13 +1309,21 @@ async function loadConsultas() {
     const data = await requestJson("/api/rss-feeds?type=consultas");
     if (!data.items?.length) { list.innerHTML = emptyCard("Consultas", "Nenhuma consulta identificada nos RSS das agencias no momento."); return; }
     list.innerHTML = data.items.map((c) => `
-      <article class="news-card">
-        <span class="source-meta">${escapeHtml(c.agency)} | ${escapeHtml(c.date || "sem data")}</span>
-        <strong>${escapeHtml(c.title)}</strong>
-        <p>${escapeHtml(c.summary || "")}</p>
-        <div class="entity-row">
-          ${c.link ? `<a class="entity-pill" href="${escapeHtml(c.link)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+      <article class="news-card target-card">
+        <div class="card-body">
+          <div class="card-head">
+            <div>
+              <strong>${escapeHtml(c.title)}</strong>
+              <span class="card-sub">${escapeHtml(c.date || "sem data")}</span>
+            </div>
+            <span class="card-prio">${escapeHtml(c.agency)}</span>
+          </div>
+          <p>${escapeHtml(c.summary || "")}</p>
+          <div class="entity-row">
+            ${c.link ? `<a class="entity-pill" href="${escapeHtml(c.link)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+          </div>
         </div>
+        ${cardFoot("var(--green)", "Consulta pública", `RSS//${c.agency || "AGÊNCIA"}`)}
       </article>`).join("");
   } catch (error) {
     list.innerHTML = emptyCard("Consultas", `Erro: ${error.message}`);
@@ -1273,13 +1338,21 @@ async function loadAgenda() {
     const data = await requestJson("/api/rss-feeds?type=agenda");
     if (!data.items?.length) { list.innerHTML = emptyCard("Agenda", "Nenhuma pauta identificada nos RSS das agencias no momento."); return; }
     list.innerHTML = data.items.map((c) => `
-      <article class="news-card">
-        <span class="source-meta">${escapeHtml(c.agency)} | ${escapeHtml(c.date || "sem data")}</span>
-        <strong>${escapeHtml(c.title)}</strong>
-        <p>${escapeHtml(c.summary || "")}</p>
-        <div class="entity-row">
-          ${c.link ? `<a class="entity-pill" href="${escapeHtml(c.link)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+      <article class="news-card target-card">
+        <div class="card-body">
+          <div class="card-head">
+            <div>
+              <strong>${escapeHtml(c.title)}</strong>
+              <span class="card-sub">${escapeHtml(c.date || "sem data")}</span>
+            </div>
+            <span class="card-prio">${escapeHtml(c.agency)}</span>
+          </div>
+          <p>${escapeHtml(c.summary || "")}</p>
+          <div class="entity-row">
+            ${c.link ? `<a class="entity-pill" href="${escapeHtml(c.link)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+          </div>
         </div>
+        ${cardFoot("var(--blue-bright)", "Pauta / reunião", `RSS//${c.agency || "AGÊNCIA"}`)}
       </article>`).join("");
   } catch (error) {
     list.innerHTML = emptyCard("Agenda", `Erro: ${error.message}`);
@@ -1414,6 +1487,29 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
 }
 
+// ── Componentes de card estilo Gotham ─────────────────────────────────────
+// Rodapé do card de alvo: diamante colorido + fila à esquerda, marcação de
+// classificação à direita (ex. "DOU//ANEEL").
+function cardFoot(queueColor, queueLabel, classification) {
+  return `<div class="card-foot"><span><i class="q-diamond" style="--q:${queueColor}"></i>${escapeHtml(queueLabel)}</span><span class="card-class">${escapeHtml(classification)}</span></div>`;
+}
+
+// Ícone de alvo (crosshair vermelho em círculo, como no Gotham).
+const TARGET_ICO = `<span class="target-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg></span>`;
+
+// Destaca nomes de entidades dentro do texto com <mark> azul.
+// Escapa o texto ANTES e o nome ao montar o regex — sem risco de XSS.
+function highlightEntities(rawText, entities) {
+  let html = escapeHtml(rawText || "");
+  for (const e of (entities || []).slice(0, 8)) {
+    const name = escapeHtml(String(e?.name || e || "").trim());
+    if (name.length < 3) continue;
+    const pattern = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    html = html.replace(new RegExp(pattern, "i"), (m) => `<mark class="entity-mark">${m}</mark>`);
+  }
+  return html;
+}
+
 // Aceita apenas URLs http/https; bloqueia esquemas perigosos (javascript:, data:) vindos de fontes externas.
 function safeUrl(value) {
   const raw = String(value ?? "").trim();
@@ -1465,6 +1561,14 @@ function wireEvents() {
     if (!tab) return;
     state.activeDossierTab = tab.dataset.dossierTab;
     renderDossier();
+  });
+
+  // Ctrl+Space foca a busca global (hint exibido no input, estilo Gotham).
+  document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey && event.code === "Space") {
+      event.preventDefault();
+      $("#global-search")?.focus();
+    }
   });
 }
 
@@ -1570,8 +1674,8 @@ async function loadOverviewMetrics() {
     const alertsEl = $("#overview-alerts");
     if (alertsEl && alertsData?.items?.length) {
       alertsEl.innerHTML = alertsData.items.map((a) => `
-        <div class="activity-alert" data-alert-card="${escapeHtml(a.id)}" ${a.severity !== "high" ? 'style="border-color:var(--line);background:var(--card)"' : ""}>
-          <span class="alert-icon">${a.severity === "high" ? "⚠️" : "ℹ️"}</span>
+        <div class="activity-alert${a.severity !== "high" ? " info" : ""}" data-alert-card="${escapeHtml(a.id)}">
+          <span class="alert-icon">${a.severity === "high" ? "⚠" : "ℹ"}</span>
           <div style="flex:1;min-width:0">
             <p style="margin:0;font-size:.78rem;font-weight:700">${escapeHtml(a.title || "")}</p>
             ${a.body ? `<p style="margin:2px 0 0;font-size:.72rem;opacity:.65">${escapeHtml(a.body.slice(0, 120))}</p>` : ""}
