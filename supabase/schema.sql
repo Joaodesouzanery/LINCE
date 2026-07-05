@@ -322,3 +322,87 @@ create table if not exists jurisprudence (
   created_at timestamptz not null default now()
 );
 create index if not exists jurisprudence_court_idx on jurisprudence (court, decided_at);
+
+-- ============================================================================
+-- Fase 5 (M10): monitores, screening e patrimonio
+-- Bloco idempotente: pode ser rodado mais de uma vez no SQL Editor sem efeito.
+-- ============================================================================
+
+-- Reconciliacao de drift: producao ja tem estas colunas em alerts (lib/ingest.js
+-- upserta alert_type/body/metadata); bancos criados do zero passam a te-las tambem.
+alter table alerts add column if not exists alert_type text;
+alter table alerts add column if not exists body text;
+alter table alerts add column if not exists metadata jsonb not null default '{}'::jsonb;
+-- lib/ingest.js e o matcher de monitores inserem alerts sem description.
+alter table alerts alter column description drop not null;
+
+-- Unique p/ dedupe (onConflict do PostgREST exige indice unico). DO block porque
+-- producao pode ja ter o indice equivalente com outro nome.
+do $$
+begin
+  if not exists (
+    select 1 from pg_indexes
+    where tablename = 'alerts'
+      and indexdef ilike '%unique%'
+      and indexdef ilike '%source_document_id%'
+      and indexdef ilike '%alert_type%'
+  ) then
+    create unique index alerts_dedupe_idx on alerts (source_document_id, target_id, alert_type);
+  end if;
+end $$;
+
+-- Reconciliacao de drift: colunas de party_links usadas por load-tse-filiacao.js.
+alter table party_links add column if not exists joined_at date;
+alter table party_links add column if not exists status text;
+alter table party_links add column if not exists source text default 'tse_filiacao';
+alter table party_links add column if not exists confidence_score numeric(5, 4) default 1;
+
+-- alerts.target_kind precisa apontar para monitores. Seguro no SQL Editor: este
+-- bloco nao usa o valor novo em DML na mesma transacao (restricao do Postgres).
+alter type entity_kind add value if not exists 'monitor';
+
+-- Monitores de vigilancia (estilo Arko Alerta): o matcher roda a cada ingestao
+-- do DOU e gera alerts com alert_type='monitor'.
+create table if not exists monitors (
+  id uuid primary key default gen_random_uuid(),
+  kind text not null check (kind in ('keyword', 'person', 'company', 'agency')),
+  label text not null,
+  pattern text not null,
+  -- normalizeName(pattern) pre-computado: o matcher compara includes() sem
+  -- normalizar N monitores x M docs.
+  normalized_pattern text not null,
+  cpf_cnpj text,
+  agency_id uuid references agencies(id) on delete set null,
+  person_id uuid references people(id) on delete set null,
+  company_id uuid references companies(id) on delete set null,
+  severity text not null default 'medium',
+  active boolean not null default true,
+  hit_count integer not null default 0,
+  last_hit_at timestamptz,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+-- O matcher so le monitores ativos.
+create index if not exists monitors_active_idx on monitors (active) where active;
+
+-- Bens declarados ao TSE (bem_candidato x consulta_cand). Sem CPF do candidato
+-- (LGPD): o vinculo forte ja esta em person_id; match_method registra a confianca.
+create table if not exists assets (
+  id uuid primary key default gen_random_uuid(),
+  person_id uuid references people(id) on delete cascade,
+  candidate_name text,
+  sq_candidato text,
+  nr_ordem integer,
+  asset_type text,
+  description text,
+  value numeric(16, 2),
+  reference_year integer,
+  election_uf text,
+  match_method text not null default 'cpf',
+  source_name text not null default 'TSE',
+  created_at timestamptz not null default now()
+);
+create index if not exists assets_person_idx on assets (person_id);
+-- Identidade natural do dump: permite re-rodar o loader com ignoreDuplicates.
+create unique index if not exists assets_tse_ref_idx on assets (sq_candidato, nr_ordem, reference_year);
