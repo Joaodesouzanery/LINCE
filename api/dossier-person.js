@@ -70,13 +70,27 @@ module.exports = async function handler(req, res) {
     }
     if (!person) return res.status(404).json({ ok: false, error: "Pessoa nao encontrada." });
 
-    const [mandates, parties, votes, relsFrom, relsTo] = await Promise.all([
+    const [mandates, parties, votes, relsFrom, relsTo, assetsRes] = await Promise.all([
       supabase.from("mandates").select("*, agencies(acronym, name)").eq("person_id", person.id),
       supabase.from("party_links").select("*").eq("person_id", person.id),
       supabase.from("votes").select("*").eq("voter_person_id", person.id),
       supabase.from("relationships").select("*").eq("from_id", person.id).eq("from_kind", "person"),
-      supabase.from("relationships").select("*").eq("to_id", person.id).eq("to_kind", "person")
+      supabase.from("relationships").select("*").eq("to_id", person.id).eq("to_kind", "person"),
+      supabase.from("assets").select("*").eq("person_id", person.id).order("reference_year", { ascending: false })
     ]);
+
+    // Patrimonio declarado (TSE): agregado por ano + ressalva de homonimo.
+    const assetItems = assetsRes.data || [];
+    const totalByYear = {};
+    for (const a of assetItems) {
+      const y = a.reference_year || 0;
+      totalByYear[y] = (totalByYear[y] || 0) + (Number(a.value) || 0);
+    }
+    const assets = {
+      items: assetItems,
+      total_by_year: totalByYear,
+      weak_match: assetItems.some((a) => a.match_method === "name")
+    };
 
     // Enriquecimento ao vivo (SIAPE) - opcional, depende de chave.
     const siape = await findServidoresByName(person.full_name).catch(() => ({ ok: false }));
@@ -87,20 +101,31 @@ module.exports = async function handler(req, res) {
     const dissent = (votes.data || []).filter((v) => v.is_dissent).length;
     const capture_score = Math.min(100, partyWeight + (relsTo.data || []).length * 10);
 
-    return res.status(200).json({
+    const payload = {
       ok: true,
       person,
       mandates: mandates.data || [],
       party_links: parties.data || [],
       votes: votes.data || [],
       relationships: [...(relsFrom.data || []), ...(relsTo.data || [])],
+      assets,
       siape: siape.ok ? siape.items : [],
       intelligence: {
         capture_score,
         dissent_votes: dissent,
         active_mandate: (mandates.data || []).some((m) => !m.ended_at)
       }
-    });
+    };
+
+    // ?ai=1: resumo executivo por IA (caro de gerar -> cache mais longo; o CDN
+    // separa por querystring, entao ?id=X e ?id=X&ai=1 tem caches independentes).
+    if (req.query.ai) {
+      const { summarizeDossier } = require("../lib/anthropic");
+      res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
+      payload.ai = await summarizeDossier(payload);
+    }
+
+    return res.status(200).json(payload);
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }
