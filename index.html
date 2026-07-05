@@ -8,6 +8,12 @@
       name="description"
       content="LINCE consulta fontes reais por CNPJ, monta grafo interativo e gera dossiês sem dados fictícios."
     />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -64,7 +70,7 @@
 
           <!-- Investigação -->
           <button class="nav-item" type="button" data-view="investigate" title="Investigar CNPJ">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>
             <span class="nav-text">Investigar CNPJ</span>
           </button>
           <button class="nav-item" type="button" data-view="dossier" title="Dossiê">
@@ -109,18 +115,25 @@
           </div>
 
           <form class="search-box" id="search-form">
-            <input
-              id="global-search"
-              inputmode="numeric"
-              placeholder="CNPJ (14 dígitos) ou termo de busca nos atos do DOU"
-              autocomplete="off"
-            />
+            <div class="search-wrap">
+              <input
+                id="global-search"
+                placeholder="Buscar CNPJ ou termo nos atos do DOU"
+                autocomplete="off"
+              />
+              <kbd class="search-hint">Ctrl Space</kbd>
+            </div>
             <button type="submit">Consultar</button>
           </form>
 
           <div class="top-actions">
+            <span class="save-status" id="save-status">✓ Sincronizado</span>
             <button class="ghost-button" type="button" id="center-graph">Centralizar</button>
             <button class="primary-button" type="button" id="open-dossier">Gerar dossiê</button>
+            <span class="class-chip">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              LINCE//NACIONAL
+            </span>
           </div>
         </header>
 
@@ -309,8 +322,8 @@
                 </p>
               </div>
               <div class="dossier-badge">
-                <span>Origem</span>
-                <strong>Real</strong>
+                <span>Classificação</span>
+                <strong>DOU//REAL</strong>
               </div>
             </div>
             <div class="dossier-tabs" id="dossier-tabs"></div>
