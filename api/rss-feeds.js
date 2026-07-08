@@ -30,14 +30,30 @@ function pick(block, tag) {
   const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`,"i"));
   return xmlText(m?.[1]||"");
 }
+// Extrai o href de um <link .../> Atom (o texto de <link> costuma ser vazio).
+function pickLink(block) {
+  const direct = pick(block, "link");
+  if (direct) return direct;
+  const m = block.match(/<link[^>]*href="([^"]+)"/i);
+  return m ? m[1] : "";
+}
+// Suporta RSS (<item>) e Atom (<entry>) — o gov.br mistura os dois formatos.
 async function fetchRss(url) {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000),
+      headers: { accept: "application/rss+xml, application/atom+xml, application/xml, text/xml" } });
     if (!res.ok) return [];
     const xml = await res.text();
-    return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map(m=>({
-      title: pick(m[1],"title"), link: pick(m[1],"link"),
-      date: pick(m[1],"pubDate"), summary: pick(m[1],"description").slice(0,300)
+    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map(m => ({
+      title: pick(m[1], "title"), link: pickLink(m[1]),
+      date: pick(m[1], "pubDate"), summary: pick(m[1], "description").slice(0, 300)
+    }));
+    if (items.length) return items;
+    // Fallback Atom.
+    return [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/gi)].map(m => ({
+      title: pick(m[1], "title"), link: pickLink(m[1]),
+      date: pick(m[1], "updated") || pick(m[1], "published"),
+      summary: (pick(m[1], "summary") || pick(m[1], "content")).slice(0, 300)
     }));
   } catch { return []; }
 }
@@ -82,9 +98,51 @@ module.exports = async function handler(req, res) {
            .forEach(c => results.push({ agency: ag.acronym, agency_name: ag.name, ...c }));
     }));
     results.sort((a,b) => new Date(b.date||0)-new Date(a.date||0));
+
+    // Fallback DOU: se o RSS das agencias nao retornou nada (feeds gov.br
+    // frequentemente quebrados), busca consultas/pautas nos atos do DOU ja
+    // ingeridos. Garante que a aba nunca fique vazia com dado confiavel.
+    if (!results.length) {
+      const acronyms = new Set(agencies.map((a) => a.acronym));
+      const dou = await douFallback(supabase, type, acronyms.size ? acronyms : null);
+      if (dou.length) {
+        return res.status(200).json({ ok:true, type, sector: sector || null, sectors: Object.keys(SECTOR_THEMES),
+          source:"DOU (fallback)", fetchedAt:new Date().toISOString(), items:dou });
+      }
+    }
+
     return res.status(200).json({ ok:true, type, sector: sector || null, sectors: Object.keys(SECTOR_THEMES),
       source:"RSS Agencias", fetchedAt:new Date().toISOString(), items:results });
   } catch(error) {
     return res.status(502).json({ ok:false, error:error.message });
   }
 };
+
+// Termos sem acento (ilike e sensivel a acento): casam titulos do DOU com ou
+// sem acentuacao. Ex.: "reuni" -> "reuniao"/"reunião"; "audi" -> "audiencia".
+const DOU_CONSULTAS = ["consulta p", "audi", "tomada de subs", "analise de impacto"];
+const DOU_AGENDA    = ["pauta", "reuni", "delibera", "sess", "resolu"];
+
+async function douFallback(supabase, type, acronymSet) {
+  const patterns = type === "agenda" ? DOU_AGENDA : DOU_CONSULTAS;
+  const orExpr = patterns.map((p) => `title.ilike.%${p}%`).join(",");
+  const { data } = await supabase
+    .from("documents")
+    .select("title, published_at, source_url, metadata, agencies(acronym, name)")
+    .eq("source_name", "DOU")
+    .or(orExpr)
+    .order("published_at", { ascending: false })
+    .limit(60);
+  const items = [];
+  for (const d of data || []) {
+    const acronym = d.agencies?.acronym || d.metadata?.agency_acronym || null;
+    if (acronymSet && acronym && !acronymSet.has(acronym)) continue;
+    if (acronymSet && !acronym) continue; // sem agencia identificada e ha filtro -> pula
+    items.push({
+      agency: acronym || "DOU", agency_name: d.agencies?.name || "Diario Oficial",
+      title: d.title, link: d.source_url,
+      date: d.published_at, summary: (d.metadata?.ai_summary || "").slice(0, 300)
+    });
+  }
+  return items.slice(0, 40);
+}

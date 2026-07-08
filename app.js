@@ -1165,23 +1165,34 @@ async function openDirectorDossier(id) {
   if (!list) return;
   list.innerHTML = emptyCard("Diretores", "Montando dossie...");
   try {
-    const d = await requestJson(`/api/dossier-person?id=${encodeURIComponent(id)}`);
+    // Busca o dossie e o risco politico em paralelo (o risco degrada se falhar).
+    const [dRes, prRes] = await Promise.allSettled([
+      requestJson(`/api/dossier-person?id=${encodeURIComponent(id)}`),
+      requestJson(`/api/intelligence?type=political_risk&id=${encodeURIComponent(id)}`)
+    ]);
+    if (dRes.status !== "fulfilled") throw dRes.reason;
+    const d = dRes.value;
+    const pr = prRes.status === "fulfilled" && prRes.value?.ok ? prRes.value : null;
     const intel = d.intelligence || {};
     const mandates = (d.mandates || []).map((m) => `<span class="entity-pill">${escapeHtml(m.agencies?.acronym || "")} ${escapeHtml(m.role || "")}</span>`).join("");
     const parties = (d.party_links || []).map((p) => `<span class="entity-pill">${escapeHtml(p.party)}</span>`).join("");
     const rels = (d.relationships || []).length;
     const socios = (d.relationships || []).filter((r) => r.relationship === "socio").length;
+    const ties = intel.corporate_ties ?? socios;
+    const tiesPill = ties ? `<span class="entity-pill${intel.corporate_inactive ? " score-high" : ""}">${ties} vínculo(s) societário(s)${intel.corporate_inactive ? ` · ${intel.corporate_inactive} inapta(s)` : ""}</span>` : "";
     list.innerHTML = `
       <article class="news-card">
         <button type="button" class="entity-pill" id="director-back">&larr; Voltar a lista</button>
         <span class="source-meta">${escapeHtml(d.person.full_name)} | ${escapeHtml(d.person.role || "dirigente")}</span>
         <strong>Score de captura: ${intel.capture_score ?? "-"}/100 | Votos vencidos: ${intel.dissent_votes ?? 0}</strong>
         <p>Mandato ativo: ${intel.active_mandate ? "sim" : "nao"} | Conexoes: ${rels} | SIAPE: ${(d.siape || []).length} registro(s)</p>
-        <div class="entity-row">${mandates}${parties}</div>
+        <div class="entity-row">${mandates}${parties}${tiesPill}</div>
         <div class="entity-row">
           <button type="button" class="alert-btn primary" id="director-export">Exportar PDF</button>
         </div>
       </article>
+      ${renderPoliticalRisk(pr)}
+      ${renderCorporateNetwork(d)}
       ${renderPersonPatrimony(d, socios)}`;
     $("#director-back")?.addEventListener("click", () => loadDirectors());
     $("#director-export")?.addEventListener("click", () => exportPersonPdf(d));
@@ -1225,6 +1236,73 @@ function renderPersonPatrimony(d, socios) {
         </table>
       </div>
       ${socios ? `<div class="entity-row"><span class="entity-pill">${socios} participação(ões) societária(s) na base local</span></div>` : ""}
+    </article>`;
+}
+
+// Rede societária (QSA): empresas em que a pessoa figura como sócia.
+function renderCorporateNetwork(d) {
+  const cn = d.corporate_network || { companies: [], count: 0, inactive_count: 0 };
+  if (!cn.count) {
+    return `
+      <article class="dossier-item empty">
+        <span class="field-source">Rede societária (QSA)</span>
+        <strong>Sem vínculos societários na base local</strong>
+        <p>Investigue um CNPJ desta pessoa (aba Investigar) ou rode backfill:qsa / load:receita-socio para popular.</p>
+      </article>`;
+  }
+  const statusPill = (s) => {
+    if (!s) return "";
+    const inactive = !/ativ/i.test(s);
+    return `<span class="entity-pill${inactive ? " score-high" : " score-low"}">${escapeHtml(s)}</span>`;
+  };
+  return `
+    <article class="news-card">
+      <span class="source-meta">Rede societária (Receita/QSA)</span>
+      <strong>${cn.count} participação(ões) societária(s)</strong>
+      <div class="entity-row" style="margin-bottom:8px">
+        <span class="entity-pill">${cn.count} empresa(s)</span>
+        ${cn.inactive_count ? `<span class="entity-pill score-high">${cn.inactive_count} inapta(s)/baixada(s)</span>` : `<span class="entity-pill score-low">todas ativas</span>`}
+      </div>
+      <div style="overflow-x:auto">
+        <table class="data-table">
+          <thead><tr><th>CNPJ</th><th>Razão social</th><th>Situação</th><th>Qualificação</th><th>Entrada</th></tr></thead>
+          <tbody>${cn.companies.slice(0, 40).map((c) => `
+            <tr>
+              <td>${escapeHtml(c.cnpj ? formatCnpj(c.cnpj) : "-")}</td>
+              <td>${escapeHtml(c.legal_name || c.trade_name || "-")}</td>
+              <td>${statusPill(c.registration_status) || "-"}</td>
+              <td>${escapeHtml(c.role || "-")}</td>
+              <td>${escapeHtml(String(c.data_entrada || "-"))}</td>
+            </tr>`).join("")}</tbody>
+        </table>
+      </div>
+    </article>`;
+}
+
+// Selo de risco político (inteligência política estilo Arko). pr pode ser null.
+function renderPoliticalRisk(pr) {
+  if (!pr || !pr.ok) return "";
+  const score = Number(pr.score) || 0;
+  const color = score < 40 ? "var(--green)" : score < 70 ? "var(--yellow)" : "var(--red)";
+  const bandLabel = { alto: "ALTO", medio: "MÉDIO", baixo: "BAIXO" }[pr.band] || String(pr.band || "").toUpperCase();
+  const COMP_LABEL = {
+    partidario: "Partidário/doações",
+    porta_giratoria: "Porta giratória",
+    rede_societaria: "Rede societária",
+    empresas_inaptas: "Empresas inaptas"
+  };
+  const comps = Object.entries(pr.components || {})
+    .map(([k, v]) => `<span class="entity-pill ${v > 0 ? "score-mid" : "score-low"}">${escapeHtml(COMP_LABEL[k] || k)}: ${Number(v) || 0}</span>`)
+    .join("");
+  return `
+    <article class="news-card">
+      <span class="source-meta">Risco político (sinais de captura)</span>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px">
+        <span style="font-size:1.6rem;font-weight:800;color:${color}">${score}</span>
+        <span style="font-size:.8rem;opacity:.6">/ 100 · risco ${escapeHtml(bandLabel)}</span>
+      </div>
+      <div class="score-bar-wrap"><div class="score-bar-fill" style="width:${score}%"></div></div>
+      <div class="entity-row" style="margin-top:8px">${comps}</div>
     </article>`;
 }
 

@@ -1,5 +1,12 @@
 // Popula os CNPJs e collection_rules das 12 agencias reguladoras federais.
 // Uso: node scripts/seed-agencies-cnpj.js
+//
+// NOTA (jul/2026): as URLs de RSS do gov.br abaixo estao majoritariamente
+// quebradas (404 ou 200 sem itens) — o portal mudou a estrutura de sindicacao.
+// api/rss-feeds.js ja tem fallback: quando o RSS nao retorna nada, ele busca
+// consultas/pautas nos atos do DOU ja ingeridos. Portanto as abas Consultas/
+// Agenda/radar setorial funcionam mesmo com estes RSS vazios. Atualize as URLs
+// aqui caso encontre feeds vivos (testar: deve responder XML com <item>/<entry>).
 require("dotenv").config();
 const { getSupabase } = require("../lib/supabase");
 
