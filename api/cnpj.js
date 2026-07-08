@@ -1,3 +1,5 @@
+const { persistCnpj } = require("../lib/qsa");
+
 function onlyDigits(value) {
   return String(value || "").replace(/\D/g, "");
 }
@@ -22,7 +24,17 @@ module.exports = async function handler(req, res) {
         source: "CNPJ.ws"
       });
     }
-    return res.status(200).json({ ok: true, source: "CNPJ.ws", fetchedAt: new Date().toISOString(), data });
+
+    // ?persist=1 grava o QSA no grafo (companies + relationships 'socio').
+    // Degradacao graciosa: falha ao persistir nao quebra a consulta.
+    let persisted = null;
+    if (req.query.persist === "1" || req.query.persist === "true") {
+      persisted = await persistCnpj(data).catch((e) => ({ ok: false, error: e.message }));
+    }
+
+    return res.status(200).json({
+      ok: true, source: "CNPJ.ws", fetchedAt: new Date().toISOString(), data, persisted
+    });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message, source: "CNPJ.ws" });
   }

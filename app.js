@@ -297,7 +297,8 @@ function createGraphView({ container, legendEl, onSelect, onExpand }) {
 
 const realDataProvider = {
   async fetchCnpj(cnpj) {
-    return requestJson(`/api/cnpj?cnpj=${onlyDigits(cnpj)}`);
+    // persist=1: grava o QSA (sócios) no grafo de vínculos ao investigar.
+    return requestJson(`/api/cnpj?cnpj=${onlyDigits(cnpj)}&persist=1`);
   },
   async fetchDomains(cnpj) {
     return requestJson(`/api/rdap?cnpj=${onlyDigits(cnpj)}`);
@@ -404,6 +405,7 @@ function setView(view) {
     consultas: ["Participacao social (M5)", "Consultas Publicas"],
     agenda: ["Calendario regulatorio (M8)", "Agenda e Pautas"],
     monitors: ["Vigilancia continua (M10)", "Central de Monitoramento"],
+    legislativo: ["Radar legislativo (M12)", "Legislativo"],
     person: ["Screening de pessoa", "Consulta Pessoa"]
   };
   const [kicker, title] = titles[view] || ["LINCE", view];
@@ -414,6 +416,7 @@ function setView(view) {
   if (view === "consultas") loadConsultas();
   if (view === "agenda") loadAgenda();
   if (view === "monitors") loadMonitors();
+  if (view === "legislativo") loadLegislativo();
   $("#view-kicker").textContent = kicker;
   $("#view-title").textContent = title;
 }
@@ -1230,6 +1233,61 @@ function renderPersonPatrimony(d, socios) {
 // do DOU e gera alertas com alert_type='monitor'.
 const MONITOR_TYPE_LABEL = { keyword: "Palavra-chave", person: "Pessoa", company: "Empresa", agency: "Agência" };
 const MONITOR_TYPE_COLOR = { keyword: "var(--blue)", person: "var(--green)", company: "var(--blue-bright)", agency: "var(--purple)" };
+
+// Radar legislativo (M12): busca proposicoes da Camara/Senado sob demanda.
+// Chamada sem termo (ao entrar na view) mostra o estado inicial; com termo, busca.
+async function loadLegislativo(q) {
+  const list = $("#legislativo-list");
+  if (!list) return;
+  const term = (q || "").trim();
+  if (!term) {
+    list.innerHTML = emptyCard("Legislativo", "Digite um tema (ex.: energia, saneamento) e clique em Buscar.");
+    return;
+  }
+  const casa = $("#leg-casa")?.value || "both";
+  list.innerHTML = emptyCard("Legislativo", `Buscando "${escapeHtml(term)}" na Câmara e Senado...`);
+  try {
+    const payload = await requestJson(
+      `/api/legislativo?type=proposicoes&casa=${encodeURIComponent(casa)}&q=${encodeURIComponent(term)}`
+    );
+    renderLegislativo(payload.items || []);
+  } catch (err) {
+    list.innerHTML = emptyCard("Legislativo", `Falha na busca: ${escapeHtml(err?.message || "erro")}`);
+  }
+}
+
+function renderLegislativo(items) {
+  const list = $("#legislativo-list");
+  if (!list) return;
+  if (!items.length) {
+    list.innerHTML = emptyCard("Legislativo", "Nenhuma proposição encontrada para esse tema.");
+    return;
+  }
+  list.innerHTML = items
+    .map((p) => {
+      const url = safeUrl(p.url);
+      return `
+      <article class="news-card target-card">
+        <div class="card-body">
+          <div class="card-head">
+            ${TARGET_ICO}
+            <div>
+              <strong>${escapeHtml(p.titulo || `${p.tipo || ""} ${p.numero || ""}`)}</strong>
+              <span class="card-sub">${escapeHtml(p.casa || "")}${p.autor ? " · " + escapeHtml(p.autor) : ""}</span>
+            </div>
+          </div>
+          <p>${escapeHtml((p.ementa || "Sem ementa.").slice(0, 300))}</p>
+          <div class="entity-row">
+            <span class="entity-pill">${escapeHtml(p.casa || "")}</span>
+            ${p.tipo ? `<span class="entity-pill">${escapeHtml(p.tipo)}</span>` : ""}
+            ${url ? `<a class="entity-pill" href="${url}" target="_blank" rel="noopener">Abrir ↗</a>` : ""}
+          </div>
+        </div>
+        ${cardFoot("var(--purple)", (p.casa || "Legislativo"), "LINCE//LEG")}
+      </article>`;
+    })
+    .join("");
+}
 
 async function loadMonitors() {
   const list = $("#monitors-list");
@@ -2227,6 +2285,7 @@ function wireEvents() {
   });
 
   $("#monitor-form")?.addEventListener("submit", saveMonitorFromForm);
+  $("#leg-form")?.addEventListener("submit", (e) => { e.preventDefault(); loadLegislativo($("#leg-search")?.value); });
   wireMonitorList();
   $("#export-dossier")?.addEventListener("click", () => {
     exportDossierPdf().catch((error) => alert(`Falha ao exportar: ${error.message}`));

@@ -372,6 +372,59 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, company: company.legal_name, items });
     }
 
+    // Score de risco politico de uma pessoa (inteligencia politica estilo Arko).
+    // Componentes rastreaveis: filiacao/doacao partidaria, porta giratoria
+    // (dirigente + socio), rede societaria e empresas inaptas. ?id=<uuid pessoa>.
+    if (type === "political_risk") {
+      const id = String(req.query.id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe ?id=<uuid da pessoa>" });
+      const { data: person } = await supabase.from("people").select("id, full_name, role").eq("id", id).maybeSingle();
+      if (!person) return res.status(404).json({ ok: false, error: "Pessoa nao encontrada." });
+
+      const [partyRes, mandatesRes, socioRes] = await Promise.all([
+        supabase.from("party_links").select("party, link_type, amount, reference_year").eq("person_id", id),
+        supabase.from("mandates").select("agency_id, role, ended_at").eq("person_id", id),
+        supabase.from("relationships")
+          .select("to_id, metadata, companies(cnpj, legal_name, registration_status)")
+          .eq("from_kind", "person").eq("from_id", id)
+          .eq("to_kind", "company").eq("relationship", "socio")
+      ]);
+
+      const parties = partyRes.data || [];
+      const mandates = mandatesRes.data || [];
+      const socio = socioRes.data || [];
+      const activeMandate = mandates.some((m) => !m.ended_at);
+      const inactiveCompanies = socio.filter(
+        (r) => r.companies?.registration_status && !/ativ/i.test(r.companies.registration_status)
+      ).length;
+
+      // Componentes 0-100 (transparentes: o front pode exibir o detalhamento).
+      const components = {
+        partidario: Math.min(30, parties.length * 15),
+        porta_giratoria: activeMandate && socio.length ? 25 : 0,
+        rede_societaria: Math.min(25, socio.length * 5),
+        empresas_inaptas: Math.min(20, inactiveCompanies * 10)
+      };
+      const score = Math.min(100, Object.values(components).reduce((a, b) => a + b, 0));
+      const band = score >= 70 ? "alto" : score >= 40 ? "medio" : "baixo";
+
+      return res.status(200).json({
+        ok: true, type: "political_risk",
+        person: { id: person.id, name: person.full_name, role: person.role },
+        score, band, components,
+        signals: {
+          parties: parties.map((p) => ({ party: p.party, type: p.link_type, amount: p.amount, year: p.reference_year })),
+          active_mandate: activeMandate,
+          mandate_count: mandates.length,
+          companies: socio.map((r) => ({
+            cnpj: r.companies?.cnpj, legal_name: r.companies?.legal_name,
+            status: r.companies?.registration_status, role: r.metadata?.role
+          })),
+          inactive_companies: inactiveCompanies
+        }
+      });
+    }
+
     // Resumo executivo IA do dossie de EMPRESA (o front envia o dossie compacto
     // ja montado em state; o de pessoa usa /api/dossier-person?id=&ai=1).
     if (type === "exec_summary") {
@@ -421,7 +474,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "alerts", items: alerts || [] });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily, trend, recent, giratoria, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary" });
+    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }

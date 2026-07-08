@@ -84,59 +84,73 @@ async function main() {
 
     const cnpjBasico = cols[0].padStart(8, "0");
     const idSocio = cols[1];
-    if (idSocio !== "1") continue; // so PF (pessoa fisica)
-
     const nomeSocio = normalize(cols[2]);
-    const cpfSocio = (cols[3] || "").replace(/\D/g, "");
+    const docSocio = (cols[3] || "").replace(/\D/g, "");
     const qualCod = cols[4] || "";
     const role = QUALIF_SOCIO[qualCod] || "Socio";
     const dataEntrada = cols[5] || null;
 
-    // Verifica se nome bate com algum diretor
-    const personId = nameIndex.get(nomeSocio);
-    if (!personId) continue;
-    matched++;
-
-    const cnpjCompleto = cnpjBasico; // basico apenas; complemento nao esta no arquivo SOCIO
-    let companyId = companyIndex.get(cnpjBasico);
-
-    if (dryRun) {
-      console.log(`  MATCH: ${cols[2]} | CNPJ basico: ${cnpjBasico} | ${role} | entrada: ${dataEntrada}`);
-      continue;
-    }
-
-    // Upsert empresa se necessario
-    if (!companyId) {
+    // Garante o no da empresa-alvo (upsert por CNPJ basico). Retorna id ou null.
+    async function ensureTargetCompany() {
+      let companyId = companyIndex.get(cnpjBasico);
+      if (companyId) return companyId;
       const { data: comp } = await supabase
         .from("companies")
         .upsert({ cnpj: cnpjBasico, legal_name: `CNPJ ${cnpjBasico}` }, { onConflict: "cnpj" })
         .select("id").single();
       if (comp?.id) { companyId = comp.id; companyIndex.set(cnpjBasico, comp.id); }
+      return companyId || null;
     }
-    if (!companyId) continue;
 
-    // Grava relacionamento socio (company→person)
-    const { data: exists } = await supabase
-      .from("relationships")
-      .select("id")
-      .eq("from_kind", "person")
-      .eq("from_id", personId)
-      .eq("to_kind", "company")
-      .eq("to_id", companyId)
-      .eq("relationship", "socio")
-      .maybeSingle();
+    // Grava aresta 'socio' com dedupe (from -> company-alvo).
+    async function ensureEdge(fromKind, fromId, companyId, meta) {
+      const { data: exists } = await supabase
+        .from("relationships").select("id")
+        .eq("from_kind", fromKind).eq("from_id", fromId)
+        .eq("to_kind", "company").eq("to_id", companyId)
+        .eq("relationship", "socio").maybeSingle();
+      if (exists) { skipped++; return false; }
+      await supabase.from("relationships").insert({
+        from_kind: fromKind, from_id: fromId, to_kind: "company", to_id: companyId,
+        relationship: "socio", confidence_score: 1,
+        metadata: { ...meta, cnpj_basico: cnpjBasico, source: "receita_cnpj" }
+      });
+      inserted++;
+      return true;
+    }
 
-    if (exists) { skipped++; continue; }
-
-    await supabase.from("relationships").insert({
-      from_kind: "person", from_id: personId,
-      to_kind: "company", to_id: companyId,
-      relationship: "socio",
-      confidence_score: 1,
-      metadata: { role, data_entrada: dataEntrada, cnpj_basico: cnpjBasico, source: "receita_cnpj" }
-    });
-    inserted++;
-    console.log(`  + ${cols[2]} como ${role} em CNPJ ${cnpjBasico}`);
+    if (idSocio === "1") {
+      // Socio PF: casa por nome com diretor ja no banco (mantem o escopo enxuto).
+      const personId = nameIndex.get(nomeSocio);
+      if (!personId) continue;
+      matched++;
+      if (dryRun) { console.log(`  MATCH PF: ${cols[2]} | CNPJ ${cnpjBasico} | ${role}`); continue; }
+      const companyId = await ensureTargetCompany();
+      if (!companyId) continue;
+      if (await ensureEdge("person", personId, companyId, { role, data_entrada: dataEntrada }))
+        console.log(`  + PF ${cols[2]} como ${role} em CNPJ ${cnpjBasico}`);
+    } else if (idSocio === "2") {
+      // Socio PJ: so materializa a rede empresa->empresa quando a empresa-alvo ja
+      // e rastreada (evita puxar o Brasil inteiro). Doc do socio = CNPJ (14 digitos).
+      if (!companyIndex.has(cnpjBasico)) continue;
+      if (docSocio.length !== 14) continue;
+      matched++;
+      if (dryRun) { console.log(`  MATCH PJ: CNPJ socio ${docSocio} -> alvo ${cnpjBasico}`); continue; }
+      const targetId = companyIndex.get(cnpjBasico);
+      let socioCompanyId = companyIndex.get(docSocio);
+      if (!socioCompanyId) {
+        const { data: sc } = await supabase
+          .from("companies")
+          .upsert({ cnpj: docSocio, legal_name: cols[2] || `CNPJ ${docSocio}` }, { onConflict: "cnpj" })
+          .select("id").single();
+        if (sc?.id) { socioCompanyId = sc.id; companyIndex.set(docSocio, sc.id); }
+      }
+      if (!socioCompanyId || socioCompanyId === targetId) continue;
+      if (await ensureEdge("company", socioCompanyId, targetId, { role, data_entrada: dataEntrada }))
+        console.log(`  + PJ ${cols[2]} (${docSocio}) socia de CNPJ ${cnpjBasico}`);
+    } else {
+      continue; // idSocio 3 (estrangeiro) e outros: fora de escopo por ora
+    }
   }
 
   console.log(`\n=== Receita SOCIO concluido ===`);

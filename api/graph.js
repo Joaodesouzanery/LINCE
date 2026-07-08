@@ -12,6 +12,75 @@ const KIND_TABLE = {
 };
 
 const k = (kind, id) => `${kind}:${id}`;
+const safeRun = async (q) => { try { const { data } = await q; return data || []; } catch { return []; } };
+
+// Expansao BFS de vinculo societario a partir de um no. Percorre relationships
+// 'socio'/'owns' (person->company e company->company) ate `depth` niveis, revelando
+// a rede indireta (holdings, socios de socios, "laranjas"). Retorna {nodes, edges}.
+async function expandSocio(supabase, startKind, startId, depth, limit) {
+  const visited = new Set();
+  const edges = [];
+  const edgeSeen = new Set();
+  const needByKind = {}; // kind -> Set(ids) para resolver rotulos depois
+  const note = (kind, id) => { (needByKind[kind] = needByKind[kind] || new Set()).add(id); };
+
+  let frontier = [{ kind: startKind, id: startId, d: 0 }];
+  note(startKind, startId);
+
+  while (frontier.length && visited.size < limit) {
+    const next = [];
+    for (const cur of frontier) {
+      const key = k(cur.kind, cur.id);
+      if (visited.has(key)) continue;
+      visited.add(key);
+      if (cur.d >= depth) continue;
+
+      const sel = "from_kind, from_id, to_kind, to_id, relationship, confidence_score, metadata";
+      const [outRels, inRels] = await Promise.all([
+        safeRun(supabase.from("relationships").select(sel)
+          .eq("from_kind", cur.kind).eq("from_id", cur.id).in("relationship", ["socio", "owns"]).limit(limit)),
+        safeRun(supabase.from("relationships").select(sel)
+          .eq("to_kind", cur.kind).eq("to_id", cur.id).in("relationship", ["socio", "owns"]).limit(limit))
+      ]);
+
+      for (const r of [...outRels, ...inRels]) {
+        const edgeKey = `${r.from_kind}:${r.from_id}->${r.to_kind}:${r.to_id}:${r.relationship}`;
+        if (!edgeSeen.has(edgeKey)) {
+          edgeSeen.add(edgeKey);
+          edges.push({ from: k(r.from_kind, r.from_id), to: k(r.to_kind, r.to_id),
+            relationship: r.relationship, weight: r.confidence_score ?? null, meta: r.metadata || {} });
+        }
+        // Enfileira o vizinho (a outra ponta da aresta).
+        const neigh = (r.from_kind === cur.kind && r.from_id === cur.id)
+          ? { kind: r.to_kind, id: r.to_id } : { kind: r.from_kind, id: r.from_id };
+        note(neigh.kind, neigh.id);
+        if (!visited.has(k(neigh.kind, neigh.id))) next.push({ ...neigh, d: cur.d + 1 });
+      }
+    }
+    frontier = next;
+  }
+
+  // Resolve rotulos das entidades reais (companies/people/...).
+  const labels = {};
+  for (const [kind, cfg] of Object.entries(KIND_TABLE)) {
+    const ids = [...(needByKind[kind] || [])];
+    if (!ids.length) continue;
+    const rows = await safeRun(supabase.from(cfg.table).select("*").in("id", ids));
+    for (const row of rows) {
+      labels[k(kind, row.id)] = { id: k(kind, row.id), type: kind,
+        title: row[cfg.label] || kind, subtitle: row[cfg.sub] || "" };
+    }
+  }
+  const nodes = [...visited].filter((id) => labels[id]).map((id) => labels[id]);
+  const finalEdges = edges.filter((e) => labels[e.from] && labels[e.to]);
+  return {
+    ok: true, nodes, edges: finalEdges,
+    meta: { mode: "socio", depth, root: k(startKind, startId),
+      truncated: visited.size >= limit,
+      relationship_types: [...new Set(finalEdges.map((e) => e.relationship))].sort() },
+    fetchedAt: new Date().toISOString()
+  };
+}
 
 module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=600");
@@ -21,6 +90,12 @@ module.exports = async function handler(req, res) {
     const nodeParam = req.query.node ? String(req.query.node) : null;
     let nKind = null, nId = null;
     if (nodeParam) [nKind, nId] = nodeParam.split(":");
+
+    // Modo expansao societaria (BFS multi-nivel) a partir de um no.
+    if ((req.query.expand === "socio") && nKind && nId) {
+      const depth = Math.min(Math.max(Number(req.query.depth) || 2, 1), 5);
+      return res.status(200).json(await expandSocio(supabase, nKind, nId, depth, limit));
+    }
 
     // Acumuladores comuns: arestas + ids necessarios por tipo + nos sinteticos (party).
     const edges = [];

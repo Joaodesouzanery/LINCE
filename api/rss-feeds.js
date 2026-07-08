@@ -1,10 +1,21 @@
 // M5 + M8 unificados. GET /api/rss-feeds?type=consultas|agenda
 // type=consultas  -> consultas e audiencias publicas abertas
 // type=agenda     -> pautas e reunioes de Diretoria Colegiada
+// Filtros opcionais: ?sector=energia|saude|... (radar setorial) ou ?agency=SIGLA.
 const { getSupabase } = require("../lib/supabase");
 
 const CONSULTAS_KW = ["consulta publica", "audiencia publica", "tomada de subsidio", "air", "analise de impacto"];
 const AGENDA_KW    = ["reuniao", "pauta", "deliberacao", "diretoria colegiada", "sessao", "julgamento", "resolucao"];
+
+// Radar setorial: recorte tematico das agencias reguladoras (todas tem
+// sector='regulatory' no banco; este mapa da o setor economico p/ o filtro).
+const SECTOR_THEMES = {
+  energia: ["ANEEL", "ANP", "ANM"],
+  telecom: ["ANATEL", "ANCINE"],
+  saude: ["ANVISA", "ANS"],
+  transporte: ["ANTT", "ANTAQ", "ANAC", "ARTESP"],
+  saneamento: ["ANA"]
+};
 
 function xmlText(v) {
   return String(v||"").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g,"$1")
@@ -31,9 +42,15 @@ module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=7200");
   const type = String(req.query.type || "consultas");
   const keywords = type === "agenda" ? AGENDA_KW : CONSULTAS_KW;
+  const sector = req.query.sector ? String(req.query.sector).toLowerCase() : null;
+  const agencyFilter = req.query.agency ? String(req.query.agency).toUpperCase() : null;
   try {
     const supabase = getSupabase();
-    const { data: agencies } = await supabase.from("agencies").select("acronym,name,collection_rules").eq("sector","regulatory");
+    const { data: allAgencies } = await supabase.from("agencies").select("acronym,name,collection_rules").eq("sector","regulatory");
+    // Aplica recorte setorial / por agencia (radar setorial estilo Arko).
+    const sectorSet = sector && SECTOR_THEMES[sector] ? new Set(SECTOR_THEMES[sector]) : null;
+    const agencies = (allAgencies || []).filter((ag) =>
+      (!sectorSet || sectorSet.has(ag.acronym)) && (!agencyFilter || ag.acronym === agencyFilter));
     const results = [];
     await Promise.all((agencies||[]).map(async ag => {
       const rss = ag.collection_rules?.rss;
@@ -43,7 +60,8 @@ module.exports = async function handler(req, res) {
            .forEach(c => results.push({ agency: ag.acronym, agency_name: ag.name, ...c }));
     }));
     results.sort((a,b) => new Date(b.date||0)-new Date(a.date||0));
-    return res.status(200).json({ ok:true, type, source:"RSS Agencias", fetchedAt:new Date().toISOString(), items:results });
+    return res.status(200).json({ ok:true, type, sector: sector || null, sectors: Object.keys(SECTOR_THEMES),
+      source:"RSS Agencias", fetchedAt:new Date().toISOString(), items:results });
   } catch(error) {
     return res.status(502).json({ ok:false, error:error.message });
   }
