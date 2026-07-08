@@ -1248,7 +1248,7 @@ async function loadLegislativo(q) {
   list.innerHTML = emptyCard("Legislativo", `Buscando "${escapeHtml(term)}" na Câmara e Senado...`);
   try {
     const payload = await requestJson(
-      `/api/legislativo?type=proposicoes&casa=${encodeURIComponent(casa)}&q=${encodeURIComponent(term)}`
+      `/api/rss-feeds?type=proposicoes&casa=${encodeURIComponent(casa)}&q=${encodeURIComponent(term)}`
     );
     renderLegislativo(payload.items || []);
   } catch (err) {
