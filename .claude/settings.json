@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node scripts/*)",
+      "Bash(npm run ingest:*)", "Bash(npm run load:*)",
+      "Bash(npm run backfill:*)", "Bash(npm run db:*)",
+      "Bash(git status)", "Bash(git diff:*)", "Bash(git log:*)",
+      "Bash(rg:*)", "Bash(ls:*)",
+      "mcp__claude_ai_supabase__list_tables",
+      "mcp__claude_ai_supabase__execute_sql",
+      "mcp__claude_ai_supabase__get_advisors"
+    ]
+  }
+}
