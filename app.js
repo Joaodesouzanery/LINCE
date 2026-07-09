@@ -473,7 +473,9 @@ async function runSearch(cnpjInput) {
   state.sources.cnpj = resultToSource(cnpjResult);
   state.sources.rdap = resultToSource(domainResult);
   state.sources.datajud = resultToSource(processResult, "key");
-  state.sources.transparency = resultToSource(transparencyResult, "key");
+  // Transparência: falha real (endpoint/HTTP) mostra "erro", não "requer chave"
+  // (a ausência de chave já vem como status:'requires_key' -> rótulo "key").
+  state.sources.transparency = resultToSource(transparencyResult);
   state.sources.screening = resultToSource(screeningResult, "key");
   state.screening = screeningResult.ok ? screeningResult.value : null;
   state.holdings = holdingsResult.ok ? holdingsResult.value.items || [] : [];
