@@ -102,9 +102,67 @@ a {
   overflow-y: auto;
 }
 
-/* Rail fixo: rótulos nunca aparecem (tooltip nativo via title=) */
+/* Rail recolhido (default): só ícones, rótulo via tooltip title= */
 .nav-text {
   display: none;
+}
+
+/* Botão de recolher/expandir a sidebar */
+.sidebar-toggle {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 32px;
+  width: 34px;
+  margin: 0 auto 6px;
+  padding: 0;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.sidebar-toggle:hover {
+  background: var(--card-2);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+/* Estado expandido: mostra rótulos e alinha à esquerda */
+.sidebar.expanded {
+  width: 210px;
+  padding: 10px 10px;
+}
+.sidebar.expanded .nav-text {
+  display: inline;
+}
+.sidebar.expanded .brand-text {
+  display: flex;
+  flex-direction: column;
+}
+.sidebar.expanded .brand {
+  justify-content: flex-start;
+  gap: 10px;
+}
+.sidebar.expanded .nav-list {
+  align-items: stretch;
+}
+.sidebar.expanded .nav-item {
+  width: 100%;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 10px;
+}
+.sidebar.expanded .sidebar-toggle {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0 10px;
+}
+.sidebar.expanded .mini-status {
+  justify-content: flex-start;
+  gap: 8px;
 }
 
 .nav-sep {
@@ -1712,6 +1770,20 @@ button.entity-pill:hover {
     border-bottom: 1px solid var(--line);
     overflow-y: visible;
     overflow-x: auto;
+  }
+
+  /* No mobile o rail e horizontal: o estado "expanded" nao se aplica. */
+  .sidebar.expanded {
+    width: 100%;
+    padding: 6px 10px;
+  }
+  .sidebar.expanded .nav-item {
+    width: 34px;
+    justify-content: center;
+    padding: 0;
+  }
+  .sidebar.expanded .nav-text {
+    display: none;
   }
 
   .brand {

@@ -27,6 +27,11 @@
           </span>
         </div>
 
+        <button class="sidebar-toggle" id="sidebar-toggle" type="button" title="Expandir/recolher menu" aria-label="Expandir ou recolher o menu">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          <span class="nav-text">Recolher menu</span>
+        </button>
+
         <nav class="nav-list" id="view-nav" aria-label="Navegação principal">
           <!-- Principal -->
           <button class="nav-item active" type="button" data-view="overview" title="Overview">
@@ -36,6 +41,10 @@
           <button class="nav-item" type="button" data-view="intelligence" title="Inteligência">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
             <span class="nav-text">Inteligência</span>
+          </button>
+          <button class="nav-item" type="button" data-view="radar" title="Radar de Risco & Oportunidade">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+            <span class="nav-text">Radar</span>
           </button>
 
           <hr class="nav-sep" />
@@ -418,6 +427,33 @@
               </div>
               <div class="news-list" id="legislativo-list"></div>
             </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-radar">
+          <div class="monitors-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Radar de risco (captura / porta-giratória)</p>
+                  <h2>Riscos</h2>
+                </div>
+                <span class="status-pill status-key" id="radar-risk-count" hidden>0</span>
+              </div>
+              <div class="news-list" id="radar-risks"></div>
+            </section>
+            <aside class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Oportunidades e alertas legislativos</p>
+                  <h2>Oportunidades</h2>
+                </div>
+                <span class="status-pill status-ok" id="radar-opp-count" hidden>0</span>
+              </div>
+              <div class="news-list" id="radar-opportunities"></div>
+              <div class="panel-header" style="margin-top:14px"><div><p class="kicker">Legislativo recente</p><h2>Proposições</h2></div></div>
+              <div class="news-list" id="radar-legislative"></div>
+            </aside>
           </div>
         </section>
 

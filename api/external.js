@@ -41,11 +41,14 @@ module.exports = async function handler(req, res) {
     const cnpj = onlyDigits(req.query.cnpj);
     if (cnpj.length !== 14) return res.status(400).json({ ok:false, error:"CNPJ invalido." });
     try {
-      const response = await fetch(`https://api.portaldatransparencia.gov.br/api-de-dados/contratos?cnpjFornecedor=${cnpj}&pagina=1`, {
+      // Endpoint correto p/ contratos por fornecedor: /contratos/cpf-cnpj?cpfCnpj=.
+      // (O antigo /contratos?cnpjFornecedor= retornava 400 mesmo com chave valida.)
+      const response = await fetch(`https://api.portaldatransparencia.gov.br/api-de-dados/contratos/cpf-cnpj?cpfCnpj=${cnpj}&pagina=1`, {
         headers: { accept:"application/json", "chave-api-dados":apiKey }
       });
       const data = await response.json().catch(()=>null);
-      if (!response.ok) return res.status(response.status).json({ ok:false, error:"Portal Transparencia falhou.", data });
+      // status:'error' (nao 'requires_key') p/ o front nao rotular como "requer chave".
+      if (!response.ok) return res.status(response.status).json({ ok:false, status:"error", error:`Portal Transparencia HTTP ${response.status}.`, data });
       const rows = Array.isArray(data) ? data : [];
       const shown = rows.slice(0, 50);
       return res.status(200).json({ ok:true, source:"Portal da Transparencia", total: rows.length, truncated: rows.length > shown.length,

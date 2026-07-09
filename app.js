@@ -144,10 +144,22 @@ const REL_META = {
   reported: { color: "#b0b352", style: "solid" }, Contrato: { color: "#b0b352", style: "solid" },
   Processo: { color: "#c78a3b", style: "solid" },
   relatou: { color: "#2ea89d", style: "solid" }, votou: { color: "#2ea89d", style: "dashed" },
-  delibera: { color: "#2ea89d", style: "solid" }, afeta: { color: "#2ea89d", style: "dotted" }
+  delibera: { color: "#2ea89d", style: "solid" }, afeta: { color: "#2ea89d", style: "dotted" },
+  // Papeis societarios (estilo Sherlocker): rotulo + cor por papel.
+  "Sócio": { color: "#2d72d2", style: "solid" },
+  "Administrador": { color: "#32a467", style: "solid" },
+  "Direção": { color: "#9881f3", style: "solid" }
 };
 const relColor = (r) => (REL_META[r] || { color: "#4a545c" }).color;
 const relStyle = (r) => (REL_META[r] || { style: "solid" }).style;
+
+// Classifica a qualificacao do QSA num papel curto p/ rotular a aresta e a legenda.
+function socioRoleBucket(qualification) {
+  const q = (qualification || "").toLowerCase();
+  if (/administrador/.test(q)) return "Administrador";
+  if (/presiden|diretor|conselheir/.test(q)) return "Direção";
+  return "Sócio";
+}
 
 let CY_LAYOUT = "cose";
 (function registerCyLayout() {
@@ -165,6 +177,7 @@ const CY_STYLE = [
     "width": "data(size)", "height": "data(size)", "border-width": 2, "border-color": "#10151a", "shape": "ellipse"
   } },
   { selector: "node.central", style: { "border-color": "#e8eaed", "border-width": 3, "font-size": 12, "font-weight": 800 } },
+  { selector: "node.alerted", style: { "border-color": "#d5605c", "border-width": 3 } },
   { selector: "node:selected", style: { "border-color": "#b0b352", "border-width": 4 } },
   { selector: "node.dim", style: { "opacity": 0.12 } },
   { selector: "node.hidden", style: { "display": "none" } },
@@ -189,7 +202,8 @@ function cyElements(nodes, edges) {
   const ids = new Set(nodes.map((n) => n.id));
   const els = [];
   for (const n of nodes) {
-    els.push({ data: { id: n.id, label: n.title || n.id, sub: n.subtitle || "", type: n.type, color: nodeColor(n.type), size: n.central ? 30 : 20 }, classes: n.central ? "central" : "" });
+    const cls = [n.central ? "central" : "", n.alert ? "alerted" : ""].filter(Boolean).join(" ");
+    els.push({ data: { id: n.id, label: n.title || n.id, sub: n.subtitle || "", type: n.type, color: nodeColor(n.type), size: n.central ? 30 : 20 }, classes: cls });
   }
   const seen = new Set();
   for (const e of edges) {
@@ -406,6 +420,7 @@ function setView(view) {
     agenda: ["Calendario regulatorio (M8)", "Agenda e Pautas"],
     monitors: ["Vigilancia continua (M10)", "Central de Monitoramento"],
     legislativo: ["Radar legislativo (M12)", "Legislativo"],
+    radar: ["Risco & Oportunidade (M13)", "Radar"],
     person: ["Screening de pessoa", "Consulta Pessoa"]
   };
   const [kicker, title] = titles[view] || ["LINCE", view];
@@ -417,6 +432,7 @@ function setView(view) {
   if (view === "agenda") loadAgenda();
   if (view === "monitors") loadMonitors();
   if (view === "legislativo") loadLegislativo();
+  if (view === "radar") loadRadar();
   $("#view-kicker").textContent = kicker;
   $("#view-title").textContent = title;
 }
@@ -490,8 +506,66 @@ async function runSearch(cnpjInput) {
 
   buildDossier(company, domains, state.news, processes, transparency);
   buildGraph(company, domains, state.news, processes, transparency);
+  // Enriquece o grafo com a rede societária PERSISTIDA (holdings, sócio-de-sócio)
+  // via QSA. Best-effort: se não houver dado/rede, o grafo ao vivo segue igual.
+  state.graphRootCompanyId = cnpjResult.value?.persisted?.company_id || null;
+  if (state.graphRootCompanyId) {
+    await mergeSocioNetwork(state.graphRootCompanyId).catch(() => {});
+  }
   renderAll();
   setLoading(false);
+}
+
+// Mescla o subgrafo societário do banco (api/graph expand=socio) no grafo de
+// investigação, remapeando o nó-raiz do banco para o nó central "company".
+async function mergeSocioNetwork(companyId) {
+  const g = await requestJson(`/api/graph?node=company:${encodeURIComponent(companyId)}&expand=socio&depth=2`);
+  if (!g?.nodes?.length) return;
+  const rootId = `company:${companyId}`;
+  const remap = (id) => (id === rootId ? "company" : id);
+  const existing = new Set(state.graphNodes.map((n) => n.id));
+  const dbNodeById = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+  for (const e of g.edges || []) {
+    const a = remap(e.from), b = remap(e.to);
+    // Pula aresta direta raiz<->pessoa: o sócio direto já aparece via QSA ao vivo.
+    const other = a === "company" ? e.to : (b === "company" ? e.from : null);
+    if (other && dbNodeById[other]?.type === "person") continue;
+    for (const endId of [e.from, e.to]) {
+      const mid = remap(endId);
+      if (existing.has(mid)) continue;
+      const dn = dbNodeById[endId];
+      if (!dn) continue;
+      state.graphNodes.push({ id: mid, type: dn.type === "company" ? "company" : "partner",
+        title: dn.title, subtitle: dn.subtitle || "", fields: [["Fonte", "Rede societária (Receita/QSA)"]] });
+      existing.add(mid);
+    }
+    state.graphEdges.push([a, b, socioRoleBucket(e.meta?.role), e.weight ?? 0.9]);
+  }
+}
+
+// Duplo-clique num nó com id de banco (kind:uuid) expande a rede societária dele.
+async function expandCnpjNode(nodeId) {
+  let target = nodeId;
+  if (nodeId === "company" && state.graphRootCompanyId) target = `company:${state.graphRootCompanyId}`;
+  if (!target || !target.includes(":")) return; // só nós com id de banco
+  try {
+    const g = await requestJson(`/api/graph?node=${encodeURIComponent(target)}&expand=socio&depth=1`);
+    const existing = new Set(state.graphNodes.map((n) => n.id));
+    const dbNodeById = Object.fromEntries((g.nodes || []).map((n) => [n.id, n]));
+    const remap = (id) => (id === target ? nodeId : id);
+    for (const e of g.edges || []) {
+      for (const endId of [e.from, e.to]) {
+        const mid = remap(endId);
+        if (existing.has(mid) || !dbNodeById[endId]) continue;
+        const dn = dbNodeById[endId];
+        state.graphNodes.push({ id: mid, type: dn.type === "company" ? "company" : "partner",
+          title: dn.title, subtitle: dn.subtitle || "", fields: [["Fonte", "Rede societária (Receita/QSA)"]] });
+        existing.add(mid);
+      }
+      state.graphEdges.push([remap(e.from), remap(e.to), socioRoleBucket(e.meta?.role), e.weight ?? 0.9]);
+    }
+    renderGraph();
+  } catch { /* silencioso */ }
 }
 
 // ── Mini-gráfico SVG de barras semanais (sem D3) ──────────────────────────
@@ -916,31 +990,35 @@ function compactItems(items) {
 function buildGraph(company, domains, news, processes = [], transparency = []) {
   const nodes = [];
   const edges = [];
+  const companyInapta = !!(company.status && !/ativ/i.test(company.status));
   nodes.push({
     id: "company",
     type: "company",
     title: company.legalName || formatCnpj(company.cnpj),
     subtitle: formatCnpj(company.cnpj),
     central: true,
+    alert: companyInapta,
     status: company.status || "Conectado",
     fields: [
       ["Fonte", "CNPJ.ws"],
       ["Situacao", company.status || "Sem dado"],
-      ["CNAE", company.mainCnae.code || "Sem dado"],
+      ["Capital social", money(company.capital)],
+      ["CNAE", [company.mainCnae.code, company.mainCnae.description].filter(Boolean).join(" - ") || "Sem dado"],
       ["Cidade/UF", [company.address.city, company.address.state].filter(Boolean).join("/") || "Sem dado"]
     ]
   });
 
-  company.partners.slice(0, 10).forEach((partner, index) => {
+  company.partners.slice(0, 12).forEach((partner, index) => {
     const id = `partner-${index}`;
+    const role = socioRoleBucket(partner.qualification); // Sócio/Administrador/Direção
     nodes.push({
       id, type: "partner",
       title: partner.name || "Socio sem nome",
       subtitle: partner.qualification || "QSA",
       status: "QSA",
-      fields: [["Fonte", "CNPJ.ws"], ["Entrada", partner.entryDate || "Sem dado"]]
+      fields: [["Fonte", "CNPJ.ws"], ["Papel", partner.qualification || role], ["Entrada", partner.entryDate || "Sem dado"]]
     });
-    edges.push(["company", id, "Socio", 0.9]);
+    edges.push([id, "company", role, 0.9]);
   });
 
   company.phones.forEach((phone, index) => {
@@ -1358,13 +1436,98 @@ function renderLegislativo(items) {
           <div class="entity-row">
             <span class="entity-pill">${escapeHtml(p.casa || "")}</span>
             ${p.tipo ? `<span class="entity-pill">${escapeHtml(p.tipo)}</span>` : ""}
-            ${url ? `<a class="entity-pill" href="${url}" target="_blank" rel="noopener">Abrir ↗</a>` : ""}
+            ${url ? `<a class="entity-pill" href="${escapeHtml(url)}" target="_blank" rel="noopener">Abrir ↗</a>` : ""}
           </div>
         </div>
         ${cardFoot("var(--purple)", (p.casa || "Legislativo"), "LINCE//LEG")}
       </article>`;
     })
     .join("");
+}
+
+// Radar de Risco & Oportunidade (M13): sintetiza captura/porta-giratória,
+// contratos a vencer, consultas abertas e proposições recentes.
+async function loadRadar() {
+  const risksEl = $("#radar-risks"), oppEl = $("#radar-opportunities"), legEl = $("#radar-legislative");
+  if (!risksEl) return;
+  risksEl.innerHTML = emptyCard("Riscos", "Carregando radar...");
+  if (oppEl) oppEl.innerHTML = emptyCard("Oportunidades", "Carregando...");
+  if (legEl) legEl.innerHTML = "";
+  try {
+    const r = await requestJson("/api/intelligence?type=radar_intel");
+    renderRadarRisks(r.risks || []);
+    renderRadarOpportunities(r.opportunities || []);
+    renderRadarLegislative(r.legislative || []);
+    const rc = $("#radar-risk-count"), oc = $("#radar-opp-count");
+    if (rc) { rc.hidden = !(r.risks || []).length; rc.textContent = String((r.risks || []).length); }
+    if (oc) { oc.hidden = !(r.opportunities || []).length; oc.textContent = String((r.opportunities || []).length); }
+  } catch (err) {
+    risksEl.innerHTML = emptyCard("Riscos", `Falha: ${escapeHtml(err.message)}. Verifique se as ingestões rodaram e a migração foi aplicada.`);
+    if (oppEl) oppEl.innerHTML = "";
+  }
+}
+
+function renderRadarRisks(items) {
+  const el = $("#radar-risks");
+  if (!items.length) { el.innerHTML = emptyCard("Riscos", "Nenhum risco de captura detectado (ou faltam dados de mandatos/sócios)."); return; }
+  el.innerHTML = items.map((x) => `
+    <article class="news-card target-card">
+      <div class="card-body">
+        <div class="card-head">
+          ${TARGET_ICO}
+          <div><strong>${escapeHtml(x.name || "?")}</strong><span class="card-sub">${escapeHtml(x.agency || "")}${x.role ? " · " + escapeHtml(x.role) : ""}</span></div>
+          <span class="card-prio">${x.inaptas ? "ALTO" : "MÉDIO"}</span>
+        </div>
+        <div class="entity-row">
+          <span class="entity-pill score-${x.inaptas ? "high" : "mid"}">${x.companies} empresa(s)${x.inaptas ? ` · ${x.inaptas} inapta(s)` : ""}</span>
+          <span class="entity-pill">porta giratória</span>
+        </div>
+      </div>
+      ${cardFoot(x.inaptas ? "var(--red)" : "var(--yellow)", "captura", "LINCE//RISCO")}
+    </article>`).join("");
+}
+
+function renderRadarOpportunities(items) {
+  const el = $("#radar-opportunities");
+  if (!items.length) { el.innerHTML = emptyCard("Oportunidades", "Sem contratos a vencer nem consultas abertas na janela."); return; }
+  el.innerHTML = items.map((x) => {
+    const isContract = x.kind === "contrato_vencendo";
+    const meta = isContract
+      ? `${x.agency || ""}${x.value ? " · " + escapeHtml(money(x.value)) : ""} · vence ${escapeHtml(x.ends_at || "-")}`
+      : `${x.agency || ""} · ${escapeHtml(x.date || "-")}`;
+    const url = safeUrl(x.link);
+    return `
+    <article class="news-card target-card">
+      <div class="card-body">
+        <div class="card-head">
+          ${TARGET_ICO}
+          <div><strong>${escapeHtml((x.label || "").slice(0, 120))}</strong><span class="card-sub">${meta}</span></div>
+          <span class="card-prio">${isContract ? "CONTRATO" : "CONSULTA"}</span>
+        </div>
+        <div class="entity-row">
+          ${x.supplier ? `<span class="entity-pill">${escapeHtml(x.supplier)}</span>` : ""}
+          ${url ? `<a class="entity-pill" href="${escapeHtml(url)}" target="_blank" rel="noopener">Abrir ↗</a>` : ""}
+        </div>
+      </div>
+      ${cardFoot("var(--green)", isContract ? "contrato a vencer" : "consulta aberta", "LINCE//OPORT")}
+    </article>`;
+  }).join("");
+}
+
+function renderRadarLegislative(items) {
+  const el = $("#radar-legislative");
+  if (!el) return;
+  if (!items.length) { el.innerHTML = emptyCard("Legislativo", "Sem proposições recentes."); return; }
+  el.innerHTML = items.map((p) => {
+    const url = safeUrl(p.url);
+    return `
+    <article class="news-card">
+      <span class="source-meta">${escapeHtml(p.casa || "")}</span>
+      <strong>${escapeHtml(p.titulo || "Proposição")}</strong>
+      <p>${escapeHtml((p.ementa || "").slice(0, 180))}</p>
+      ${url ? `<div class="entity-row"><a class="entity-pill" href="${escapeHtml(url)}" target="_blank" rel="noopener">Abrir ↗</a></div>` : ""}
+    </article>`;
+  }).join("");
 }
 
 async function loadMonitors() {
@@ -1781,14 +1944,28 @@ const natGraph = {
   transform: { x: 80, y: 60, scale: 0.7 },
   selectedId: null,
   drag: null,
-  pan: null
+  pan: null,
+  panoramic: false
 };
 
 const NAT_EXPAND_LIMIT = 80; // teto de vizinhos por expansao (legibilidade do grafo).
+const NAT_PANORAMIC_MAX = 600; // teto de nos na visao panoramica (performance do Cytoscape).
 
 // Reconstroi nodes/edges visiveis a partir do dataset completo e do conjunto expanded.
 function rebuildNatVisible() {
   const allById = Object.fromEntries(natGraph.allNodes.map((n) => [n.id, n]));
+
+  // Visao panoramica (sem filtro de agencia): mostra a rede inteira (capada por
+  // performance), em vez de colapsar num no arbitrario. Evita o "2 entidades".
+  if (natGraph.panoramic) {
+    const capped = natGraph.allNodes.slice(0, NAT_PANORAMIC_MAX);
+    const idset = new Set(capped.map((n) => n.id));
+    natGraph.nodes = capped.map((n) => ({ id: n.id, type: n.type, title: n.title, subtitle: n.subtitle || "", central: false }));
+    natGraph.edges = natGraph.allEdges.filter((e) => idset.has(e.from) && idset.has(e.to));
+    renderNatGraph();
+    return;
+  }
+
   const visible = new Set();
   if (natGraph.centerId) visible.add(natGraph.centerId);
   for (const srcId of natGraph.expanded) {
@@ -1873,12 +2050,19 @@ async function loadNationalGraph() {
     }
     natGraph.allNodes = g.nodes.slice();
     natGraph.allEdges = g.edges.slice();
-    const center = agency
-      ? g.nodes.find((n) => n.type === "agency" && (n.subtitle || "").toUpperCase() === agency.toUpperCase())
-      : g.nodes[0];
-    natGraph.centerId = center ? center.id : g.nodes[0].id;
-    natGraph.expanded = new Set([natGraph.centerId]); // ja revela os vizinhos do no central.
     natGraph.selectedId = null;
+    if (agency) {
+      // Modo focado: centraliza na agencia e revela seus vizinhos.
+      natGraph.panoramic = false;
+      const center = g.nodes.find((n) => n.type === "agency" && (n.subtitle || "").toUpperCase() === agency.toUpperCase());
+      natGraph.centerId = center ? center.id : g.nodes[0].id;
+      natGraph.expanded = new Set([natGraph.centerId]);
+    } else {
+      // Visao panoramica: a rede inteira (sem colapsar num no).
+      natGraph.panoramic = true;
+      natGraph.centerId = null;
+      natGraph.expanded = new Set();
+    }
     rebuildNatVisible();
     const trunc = g.meta?.truncated ? ` · amostra de ${g.meta.limit} (refine por agência)` : "";
     $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos${trunc}`;
@@ -1891,7 +2075,9 @@ async function loadNationalGraph() {
 
 // Expande um no: revela seus vizinhos diretos a partir do dataset ja carregado.
 function expandNatNode(nodeId) {
-  if (!nodeId) return;
+  // Na visao panoramica a rede inteira ja esta visivel: expandir e no-op
+  // (evita botao "Colapsar" enganoso sem revelar nada).
+  if (!nodeId || natGraph.panoramic) return;
   natGraph.expanded.add(nodeId);
   rebuildNatVisible();
   $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos`;
@@ -1899,7 +2085,7 @@ function expandNatNode(nodeId) {
 
 // Colapsa um no: esconde os vizinhos revelados por ele (mantem o central).
 function collapseNatNode(nodeId) {
-  if (!nodeId || nodeId === natGraph.centerId) return;
+  if (!nodeId || natGraph.panoramic || nodeId === natGraph.centerId) return;
   natGraph.expanded.delete(nodeId);
   rebuildNatVisible();
   $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos`;
@@ -2063,7 +2249,8 @@ function ensureCnpjGraphView() {
   state.graphView = createGraphView({
     container: $("#graph-cy"),
     legendEl: $("#graph-legend"),
-    onSelect: (id) => { state.selectedNodeId = id; renderInspector(); }
+    onSelect: (id) => { state.selectedNodeId = id; renderInspector(); },
+    onExpand: (id) => expandCnpjNode(id)
   });
   return state.graphView;
 }
@@ -2139,8 +2326,8 @@ function renderDossier() {
   const exportBtn = $("#export-dossier");
   if (exportBtn) exportBtn.hidden = !state.target;
   $("#dossier-summary").textContent = state.target
-    ? `Dossie real-only para ${formatCnpj(state.target.cnpj)}. Secoes sem retorno real aparecem como vazias.`
-    : "As secoes abaixo so serao preenchidas quando houver dado retornado por fonte real.";
+    ? `Dossie real-only para ${formatCnpj(state.target.cnpj)}. Apenas seções com dado de fonte real são exibidas.`
+    : "As secoes so aparecem quando houver dado retornado por fonte real.";
 
   // Aba Patrimônio tem layout próprio (blocos de largura total).
   if (state.activeDossierTab === "patrimony") {
@@ -2170,8 +2357,21 @@ function renderDossier() {
     .join("");
 }
 
+// So exibe abas com fonte real: Basicas sempre; Patrimonio (tem renderer proprio)
+// quando ha alvo; as demais so quando tem dado. Evita "dossie rico" fantasma.
+function visibleDossierTabs() {
+  return dossierTabs.filter(([id]) => {
+    if (id === "basic") return true;
+    if (id === "patrimony") return !!state.target;
+    return ((state.dossier[id] || []).length) > 0;
+  });
+}
+
 function renderDossierTabs() {
-  $("#dossier-tabs").innerHTML = dossierTabs
+  const tabs = visibleDossierTabs();
+  // Se a aba ativa deixou de existir (ex.: novo alvo sem aquela fonte), volta p/ basic.
+  if (!tabs.some(([id]) => id === state.activeDossierTab)) state.activeDossierTab = "basic";
+  $("#dossier-tabs").innerHTML = tabs
     .map(
       ([id, label]) => `<button class="dossier-tab ${state.activeDossierTab === id ? "active" : ""}" type="button" data-dossier-tab="${id}">${label}</button>`
     )
@@ -2302,6 +2502,15 @@ function wireEvents() {
     const button = event.target.closest("[data-view]");
     if (!button) return;
     setView(button.dataset.view);
+  });
+
+  // Sidebar recolhível: restaura a preferência e liga o toggle.
+  const sidebar = $("#sidebar");
+  if (sidebar && localStorage.getItem("lince-sidebar") === "expanded") sidebar.classList.add("expanded");
+  $("#sidebar-toggle")?.addEventListener("click", () => {
+    if (!sidebar) return;
+    const expanded = sidebar.classList.toggle("expanded");
+    localStorage.setItem("lince-sidebar", expanded ? "expanded" : "collapsed");
   });
 
   $("#search-form").addEventListener("submit", (event) => {

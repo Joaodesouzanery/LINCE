@@ -29,25 +29,41 @@ async function main() {
   const supabase = getSupabase();
 
   // Empresas com CNPJ completo (14 digitos) — o CNPJ.ws precisa do numero cheio.
-  const { data: companies, error } = await supabase
-    .from("companies")
-    .select("id, cnpj, legal_name")
-    .not("cnpj", "is", null)
-    .order("created_at", { ascending: true });
-  if (error) { console.error("Erro ao listar empresas:", error.message); process.exit(1); }
+  // Pagina em blocos de 1000 (o PostgREST limita cada resposta), senao empresas
+  // alem da 1000a nunca receberiam QSA.
+  const companies = [];
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from("companies")
+      .select("id, cnpj, legal_name")
+      .not("cnpj", "is", null)
+      .order("created_at", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) { console.error("Erro ao listar empresas:", error.message); process.exit(1); }
+    companies.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
 
-  let candidates = (companies || []).filter((c) => onlyDigits(c.cnpj).length === 14);
+  let candidates = companies.filter((c) => onlyDigits(c.cnpj).length === 14);
 
   // --only-empty: descarta empresas que ja tem alguma aresta 'socio' apontando p/ elas.
+  // Chunka o .in() (o PostgREST limita a resposta) e ABORTA se a query falhar,
+  // para nao anular silenciosamente o filtro reprocessando tudo.
   if (onlyEmpty && candidates.length) {
     const ids = candidates.map((c) => c.id);
-    const { data: rels } = await supabase
-      .from("relationships")
-      .select("to_id")
-      .eq("to_kind", "company")
-      .eq("relationship", "socio")
-      .in("to_id", ids);
-    const withSocios = new Set((rels || []).map((r) => r.to_id));
+    const withSocios = new Set();
+    const CHUNK = 300;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const { data: rels, error: relErr } = await supabase
+        .from("relationships")
+        .select("to_id")
+        .eq("to_kind", "company")
+        .eq("relationship", "socio")
+        .in("to_id", ids.slice(i, i + CHUNK));
+      if (relErr) { console.error("Erro ao checar relationships:", relErr.message); process.exit(1); }
+      for (const r of rels || []) withSocios.add(r.to_id);
+    }
     candidates = candidates.filter((c) => !withSocios.has(c.id));
   }
 

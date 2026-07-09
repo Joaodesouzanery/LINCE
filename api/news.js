@@ -21,7 +21,12 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ ok: false, error: "Informe um termo para buscar noticias." });
   }
 
-  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=pt-BR&gl=BR&ceid=BR:pt-419`;
+  // Frase exata (aspas) para nomes compostos reduz o ruido do Google News
+  // (ex.: "PA ARQUIVOS LTDA" em vez de qualquer noticia com "arquivos").
+  // Nomes de 1 palavra (ITAIPU) ficam como estao — nao ha ganho em aspas.
+  const alreadyQuoted = /["']/.test(query);
+  const phrase = (!alreadyQuoted && query.split(/\s+/).length >= 2) ? `"${query}"` : query;
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(phrase)}&hl=pt-BR&gl=BR&ceid=BR:pt-419`;
 
   try {
     const response = await fetch(url, {

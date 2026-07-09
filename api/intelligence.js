@@ -102,24 +102,40 @@ module.exports = async function handler(req, res) {
     }
 
     if (type === "score") {
-      // Score de risco por agencia: volume de atos + alertas + mandatos prestes a vencer
+      // Score de risco por agencia. A versao antiga somava VOLUME cru sem janela
+      // nem normalizacao -> todas saturavam em 100 (inutil). Agora: atividade
+      // recente (90d) + alertas ponderados por severidade, NORMALIZADO entre as
+      // agencias (min-max) para diferenciar de fato. docs = total (so display).
       const { data: agencies } = await supabase.from("agencies").select("id, acronym, name").eq("sector", "regulatory");
-      const scores = [];
+      const since90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+      const SEV_WEIGHT = { high: 3, medium: 2, info: 1, low: 1 };
+      const rows = [];
       for (const ag of agencies || []) {
-        const [docs, alerts, mandates] = await Promise.all([
-          supabase.from("documents").select("id", { count: "exact" }).eq("agency_id", ag.id).eq("source_name", "DOU"),
-          supabase.from("alerts").select("severity", { count: "exact" }).eq("target_id", ag.id).is("acknowledged_at", null),
+        const [docsTotal, docs90, alerts, mandates] = await Promise.all([
+          supabase.from("documents").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).eq("source_name", "DOU"),
+          supabase.from("documents").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).eq("source_name", "DOU").gte("published_at", since90),
+          supabase.from("alerts").select("severity").eq("target_id", ag.id).is("acknowledged_at", null),
           supabase.from("mandates").select("ended_at").eq("agency_id", ag.id).is("ended_at", null)
         ]);
-        const docCount = docs.count || 0;
-        const alertCount = alerts.count || 0;
-        const activeDirectors = (mandates.data || []).length;
-        // Score 0-100: mais atos + mais alertas nao reconhecidos = risco mais alto
-        const score = Math.min(100, Math.round((alertCount * 30) + (docCount / 10)));
-        scores.push({ agency: ag.acronym, name: ag.name, score, docs: docCount, open_alerts: alertCount, active_directors: activeDirectors });
+        const openAlerts = alerts.data || [];
+        const weightedAlerts = openAlerts.reduce((s, a) => s + (SEV_WEIGHT[a.severity] || 1), 0);
+        // Sinal bruto: atividade recente + peso de alertas (alertas pesam mais).
+        const raw = (docs90.count || 0) + weightedAlerts * 15;
+        rows.push({
+          agency: ag.acronym, name: ag.name,
+          docs: docsTotal.count || 0, docs_90d: docs90.count || 0,
+          open_alerts: openAlerts.length, weighted_alerts: weightedAlerts,
+          active_directors: (mandates.data || []).length, raw
+        });
       }
-      scores.sort((a, b) => b.score - a.score);
-      return res.status(200).json({ ok: true, type: "score", scores });
+      // Normaliza o sinal bruto para 0-100 entre as agencias (min-max).
+      const raws = rows.map((r) => r.raw);
+      const min = Math.min(...raws, 0), max = Math.max(...raws, 1);
+      const span = max - min || 1;
+      const scores = rows
+        .map((r) => ({ ...r, score: Math.round(100 * (r.raw - min) / span) }))
+        .sort((a, b) => b.score - a.score);
+      return res.status(200).json({ ok: true, type: "score", window_days: 90, scores });
     }
 
     // Radar 30/60/90: atos mais recentes agrupados por periodo
@@ -384,15 +400,26 @@ module.exports = async function handler(req, res) {
       const [partyRes, mandatesRes, socioRes] = await Promise.all([
         supabase.from("party_links").select("party, link_type, amount, reference_year").eq("person_id", id),
         supabase.from("mandates").select("agency_id, role, ended_at").eq("person_id", id),
+        // relationships e polimorfica (to_id sem FK) -> NAO da para usar embed
+        // companies(...). Busca so os ids/metadata e resolve as empresas depois.
         supabase.from("relationships")
-          .select("to_id, metadata, companies(cnpj, legal_name, registration_status)")
+          .select("to_id, metadata")
           .eq("from_kind", "person").eq("from_id", id)
           .eq("to_kind", "company").eq("relationship", "socio")
       ]);
 
       const parties = partyRes.data || [];
       const mandates = mandatesRes.data || [];
-      const socio = socioRes.data || [];
+      const socioRels = socioRes.data || [];
+      // 2a query: resolve empresas por id (padrao de api/dossier-person.js).
+      let companiesById = {};
+      if (socioRels.length) {
+        const ids = [...new Set(socioRels.map((r) => r.to_id))];
+        const { data: comps } = await supabase
+          .from("companies").select("id, cnpj, legal_name, registration_status").in("id", ids);
+        companiesById = Object.fromEntries((comps || []).map((c) => [c.id, c]));
+      }
+      const socio = socioRels.map((r) => ({ ...r, companies: companiesById[r.to_id] || null }));
       const activeMandate = mandates.some((m) => !m.ended_at);
       const inactiveCompanies = socio.filter(
         (r) => r.companies?.registration_status && !/ativ/i.test(r.companies.registration_status)
@@ -422,6 +449,108 @@ module.exports = async function handler(req, res) {
           })),
           inactive_companies: inactiveCompanies
         }
+      });
+    }
+
+    // Radar de Risco & Oportunidade (estilo Arko + Sherlocker). Sintetiza 4
+    // angulos a partir do que ja existe: (1) porta giratoria/captura, (2)
+    // contratos a vencer, (3) consultas abertas, (4) proposicoes legislativas.
+    if (type === "radar_intel") {
+      res.setHeader("Cache-Control", "s-maxage=600, stale-while-revalidate=1800");
+      const today = new Date().toISOString().slice(0, 10);
+      const in90 = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+      const since45 = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+
+      // RISCO — porta giratoria: diretor ativo que tambem e socio de empresa(s).
+      async function computeRisks() {
+        const { data: activeMandates } = await supabase
+          .from("mandates")
+          .select("person_id, role, agency_id, people(full_name), agencies(acronym)")
+          .is("ended_at", null).limit(2000);
+        const dirIds = [...new Set((activeMandates || []).map((m) => m.person_id).filter(Boolean))];
+        if (!dirIds.length) return [];
+        const { data: socioRels } = await supabase
+          .from("relationships").select("from_id, to_id, metadata")
+          .eq("from_kind", "person").eq("to_kind", "company").eq("relationship", "socio")
+          .in("from_id", dirIds).limit(4000);
+        const compIds = [...new Set((socioRels || []).map((r) => r.to_id))];
+        let compById = {};
+        if (compIds.length) {
+          const { data: comps } = await supabase.from("companies")
+            .select("id, cnpj, legal_name, registration_status").in("id", compIds);
+          compById = Object.fromEntries((comps || []).map((c) => [c.id, c]));
+        }
+        const byPerson = {};
+        for (const r of socioRels || []) {
+          const c = compById[r.to_id]; if (!c) continue;
+          (byPerson[r.from_id] = byPerson[r.from_id] || []).push({ ...c, socio_role: r.metadata?.role });
+        }
+        const seen = new Set(), out = [];
+        for (const m of activeMandates || []) {
+          const comps = byPerson[m.person_id];
+          if (!comps || seen.has(m.person_id)) continue;
+          seen.add(m.person_id);
+          const inaptas = comps.filter((c) => c.registration_status && !/ativ/i.test(c.registration_status)).length;
+          out.push({
+            kind: "porta_giratoria", person_id: m.person_id, name: m.people?.full_name || "?",
+            agency: m.agencies?.acronym || null, role: m.role || null,
+            companies: comps.length, inaptas, severity: inaptas ? "high" : "medium"
+          });
+        }
+        return out.sort((a, b) => (b.inaptas - a.inaptas) || (b.companies - a.companies)).slice(0, 30);
+      }
+
+      // OPORTUNIDADE — contratos a vencer nos proximos 90 dias.
+      async function computeContracts() {
+        const { data } = await supabase.from("contracts")
+          .select("object, supplier_name, ends_at, value, agencies(acronym)")
+          .gte("ends_at", today).lte("ends_at", in90).order("ends_at").limit(40);
+        return (data || []).map((c) => ({
+          kind: "contrato_vencendo", label: (c.object || "Contrato").slice(0, 140),
+          supplier: c.supplier_name || null, agency: c.agencies?.acronym || null,
+          ends_at: c.ends_at, value: c.value || null
+        }));
+      }
+
+      // OPORTUNIDADE — consultas/audiencias publicas abertas (dos atos do DOU).
+      async function computeConsultas() {
+        const { data } = await supabase.from("documents")
+          .select("title, published_at, source_url, agencies(acronym)")
+          .eq("source_name", "DOU").gte("published_at", since45)
+          .or("title.ilike.%consulta p%,title.ilike.%audi%,title.ilike.%tomada de subs%")
+          .order("published_at", { ascending: false }).limit(25);
+        return (data || []).map((d) => ({
+          kind: "consulta_aberta", label: d.title, agency: d.agencies?.acronym || null,
+          date: d.published_at, link: d.source_url
+        }));
+      }
+
+      // LEGISLATIVO — proposicoes recentes (Camara/Senado). Degrada se a API cair.
+      async function computeLegislative() {
+        try {
+          const { searchProposicoes } = require("../lib/legislativo");
+          const year = new Date().getFullYear();
+          const r = await searchProposicoes({ ano: year, limit: 8 });
+          return (r.items || []).map((p) => ({
+            kind: "proposicao", titulo: p.titulo, casa: p.casa,
+            ementa: (p.ementa || "").slice(0, 200), url: p.url
+          }));
+        } catch { return []; }
+      }
+
+      const [risksP, contractsP, consultasP, legisP] = await Promise.allSettled([
+        computeRisks(), computeContracts(), computeConsultas(), computeLegislative()
+      ]);
+      const val = (p) => (p.status === "fulfilled" ? p.value : []);
+      const risks = val(risksP);
+      const opportunities = [...val(contractsP), ...val(consultasP)];
+      const legislative = val(legisP);
+
+      return res.status(200).json({
+        ok: true, type: "radar_intel",
+        counts: { risks: risks.length, opportunities: opportunities.length, legislative: legislative.length },
+        risks, opportunities, legislative,
+        fetchedAt: new Date().toISOString()
       });
     }
 
@@ -474,7 +603,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "alerts", items: alerts || [] });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary" });
+    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, radar_intel, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }
