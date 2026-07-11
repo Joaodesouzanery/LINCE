@@ -11,13 +11,89 @@ function params(req) {
   return req.method === "POST" && req.body && typeof req.body === "object" ? req.body : req.query;
 }
 
+// ── Analise semanal compartilhada (trends_anomalies + correlations) ─────────
+// Agrega os atos do DOU das ultimas N semanas por agencia x semana x tipo e
+// detecta anomalias: PICO (semana atual >= 2x o baseline) e SILENCIO (agencia
+// ativa que zerou). Baseline = media das semanas anteriores a atual.
+async function weeklyAgencyAnalysis(supabase, weeks = 8) {
+  const since = new Date(Date.now() - weeks * 7 * 86400000).toISOString().slice(0, 10);
+  const { data: agencies } = await supabase.from("agencies").select("id, acronym, name").eq("sector", "regulatory");
+  const agById = Object.fromEntries((agencies || []).map((a) => [a.id, a]));
+
+  // Pagina para nao estourar o teto de linhas do PostgREST (ha dezenas de
+  // milhares de atos; 8 semanas ainda pode passar de 1000 linhas).
+  const rows = [];
+  const PAGE = 1000;
+  for (let from = 0; from < 20000; from += PAGE) {
+    const { data } = await supabase
+      .from("documents")
+      .select("agency_id, published_at, document_type")
+      .eq("source_name", "DOU")
+      .gte("published_at", since)
+      .order("published_at", { ascending: true })
+      .range(from, from + PAGE - 1);
+    rows.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+
+  // Chave de semana = domingo (mesmo criterio do agency_stats).
+  const weekKey = (dateStr) => {
+    const dt = new Date(dateStr + "T12:00:00Z");
+    dt.setUTCDate(dt.getUTCDate() - dt.getUTCDay());
+    return dt.toISOString().slice(0, 10);
+  };
+  const buckets = {}; // agencyId -> weekKey -> { total, norma, ato_pessoal, contrato }
+  for (const d of rows) {
+    if (!d.agency_id || !agById[d.agency_id]) continue;
+    const wk = weekKey(d.published_at);
+    const b = ((buckets[d.agency_id] = buckets[d.agency_id] || {})[wk] =
+      buckets[d.agency_id][wk] || { total: 0, norma: 0, ato_pessoal: 0, contrato: 0 });
+    b.total++;
+    if (b[d.document_type] !== undefined) b[d.document_type]++;
+  }
+
+  const currentWeek = weekKey(new Date().toISOString().slice(0, 10));
+  const midweek = new Date().getUTCDay() >= 3; // silencio so vale de quarta em diante
+
+  // Todas as semanas da janela (mesmo as sem atividade): semanas zeradas
+  // ENTRAM na baseline — senao a media fica inflada e o pico nunca dispara.
+  const allWeeks = [];
+  for (let i = weeks - 1; i >= 0; i--) {
+    allWeeks.push(weekKey(new Date(Date.now() - i * 7 * 86400000).toISOString().slice(0, 10)));
+  }
+
+  const series = [];
+  const anomalies = [];
+  for (const [agencyId, byWeek] of Object.entries(buckets)) {
+    const ag = agById[agencyId];
+    const weekRows = allWeeks.map((wk) => ({ week: wk, total: 0, norma: 0, ato_pessoal: 0, contrato: 0, ...(byWeek[wk] || {}) }));
+    series.push({ agency: ag.acronym, name: ag.name, weeks: weekRows });
+
+    for (const metric of ["total", "norma", "ato_pessoal", "contrato"]) {
+      const past = weekRows.filter((w) => w.week !== currentWeek).map((w) => w[metric] || 0);
+      if (!past.length) continue;
+      const baseline = past.reduce((a, b) => a + b, 0) / past.length;
+      const current = byWeek[currentWeek]?.[metric] || 0;
+      if (baseline >= 2 && current >= 5 && current >= baseline * 2) {
+        anomalies.push({ agency: ag.acronym, metric, kind: "pico", current, baseline: Math.round(baseline * 10) / 10, ratio: Math.round((current / baseline) * 10) / 10 });
+      } else if (metric === "total" && baseline >= 5 && current === 0 && midweek) {
+        anomalies.push({ agency: ag.acronym, metric, kind: "silencio", current: 0, baseline: Math.round(baseline * 10) / 10, ratio: 0 });
+      }
+    }
+  }
+  anomalies.sort((a, b) => (b.ratio || 0) - (a.ratio || 0));
+  return { series, anomalies, truncated: rows.length >= 20000 };
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "s-maxage=1800, stale-while-revalidate=3600");
   const type = String(req.query.type || "radar");
 
-  // Diagnostico: verifica env vars sem expor valores
+  // Diagnostico: env vars (sem expor valores) + sondas de schema no banco.
+  // As sondas confirmam que a migracao "Fase 5" foi aplicada em producao.
   if (type === "health") {
-    return res.status(200).json({
+    res.setHeader("Cache-Control", "no-store");
+    const payload = {
       ok: true,
       supabase_url: !!process.env.SUPABASE_URL,
       service_key: !!process.env.SUPABASE_SERVICE_KEY,
@@ -26,7 +102,31 @@ module.exports = async function handler(req, res) {
       anthropic_key: !!process.env.ANTHROPIC_API_KEY,
       node_version: process.version,
       env: process.env.NODE_ENV || "production"
-    });
+    };
+    try {
+      const supabase = getSupabase();
+      // Cada sonda seleciona a coluna-alvo com head (barato); erro => objeto ausente.
+      const probe = async (table, column) => {
+        const { error } = await supabase.from(table).select(column, { count: "exact", head: true }).limit(1);
+        return !error;
+      };
+      const [monitors, alertType, assets, partyJoined] = await Promise.all([
+        probe("monitors", "id"),
+        probe("alerts", "alert_type"),
+        probe("assets", "id"),
+        probe("party_links", "joined_at")
+      ]);
+      payload.db = {
+        monitors_table: monitors,
+        alerts_alert_type: alertType,
+        assets_table: assets,
+        party_links_joined_at: partyJoined,
+        migration_fase5: monitors && alertType && assets && partyJoined
+      };
+    } catch (e) {
+      payload.db = { error: e.message };
+    }
+    return res.status(200).json(payload);
   }
 
   try {
@@ -109,25 +209,35 @@ module.exports = async function handler(req, res) {
       const { data: agencies } = await supabase.from("agencies").select("id, acronym, name").eq("sector", "regulatory");
       const since90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
       const SEV_WEIGHT = { high: 3, medium: 2, info: 1, low: 1 };
-      const rows = [];
-      for (const ag of agencies || []) {
-        const [docsTotal, docs90, alerts, mandates] = await Promise.all([
-          supabase.from("documents").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).eq("source_name", "DOU"),
-          supabase.from("documents").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).eq("source_name", "DOU").gte("published_at", since90),
-          supabase.from("alerts").select("severity").eq("target_id", ag.id).is("acknowledged_at", null),
-          supabase.from("mandates").select("ended_at").eq("agency_id", ag.id).is("ended_at", null)
-        ]);
-        const openAlerts = alerts.data || [];
+      const agIds = (agencies || []).map((a) => a.id);
+
+      // Em LOTE (era N+1: 4 queries x 12 agencias sequenciais). Agora: contagens
+      // head por agencia em paralelo + 3 queries agregaveis em memoria.
+      if (!agIds.length) return res.status(200).json({ ok: true, type: "score", window_days: 90, scores: [] });
+      const [docTotals, doc90s, alertsRes, mandatesRes] = await Promise.all([
+        Promise.all(agIds.map((id) => supabase.from("documents")
+          .select("id", { count: "exact", head: true }).eq("agency_id", id).eq("source_name", "DOU"))),
+        Promise.all(agIds.map((id) => supabase.from("documents")
+          .select("id", { count: "exact", head: true }).eq("agency_id", id).eq("source_name", "DOU").gte("published_at", since90))),
+        supabase.from("alerts").select("target_id, severity").is("acknowledged_at", null).in("target_id", agIds).limit(5000),
+        supabase.from("mandates").select("agency_id").is("ended_at", null).in("agency_id", agIds).limit(5000)
+      ]);
+      const alertsByAgency = {}, directorsByAgency = {};
+      for (const a of alertsRes.data || []) (alertsByAgency[a.target_id] = alertsByAgency[a.target_id] || []).push(a);
+      for (const m of mandatesRes.data || []) directorsByAgency[m.agency_id] = (directorsByAgency[m.agency_id] || 0) + 1;
+
+      const rows = (agencies || []).map((ag, i) => {
+        const openAlerts = alertsByAgency[ag.id] || [];
         const weightedAlerts = openAlerts.reduce((s, a) => s + (SEV_WEIGHT[a.severity] || 1), 0);
         // Sinal bruto: atividade recente + peso de alertas (alertas pesam mais).
-        const raw = (docs90.count || 0) + weightedAlerts * 15;
-        rows.push({
+        const raw = (doc90s[i]?.count || 0) + weightedAlerts * 15;
+        return {
           agency: ag.acronym, name: ag.name,
-          docs: docsTotal.count || 0, docs_90d: docs90.count || 0,
+          docs: docTotals[i]?.count || 0, docs_90d: doc90s[i]?.count || 0,
           open_alerts: openAlerts.length, weighted_alerts: weightedAlerts,
-          active_directors: (mandates.data || []).length, raw
-        });
-      }
+          active_directors: directorsByAgency[ag.id] || 0, raw
+        };
+      });
       // Normaliza o sinal bruto para 0-100 entre as agencias (min-max).
       const raws = rows.map((r) => r.raw);
       const min = Math.min(...raws, 0), max = Math.max(...raws, 1);
@@ -145,27 +255,38 @@ module.exports = async function handler(req, res) {
       const d60 = new Date(now); d60.setDate(d60.getDate() + 60);
       const d90 = new Date(now); d90.setDate(d90.getDate() + 90);
 
-      // Documentos recentes cujos contratos ou mandatos vencem nos proximos 90 dias
-      const { data: contracts } = await supabase
-        .from("contracts")
-        .select("object, supplier_name, ends_at, agencies(acronym)")
-        .lte("ends_at", d90.toISOString().slice(0, 10))
-        .gte("ends_at", now.toISOString().slice(0, 10))
-        .order("ends_at");
+      // Contratos E mandatos de dirigentes vencendo nos proximos 90 dias.
+      const today = now.toISOString().slice(0, 10);
+      const horizon = d90.toISOString().slice(0, 10);
+      const [contractsRes, mandatesRes] = await Promise.all([
+        supabase.from("contracts")
+          .select("object, supplier_name, ends_at, agencies(acronym)")
+          .lte("ends_at", horizon).gte("ends_at", today).order("ends_at"),
+        supabase.from("mandates")
+          .select("role, ended_at, people(full_name), agencies(acronym)")
+          .lte("ended_at", horizon).gte("ended_at", today).order("ended_at")
+      ]);
 
       const radar = { "30d": [], "60d": [], "90d": [] };
-      for (const c of contracts || []) {
-        const end = new Date(c.ends_at);
-        const entry = {
-          type: "contrato",
-          agency: c.agencies?.acronym,
-          label: (c.object || "").slice(0, 80),
-          supplier: c.supplier_name,
-          date: c.ends_at
-        };
+      const bucketize = (dateStr, entry) => {
+        const end = new Date(dateStr);
         if (end <= d30) radar["30d"].push(entry);
         else if (end <= d60) radar["60d"].push(entry);
         else radar["90d"].push(entry);
+      };
+      for (const c of contractsRes.data || []) {
+        bucketize(c.ends_at, {
+          type: "contrato", agency: c.agencies?.acronym,
+          label: (c.object || "").slice(0, 80), supplier: c.supplier_name, date: c.ends_at
+        });
+      }
+      // Fim de mandato de dirigente = evento politico-regulatorio (sucessao).
+      for (const m of mandatesRes.data || []) {
+        bucketize(m.ended_at, {
+          type: "mandato", agency: m.agencies?.acronym,
+          label: `Fim de mandato: ${m.people?.full_name || "dirigente"}${m.role ? ` (${m.role})` : ""}`.slice(0, 100),
+          date: m.ended_at
+        });
       }
       return res.status(200).json({ ok: true, type: "radar", radar });
     }
@@ -554,6 +675,184 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    // Tendencias e anomalias semanais por agencia (picos e silencios).
+    if (type === "trends_anomalies") {
+      res.setHeader("Cache-Control", "s-maxage=900, stale-while-revalidate=3600");
+      const weeks = Math.min(Math.max(Number(req.query.weeks) || 8, 4), 16);
+      const result = await weeklyAgencyAnalysis(supabase, weeks);
+      return res.status(200).json({ ok: true, type: "trends_anomalies", window_weeks: weeks, ...result, fetchedAt: new Date().toISOString() });
+    }
+
+    // Motor de correlacoes: cruza sinais ja existentes por entidade compartilhada.
+    // Cada correlacao tem evidencias rastreaveis e severidade. Sem IA (fase 2).
+    if (type === "correlations") {
+      res.setHeader("Cache-Control", "s-maxage=600, stale-while-revalidate=1800");
+      const since90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+      const in90 = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+      const today = new Date().toISOString().slice(0, 10);
+      const out = [];
+
+      // Base: mandatos (recentes e ativos) + vinculos societarios dessas pessoas.
+      const [recentRes, activeRes] = await Promise.all([
+        supabase.from("mandates")
+          .select("person_id, role, started_at, people(full_name), agencies(acronym)")
+          .gte("started_at", since90).limit(500),
+        supabase.from("mandates")
+          .select("person_id, role, people(full_name), agencies(acronym)")
+          .is("ended_at", null).limit(2000)
+      ]);
+      const recent = recentRes.data || [];
+      const active = activeRes.data || [];
+      const personIds = [...new Set([...recent, ...active].map((m) => m.person_id).filter(Boolean))];
+
+      let socioByPerson = {}, compById = {};
+      if (personIds.length) {
+        const { data: socioRels } = await supabase.from("relationships")
+          .select("from_id, to_id, metadata")
+          .eq("from_kind", "person").eq("to_kind", "company").eq("relationship", "socio")
+          .in("from_id", personIds).limit(4000);
+        const compIds = [...new Set((socioRels || []).map((r) => r.to_id))];
+        if (compIds.length) {
+          const { data: comps } = await supabase.from("companies")
+            .select("id, cnpj, legal_name, registration_status").in("id", compIds);
+          compById = Object.fromEntries((comps || []).map((c) => [c.id, c]));
+        }
+        for (const r of socioRels || []) {
+          const c = compById[r.to_id]; if (!c) continue;
+          (socioByPerson[r.from_id] = socioByPerson[r.from_id] || []).push({ ...c, socio_role: r.metadata?.role });
+        }
+      }
+
+      // Contratos publicos das empresas ligadas (por company_id E por cnpj).
+      const allCompIds = Object.values(compById).map((c) => c.id);
+      const allCnpjs = Object.values(compById).map((c) => (c.cnpj || "").replace(/\D/g, "")).filter((v) => v.length >= 8);
+      let contractsByComp = {};
+      if (allCompIds.length) {
+        const [byId, byCnpj] = await Promise.all([
+          supabase.from("contracts").select("supplier_company_id, supplier_cnpj, object, value, ends_at, agencies(acronym)").in("supplier_company_id", allCompIds).limit(1000),
+          allCnpjs.length ? supabase.from("contracts").select("supplier_company_id, supplier_cnpj, object, value, ends_at, agencies(acronym)").in("supplier_cnpj", allCnpjs).limit(1000) : Promise.resolve({ data: [] })
+        ]);
+        // Dedup por chave estavel (a mesma linha pode vir das duas buscas).
+        const seenContract = new Set();
+        const contractKey = (c) => `${c.supplier_cnpj || ""}|${c.ends_at || ""}|${(c.object || "").slice(0, 40)}`;
+        const push = (key, c) => {
+          if (!key) return;
+          const ck = `${key}|${contractKey(c)}`;
+          if (seenContract.has(ck)) return;
+          seenContract.add(ck);
+          (contractsByComp[key] = contractsByComp[key] || []).push(c);
+        };
+        for (const c of byId.data || []) push(c.supplier_company_id, c);
+        for (const c of byCnpj.data || []) {
+          const comp = Object.values(compById).find((x) => (x.cnpj || "").replace(/\D/g, "") === (c.supplier_cnpj || "").replace(/\D/g, ""));
+          if (comp) push(comp.id, c);
+        }
+      }
+
+      // Regra 1 (ALTA): nomeacao recente x socio x fornecedor publico.
+      for (const m of recent) {
+        const comps = socioByPerson[m.person_id] || [];
+        for (const comp of comps) {
+          const contracts = contractsByComp[comp.id] || [];
+          if (!contracts.length) continue;
+          out.push({
+            kind: "nomeacao_x_fornecedor", severity: "high",
+            title: `${m.people?.full_name || "Dirigente"} nomeado(a) há pouco na ${m.agencies?.acronym || "agência"} é sócio(a) de fornecedor público`,
+            entities: [
+              { kind: "person", id: m.person_id, label: m.people?.full_name || "?" },
+              { kind: "company", id: comp.id, label: comp.legal_name || comp.cnpj }
+            ],
+            evidence: [
+              `Mandato iniciado em ${m.started_at}${m.role ? ` (${m.role})` : ""}`,
+              `Sócio(a) de ${comp.legal_name || comp.cnpj}${comp.socio_role ? ` como ${comp.socio_role}` : ""}`,
+              ...contracts.slice(0, 3).map((c) => `Contrato público: ${(c.object || "").slice(0, 80)}${c.agencies?.acronym ? ` (${c.agencies.acronym})` : ""}`)
+            ],
+            suggested_action: "Verificar impedimento/conflito de interesse e histórico de contratos."
+          });
+        }
+      }
+
+      // Regra 2 (MEDIA/ALTA): dirigente ativo x empresa inapta/baixada.
+      const seenR2 = new Set();
+      for (const m of active) {
+        if (seenR2.has(m.person_id)) continue;
+        const inaptas = (socioByPerson[m.person_id] || []).filter((c) => c.registration_status && !/ativ/i.test(c.registration_status));
+        if (!inaptas.length) continue;
+        seenR2.add(m.person_id);
+        out.push({
+          kind: "dirigente_x_inapta", severity: inaptas.length > 1 ? "high" : "medium",
+          title: `${m.people?.full_name || "Dirigente"} (${m.agencies?.acronym || "agência"}) é sócio(a) de ${inaptas.length} empresa(s) inapta(s)/baixada(s)`,
+          entities: [
+            { kind: "person", id: m.person_id, label: m.people?.full_name || "?" },
+            ...inaptas.slice(0, 3).map((c) => ({ kind: "company", id: c.id, label: c.legal_name || c.cnpj }))
+          ],
+          evidence: inaptas.slice(0, 3).map((c) => `${c.legal_name || c.cnpj}: situação "${c.registration_status}"`),
+          suggested_action: "Checar padrão de empresas de fachada / interpostas (laranjas)."
+        });
+      }
+
+      // Regra 3 (MEDIA): agencia em pico de atividade x contratos a vencer nela.
+      try {
+        const { anomalies } = await weeklyAgencyAnalysis(supabase, 8);
+        const spikes = anomalies.filter((a) => a.kind === "pico" && a.metric !== "ato_pessoal");
+        if (spikes.length) {
+          const { data: endingContracts } = await supabase.from("contracts")
+            .select("object, ends_at, agencies(acronym)")
+            .gte("ends_at", today).lte("ends_at", in90).limit(200);
+          const endingByAgency = {};
+          for (const c of endingContracts || []) {
+            const ac = c.agencies?.acronym; if (!ac) continue;
+            (endingByAgency[ac] = endingByAgency[ac] || []).push(c);
+          }
+          for (const s of spikes.slice(0, 5)) {
+            const ending = endingByAgency[s.agency] || [];
+            if (!ending.length) continue;
+            out.push({
+              kind: "janela_regulatoria", severity: "medium",
+              title: `${s.agency} em pico de ${s.metric === "total" ? "atividade" : s.metric} (${s.ratio}x o padrão) com ${ending.length} contrato(s) a vencer`,
+              entities: [{ kind: "agency", id: null, label: s.agency }],
+              evidence: [
+                `Semana atual: ${s.current} vs baseline ${s.baseline} (${s.ratio}x)`,
+                ...ending.slice(0, 3).map((c) => `Contrato vence ${c.ends_at}: ${(c.object || "").slice(0, 70)}`)
+              ],
+              suggested_action: "Janela de movimento regulatório: monitorar editais e consultas desta agência."
+            });
+          }
+        }
+      } catch { /* anomalias sao best-effort dentro das correlacoes */ }
+
+      // Regra 4 (ALTA): monitor que disparou sobre entidade com vinculos societarios.
+      try {
+        const { data: hotMonitors } = await supabase.from("monitors")
+          .select("id, label, kind, hit_count, last_hit_at, person_id, company_id")
+          .eq("active", true).gt("hit_count", 0).limit(100);
+        for (const mon of hotMonitors || []) {
+          const pid = mon.person_id;
+          const links = pid ? (socioByPerson[pid] || []) : [];
+          if (pid && links.length) {
+            out.push({
+              kind: "monitor_x_vinculos", severity: "high",
+              title: `Monitor "${mon.label}" disparou ${mon.hit_count}x sobre pessoa com ${links.length} vínculo(s) societário(s)`,
+              entities: [{ kind: "person", id: pid, label: mon.label }],
+              evidence: [
+                `Último disparo: ${String(mon.last_hit_at || "").slice(0, 10)}`,
+                ...links.slice(0, 3).map((c) => `Sócio(a) de ${c.legal_name || c.cnpj}`)
+              ],
+              suggested_action: "Abrir o dossiê e revisar os atos que dispararam o monitor."
+            });
+          }
+        }
+      } catch { /* monitors podem nao existir em bancos antigos */ }
+
+      const SEV_ORDER = { high: 0, medium: 1, low: 2 };
+      out.sort((a, b) => (SEV_ORDER[a.severity] ?? 3) - (SEV_ORDER[b.severity] ?? 3));
+      return res.status(200).json({
+        ok: true, type: "correlations",
+        total: out.length, correlations: out.slice(0, 50),
+        fetchedAt: new Date().toISOString()
+      });
+    }
+
     // Resumo executivo IA do dossie de EMPRESA (o front envia o dossie compacto
     // ja montado em state; o de pessoa usa /api/dossier-person?id=&ai=1).
     if (type === "exec_summary") {
@@ -603,7 +902,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "alerts", items: alerts || [] });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, radar_intel, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary" });
+    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, radar_intel, correlations, trends_anomalies, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }

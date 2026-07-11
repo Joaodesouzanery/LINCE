@@ -1451,22 +1451,116 @@ function renderLegislativo(items) {
 // contratos a vencer, consultas abertas e proposições recentes.
 async function loadRadar() {
   const risksEl = $("#radar-risks"), oppEl = $("#radar-opportunities"), legEl = $("#radar-legislative");
+  const corrEl = $("#radar-correlations"), anomEl = $("#radar-anomalies");
   if (!risksEl) return;
+  if (corrEl) corrEl.innerHTML = emptyCard("Conexões", "Cruzando sinais...");
   risksEl.innerHTML = emptyCard("Riscos", "Carregando radar...");
+  if (anomEl) anomEl.innerHTML = emptyCard("Movimentos", "Analisando padrões semanais...");
   if (oppEl) oppEl.innerHTML = emptyCard("Oportunidades", "Carregando...");
   if (legEl) legEl.innerHTML = "";
-  try {
-    const r = await requestJson("/api/intelligence?type=radar_intel");
+
+  // Tres motores em paralelo; cada painel degrada sozinho.
+  const [radarRes, corrRes, anomRes] = await Promise.allSettled([
+    requestJson("/api/intelligence?type=radar_intel"),
+    requestJson("/api/intelligence?type=correlations"),
+    requestJson("/api/intelligence?type=trends_anomalies")
+  ]);
+
+  if (radarRes.status === "fulfilled") {
+    const r = radarRes.value;
     renderRadarRisks(r.risks || []);
     renderRadarOpportunities(r.opportunities || []);
     renderRadarLegislative(r.legislative || []);
     const rc = $("#radar-risk-count"), oc = $("#radar-opp-count");
     if (rc) { rc.hidden = !(r.risks || []).length; rc.textContent = String((r.risks || []).length); }
     if (oc) { oc.hidden = !(r.opportunities || []).length; oc.textContent = String((r.opportunities || []).length); }
-  } catch (err) {
-    risksEl.innerHTML = emptyCard("Riscos", `Falha: ${escapeHtml(err.message)}. Verifique se as ingestões rodaram e a migração foi aplicada.`);
+  } else {
+    risksEl.innerHTML = emptyCard("Riscos", `Falha: ${escapeHtml(radarRes.reason?.message || "erro")}. Verifique ingestões/migração.`);
     if (oppEl) oppEl.innerHTML = "";
   }
+
+  if (corrEl) {
+    if (corrRes.status === "fulfilled") {
+      renderRadarCorrelations(corrRes.value.correlations || []);
+      const cc = $("#radar-corr-count");
+      if (cc) { cc.hidden = !(corrRes.value.correlations || []).length; cc.textContent = String((corrRes.value.correlations || []).length); }
+    } else corrEl.innerHTML = emptyCard("Conexões", `Falha: ${escapeHtml(corrRes.reason?.message || "erro")}`);
+  }
+
+  if (anomEl) {
+    if (anomRes.status === "fulfilled") {
+      renderRadarAnomalies(anomRes.value.anomalies || []);
+      const ac = $("#radar-anom-count");
+      if (ac) { ac.hidden = !(anomRes.value.anomalies || []).length; ac.textContent = String((anomRes.value.anomalies || []).length); }
+    } else anomEl.innerHTML = emptyCard("Movimentos", `Falha: ${escapeHtml(anomRes.reason?.message || "erro")}`);
+  }
+}
+
+// Conexões críticas: correlações de sinais com evidências rastreáveis.
+function renderRadarCorrelations(items) {
+  const el = $("#radar-correlations");
+  if (!el) return;
+  if (!items.length) { el.innerHTML = emptyCard("Conexões", "Nenhuma correlação crítica com os dados atuais (rode as ingestões e backfill:qsa para ampliar a base)."); return; }
+  const KIND_LABEL = {
+    nomeacao_x_fornecedor: "nomeação × fornecedor",
+    dirigente_x_inapta: "dirigente × empresa inapta",
+    janela_regulatoria: "janela regulatória",
+    monitor_x_vinculos: "monitor × vínculos"
+  };
+  el.innerHTML = items.slice(0, 20).map((c) => {
+    const sev = c.severity === "high" ? "high" : c.severity === "medium" ? "mid" : "low";
+    const personEnt = (c.entities || []).find((e) => e.kind === "person" && e.id);
+    return `
+    <article class="news-card target-card${personEnt ? " selectable corr-person" : ""}"${personEnt ? ` data-person-id="${escapeHtml(personEnt.id)}"` : ""}>
+      <div class="card-body">
+        <div class="card-head">
+          ${TARGET_ICO}
+          <div><strong>${escapeHtml(c.title || "Correlação")}</strong>
+          <span class="card-sub">${escapeHtml(KIND_LABEL[c.kind] || c.kind || "")}</span></div>
+          <span class="card-prio">${c.severity === "high" ? "ALTA" : c.severity === "medium" ? "MÉDIA" : "BAIXA"}</span>
+        </div>
+        ${(c.evidence || []).slice(0, 4).map((ev) => `<p style="margin:2px 0;font-size:.8rem">· ${escapeHtml(ev)}</p>`).join("")}
+        <div class="entity-row">
+          ${c.suggested_action ? `<span class="entity-pill score-${sev}">${escapeHtml(c.suggested_action)}</span>` : ""}
+          ${personEnt ? `<span class="entity-pill">Abrir dossiê →</span>` : ""}
+        </div>
+      </div>
+      ${cardFoot(c.severity === "high" ? "var(--red)" : "var(--yellow)", KIND_LABEL[c.kind] || "correlação", "LINCE//CORR")}
+    </article>`;
+  }).join("");
+  // Clique numa conexão com pessoa abre o dossiê dela (na view Diretores).
+  el.querySelectorAll(".corr-person").forEach((card) => card.addEventListener("click", () => {
+    const id = card.dataset.personId;
+    if (!id) return;
+    setView("directors");
+    openDirectorDossier(id);
+  }));
+}
+
+// Movimentos anômalos: picos e silêncios semanais por agência.
+function renderRadarAnomalies(items) {
+  const el = $("#radar-anomalies");
+  if (!el) return;
+  if (!items.length) { el.innerHTML = emptyCard("Movimentos", "Nenhum pico ou silêncio anômalo nesta semana."); return; }
+  const METRIC_LABEL = { total: "atividade", norma: "normas", ato_pessoal: "atos de pessoal", contrato: "contratos" };
+  el.innerHTML = items.slice(0, 15).map((a) => {
+    const isSpike = a.kind === "pico";
+    return `
+    <article class="news-card target-card">
+      <div class="card-body">
+        <div class="card-head">
+          ${TARGET_ICO}
+          <div><strong>${escapeHtml(a.agency)}: ${escapeHtml(METRIC_LABEL[a.metric] || a.metric)} ${isSpike ? `${escapeHtml(String(a.ratio))}× acima do padrão ↗` : "zeraram esta semana ↓"}</strong>
+          <span class="card-sub">semana atual: ${a.current} · baseline: ${a.baseline}/sem</span></div>
+          <span class="card-prio">${isSpike ? "PICO" : "SILÊNCIO"}</span>
+        </div>
+        <div class="entity-row">
+          <span class="entity-pill score-${isSpike ? "high" : "mid"}">${isSpike ? "algo está se movendo nesta agência" : "queda abrupta de publicação"}</span>
+        </div>
+      </div>
+      ${cardFoot(isSpike ? "var(--red)" : "var(--yellow)", isSpike ? "pico" : "silêncio", "LINCE//ANOM")}
+    </article>`;
+  }).join("");
 }
 
 function renderRadarRisks(items) {
