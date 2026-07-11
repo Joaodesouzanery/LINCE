@@ -406,3 +406,12 @@ create table if not exists assets (
 create index if not exists assets_person_idx on assets (person_id);
 -- Identidade natural do dump: permite re-rodar o loader com ignoreDuplicates.
 create unique index if not exists assets_tse_ref_idx on assets (sq_candidato, nr_ordem, reference_year);
+
+-- ============================================================================
+-- Fase M14: classificacao por TEMA dos atos (habilita o Mapa de Landscape).
+-- Bloco idempotente: rodar no SQL Editor do Supabase e depois `npm run backfill:themes`.
+-- ============================================================================
+alter table documents add column if not exists themes text[];
+-- GIN permite filtrar "atos que contem o tema X" de forma eficiente
+-- (documents.themes @> array['Inteligência Artificial']).
+create index if not exists documents_themes_gin on documents using gin (themes);

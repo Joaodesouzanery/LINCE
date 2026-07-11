@@ -4,6 +4,7 @@
 const { getSupabase } = require("../lib/supabase");
 const { collectDou } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");
+const { classifyThemes } = require("../lib/themes");
 const { processPeopleFromDoc, loadActiveMonitors, matchMonitorsForDoc, flushMonitorAlerts } = require("../lib/ingest");
 
 const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
@@ -79,6 +80,15 @@ module.exports = async function handler(req, res) {
         .single();
       if (docErr) throw docErr;
       inserted++;
+
+      // Tema (best-effort, DESACOPLADO do insert): update separado para NAO
+      // quebrar a ingestao caso a coluna 'themes' ainda nao exista em producao
+      // (a migracao Fase M14 e aplicada manualmente). supabase-js nao lanca em
+      // erro de coluna (retorna {error}); o try/catch cobre so classifyThemes.
+      try {
+        const themes = classifyThemes(record.title, record.extracted_text);
+        if (themes.length) await supabase.from("documents").update({ themes }).eq("id", doc.id);
+      } catch { /* coluna ausente ou erro de classificacao: nao trava a ingestao */ }
 
       // Monitores de vigilancia: testa o doc novo contra todos os ativos.
       const hits = matchMonitorsForDoc(monitors, {
