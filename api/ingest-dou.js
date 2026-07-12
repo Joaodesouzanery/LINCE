@@ -6,13 +6,14 @@ const { collectDou } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");
 const { classifyThemes } = require("../lib/themes");
 const { processPeopleFromDoc, loadActiveMonitors, matchMonitorsForDoc, flushMonitorAlerts } = require("../lib/ingest");
+const { timingSafeEqualStr } = require("../lib/timing");
 
 const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
 
 function authorized(req) {
   const secret = process.env.CRON_SECRET;
   if (!secret) return true; // sem secret configurado, libera (uso single-user)
-  return req.headers.authorization === `Bearer ${secret}`;
+  return timingSafeEqualStr(req.headers.authorization, `Bearer ${secret}`);
 }
 
 module.exports = async function handler(req, res) {

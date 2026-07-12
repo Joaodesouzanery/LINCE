@@ -31,7 +31,10 @@ enxergarem os valores. Veja `.env.example` para o template local.
 | `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`) | modelo usado pela IA | usa o default |
 | `DATAJUD_API_KEY` | `/api/external?type=datajud` (processos) | retorna `501 requires_key` |
 | `PORTAL_TRANSPARENCIA_API_KEY` | `/api/external?type=transparency` (contratos/pagamentos) | retorna `501 requires_key` |
-| `CRON_SECRET` (opcional) | protege endpoints de ingestao (`Authorization: Bearer <valor>`) | endpoints ficam abertos (ok para uso single-user) |
+| `CRON_SECRET` | protege TODOS os endpoints de ingestao (`/api/ingest-*`, header `Authorization: Bearer <valor>`; a Vercel injeta nos crons) | endpoints de ingestao ficam abertos (abuso de custo/DoS) |
+| `APP_USER`, `APP_PASS` | **gate de acesso (Basic Auth via `middleware.js`)** — pede login e protege TODO o deploy (front + APIs), exceto `/api/ingest-*` | **o site inteiro fica ABERTO (fail-open)** — qualquer um que ache a URL le dossies/screening/CPF. **Configure antes de por dado real de cliente.** |
+
+> **Gate de acesso (LGPD):** o LINCE produz dossie de contraparte, screening PEP/sancoes e toca CPF. Uma URL publica da Vercel **nao e privada por si** — sem `APP_USER`/`APP_PASS`, o `middleware.js` roda em modo **fail-open** (libera tudo) e registra um `console.warn` nos logs. Configurar **ambas** ativa o Basic Auth. Atencao: se setar so uma (ou errar o nome da env), continua aberto e silencioso.
 
 Confira o que esta configurado **sem expor segredo**:
 `GET https://<sua-url>/api/intelligence?type=health` -> retorna booleanos por variavel.
@@ -86,6 +89,15 @@ npm run load:tcu           <arquivo.csv>
   credenciais ou ingestao — sem tela branca.
 - **Status do deploy** (sem acesso a conta Vercel):
   `gh api repos/Joaodesouzanery/LINCE/commits/main/status` mostra o contexto `vercel`.
+- **Gate de acesso ativo** (apos setar `APP_USER`/`APP_PASS` + Redeploy): uma
+  requisicao **sem credencial** deve dar **401**. Teste:
+  ```bash
+  curl -i "https://<sua-url>/api/intelligence?type=health"    # esperado: 401
+  curl -i -u "$APP_USER:$APP_PASS" "https://<sua-url>/api/intelligence?type=health"  # esperado: 200
+  ```
+  Se o primeiro devolver 200, o gate esta **aberto** — falta `APP_USER`/`APP_PASS`
+  (ou uma delas) ou o Redeploy. A ingestao (`/api/ingest-*`) fica fora do Basic
+  Auth de proposito (protegida por `CRON_SECRET`).
 
 ## 6b. Atualização: grafo de vínculos + confiabilidade
 

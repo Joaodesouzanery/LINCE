@@ -3,10 +3,20 @@
 // GET /api/ingest-pncp?acronym=ANEEL&dataInicial=20260101&dataFinal=20260612
 const { getSupabase } = require("../lib/supabase");
 const { fetchContractsByOrgao } = require("../lib/pncp");
+const { timingSafeEqualStr } = require("../lib/timing");
 
 function fmt(d) { return d.replace(/-/g, ""); }
 
+// Gate por CRON_SECRET (mesmo padrao do ingest-dou). Sem secret -> libera
+// (uso single-user); o middleware Basic Auth cobre o restante do deploy.
+function authorized(req) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return true;
+  return timingSafeEqualStr(req.headers.authorization, `Bearer ${secret}`);
+}
+
 module.exports = async function handler(req, res) {
+  if (!authorized(req)) return res.status(401).json({ ok: false, error: "Nao autorizado." });
   try {
     const supabase = getSupabase();
     const acronym = req.query.acronym ? String(req.query.acronym).toUpperCase() : null;

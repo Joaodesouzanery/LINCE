@@ -4,8 +4,20 @@
 // GET /api/ingest-people-dou?date=YYYY-MM-DD  (default: todos os atos de pessoal)
 const { getSupabase } = require("../lib/supabase");
 const { processPeopleFromDoc } = require("../lib/ingest");
+const { timingSafeEqualStr } = require("../lib/timing");
+
+// Mesmo gate do ingest-dou: exige Bearer CRON_SECRET quando configurado.
+// A Vercel injeta esse header automaticamente nos crons quando CRON_SECRET
+// existe. Sem secret setado -> libera (uso single-user), o middleware Basic
+// Auth cobre o resto do deploy.
+function authorized(req) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return true;
+  return timingSafeEqualStr(req.headers.authorization, `Bearer ${secret}`);
+}
 
 module.exports = async function handler(req, res) {
+  if (!authorized(req)) return res.status(401).json({ ok: false, error: "Nao autorizado." });
   try {
     const supabase = getSupabase();
 
