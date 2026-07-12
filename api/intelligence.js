@@ -212,6 +212,41 @@ module.exports = async function handler(req, res) {
     return res.status(200).json(payload);
   }
 
+  // Config PUBLICA para a tela de login (URL + chave anon — ambas publicas).
+  // Liberada pelo middleware antes do login. NUNCA expoe a service key.
+  if (type === "auth_config") {
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json({
+      ok: true,
+      url: process.env.SUPABASE_URL || null,
+      anonKey: process.env.SUPABASE_ANON_KEY || null,
+      authEnabled: !!(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY)
+    });
+  }
+
+  // Dispara a ingestao do DOU sob demanda (botao "Atualizar agora"). Gated por
+  // JWT no middleware; repassa o CRON_SECRET server-side ao /api/ingest-dou
+  // (que fica fora do gate JWT). POST.
+  if (type === "refresh") {
+    res.setHeader("Cache-Control", "no-store");
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST." });
+    // Host CANONICO da propria deploy (VERCEL_URL) — NAO usar req.headers.host,
+    // que e controlavel e vazaria o CRON_SECRET para um host arbitrario (SSRF).
+    const base = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "";
+    if (!base) return res.status(200).json({ ok: false, error: "Atualizacao indisponivel (sem VERCEL_URL). Rode a ingestao pelo cron/CLI." });
+    const secret = process.env.CRON_SECRET;
+    const qDate = req.query.date ? `?date=${encodeURIComponent(String(req.query.date))}` : "";
+    try {
+      const r = await fetch(`${base}/api/ingest-dou${qDate}`, {
+        headers: secret ? { authorization: `Bearer ${secret}` } : {}
+      });
+      const data = await r.json().catch(() => ({}));
+      return res.status(r.ok ? 200 : 502).json({ ok: r.ok, triggered: "ingest-dou", ...data });
+    } catch (e) {
+      return res.status(502).json({ ok: false, error: e.message });
+    }
+  }
+
   try {
     const supabase = getSupabase();
 
@@ -294,7 +329,7 @@ module.exports = async function handler(req, res) {
       const SEV_WEIGHT = { high: 3, medium: 2, info: 1, low: 1 };
       const agIds = (agencies || []).map((a) => a.id);
 
-      // Em LOTE (era N+1: 4 queries x 12 agencias sequenciais). Agora: contagens
+      // Em LOTE (era N+1: 4 queries x 11 agencias sequenciais). Agora: contagens
       // head por agencia em paralelo + 3 queries agregaveis em memoria.
       if (!agIds.length) return res.status(200).json({ ok: true, type: "score", window_days: 90, scores: [] });
       const [docTotals, doc90s, alertsRes, mandatesRes] = await Promise.all([
@@ -344,10 +379,10 @@ module.exports = async function handler(req, res) {
       const [contractsRes, mandatesRes] = await Promise.all([
         supabase.from("contracts")
           .select("object, supplier_name, ends_at, agencies(acronym)")
-          .lte("ends_at", horizon).gte("ends_at", today).order("ends_at"),
+          .lte("ends_at", horizon).gte("ends_at", today).order("ends_at").limit(500),
         supabase.from("mandates")
           .select("role, ended_at, people(full_name), agencies(acronym)")
-          .lte("ended_at", horizon).gte("ended_at", today).order("ended_at")
+          .lte("ended_at", horizon).gte("ended_at", today).order("ended_at").limit(500)
       ]);
 
       const radar = { "30d": [], "60d": [], "90d": [] };
@@ -379,7 +414,8 @@ module.exports = async function handler(req, res) {
       // de empresas com contratos ou relacoes com agencias reguladoras.
       const { data: mandates } = await supabase
         .from("mandates")
-        .select("person_id, agency_id, role, started_at, ended_at, people(full_name), agencies(acronym)");
+        .select("person_id, agency_id, role, started_at, ended_at, people(full_name), agencies(acronym)")
+        .limit(3000);
 
       const personIds = [...new Set((mandates || []).map((m) => m.person_id))];
       if (personIds.length === 0) return res.status(200).json({ ok: true, type: "giratoria", cases: [] });
@@ -1155,7 +1191,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "alerts", items: alerts || [] });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, radar_intel, correlations, trends_anomalies, landscape, deal_dossier, deal_narrative, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary" });
+    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, radar_intel, correlations, trends_anomalies, landscape, deal_dossier, deal_narrative, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary, auth_config, refresh" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }

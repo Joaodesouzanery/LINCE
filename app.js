@@ -106,6 +106,11 @@ const state = {
   gerador: { themesLoaded: false, dossier: null, narrative: null }
 };
 
+// Sessao de autenticacao (Supabase Auth). _sb = client; _accessToken = JWT atual.
+// Preenchidos por bootstrap() antes do app subir; injetados em requestJson/postJson.
+let _sb = null;
+let _accessToken = null;
+
 const $ = (selector) => document.querySelector(selector);
 
 function debounce(fn, ms) {
@@ -330,9 +335,11 @@ const realDataProvider = {
 };
 
 async function requestJson(url) {
-  const response = await fetch(url);
+  const headers = _accessToken ? { Authorization: `Bearer ${_accessToken}` } : {};
+  const response = await fetch(url, { headers });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) handleAuthLost(response.status);
     const message = payload.error || payload.message || `Falha HTTP ${response.status}`;
     throw Object.assign(new Error(message), { status: response.status, payload });
   }
@@ -341,13 +348,16 @@ async function requestJson(url) {
 
 // Mutacoes (monitores, resumo IA) vao por POST com body JSON.
 async function postJson(url, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (_accessToken) headers.Authorization = `Bearer ${_accessToken}`;
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body || {})
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) handleAuthLost(response.status);
     const message = payload.error || payload.message || `Falha HTTP ${response.status}`;
     throw Object.assign(new Error(message), { status: response.status, payload });
   }
@@ -2993,6 +3003,26 @@ function wireEvents() {
   $("#gerador-export")?.addEventListener("click", () => {
     exportGeradorPdf().catch((error) => alert(`Falha ao exportar: ${error.message}`));
   });
+
+  // B3 — "Atualizar agora": dispara a ingestão do DOU de hoje (via type=refresh,
+  // JWT-gated; repassa o CRON_SECRET server-side). Pode demorar; feedback no status.
+  $("#refresh-btn")?.addEventListener("click", async () => {
+    const btn = $("#refresh-btn"), ds = $("#ds-text");
+    const prev = btn.textContent;
+    btn.disabled = true; btn.textContent = "Atualizando…";
+    if (ds) ds.textContent = "Disparando ingestão do DOU de hoje… (pode levar até 1 min)";
+    try {
+      const r = await postJson("/api/intelligence?type=refresh", {});
+      if (ds) ds.textContent = r?.ok
+        ? `Ingestão concluída: ${r.inserted ?? 0} novo(s) ato(s), ${r.skipped ?? 0} já existente(s).`
+        : `Falha na ingestão: ${r?.error || "erro"}`;
+      loadOverviewMetrics();
+    } catch (e) {
+      if (ds) ds.textContent = `Falha ao atualizar: ${e.message}`;
+    } finally {
+      btn.disabled = false; btn.textContent = prev;
+    }
+  });
 }
 
 function centerGraph() {
@@ -3066,7 +3096,12 @@ async function loadTrend(days = 30) {
 async function loadOverviewMetrics() {
   try {
     loadTrend(30);
-    requestJson("/api/intelligence?type=recent&limit=20").then((r) => renderRecentActs(r?.items)).catch(() => {});
+    requestJson("/api/intelligence?type=recent&limit=20").then((r) => {
+      renderRecentActs(r?.items);
+      const ds = $("#ds-text");
+      const last = r?.items?.[0]?.date;
+      if (ds) ds.textContent = last ? `Ato mais recente no acervo: ${last}` : "Sem atos ingeridos ainda — use “Atualizar agora”.";
+    }).catch(() => {});
 
     const [score, daily] = await Promise.all([
       requestJson("/api/intelligence?type=score").catch(() => null),
@@ -3121,8 +3156,8 @@ async function loadOverviewMetrics() {
       alertsEl.querySelectorAll(".overview-alert-view").forEach((btn) => {
         btn.addEventListener("click", () => setView("dou"));
       });
-      const alEl = $("#metric-alerts");
-      if (alEl) alEl.textContent = alertsData.items.length;
+      // (P4) NAO sobrescrever #metric-alerts aqui — o valor de type=score (soma
+      // real das agencias, sem teto) ja foi setado; este feed e capado em 10.
     } else if (alertsEl) {
       alertsEl.innerHTML = `<p style="color:var(--green);font-size:.85rem">✓ Nenhum alerta pendente.</p>`;
     }
@@ -3150,4 +3185,128 @@ function init() {
   if (hashParams.get("view")) setView(hashParams.get("view"));
 }
 
-init();
+// ══════════════════ Autenticação (Supabase Auth) ══════════════════════════
+// Gate de UX no front: sem sessão, mostra a tela de login antes do app subir.
+// A proteção real dos DADOS é no middleware (JWT no /api/*). Fail-open quando o
+// Auth não está configurado (auth_config.authEnabled=false) — o app roda direto.
+
+function traduzAuthErro(msg) {
+  const m = String(msg || "").toLowerCase();
+  if (m.includes("invalid login") || m.includes("invalid credentials")) return "e-mail ou senha incorretos.";
+  if (m.includes("already registered") || m.includes("already been registered")) return "e-mail já cadastrado — use Entrar.";
+  if (m.includes("email not confirmed")) return "confirme seu e-mail antes de entrar.";
+  if (m.includes("password") && m.includes("6")) return "a senha precisa de ao menos 6 caracteres.";
+  if (m.includes("rate limit")) return "muitas tentativas — aguarde um instante.";
+  return msg || "erro de autenticação.";
+}
+
+let _appStarted = false;
+let _authLost = false;
+let _loginWired = false;
+
+function showApp(user) {
+  const overlay = $("#login-overlay");
+  if (overlay) overlay.hidden = true;
+  const em = $("#user-email");
+  if (em && user?.email) em.textContent = user.email;
+  const logout = $("#logout-btn");
+  // (#16/#17) "Sair" só aparece quando há usuário autenticado (não no fail-open).
+  if (logout && user) {
+    logout.hidden = false;
+    if (!logout.dataset.wired) {
+      logout.dataset.wired = "1";
+      logout.addEventListener("click", async () => {
+        try { await _sb?.auth?.signOut(); } catch { /* ignora */ }
+        location.reload();
+      });
+    }
+  }
+}
+
+// Sucesso de login (inicial ou re-login após expiração). Inicia o app só 1 vez.
+function onAuthSuccess(session, user) {
+  _accessToken = session?.access_token || null;
+  _authLost = false;
+  showApp(user);
+  if (!_appStarted) { _appStarted = true; init(); }
+}
+
+// Sessão perdida/negada durante o uso (401/403): volta ao login sem deixar o
+// app renderizado e quebrado. (#6, #11)
+function handleAuthLost(status) {
+  if (_authLost) return;
+  _authLost = true;
+  _accessToken = null;
+  const ov = $("#login-overlay"); if (ov) ov.hidden = false;
+  const msg = $("#login-msg");
+  if (msg) msg.textContent = status === 403
+    ? "Seu e-mail não está autorizado a acessar o LINCE."
+    : "Sua sessão expirou. Entre novamente.";
+  wireLoginForm();
+}
+
+function showLoginError(text) {
+  const ov = $("#login-overlay"); if (ov) ov.hidden = false;
+  const msg = $("#login-msg"); if (msg) msg.textContent = text;
+}
+
+function wireLoginForm() {
+  if (_loginWired) return;
+  _loginWired = true;
+  const form = $("#login-form");
+  const msg = $("#login-msg");
+  if (!form) return;
+  const email = () => ($("#login-email").value || "").trim();
+  const pass = () => $("#login-pass").value || "";
+  const setBusy = (b) => { $("#login-submit").disabled = b; $("#login-signup").disabled = b; };
+  const fail = (e) => { if (msg) msg.textContent = `Falha: ${traduzAuthErro(e)}`; setBusy(false); };
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (msg) msg.textContent = "Entrando…"; setBusy(true);
+    try {
+      const { data, error } = await _sb.auth.signInWithPassword({ email: email(), password: pass() });
+      if (error) return fail(error.message);
+      setBusy(false); onAuthSuccess(data.session, data.user);
+    } catch (err) { fail(err.message); }
+  });
+
+  $("#login-signup").addEventListener("click", async () => {
+    if (!email() || pass().length < 6) { if (msg) msg.textContent = "Informe e-mail e senha (mín. 6 caracteres)."; return; }
+    if (msg) msg.textContent = "Criando conta…"; setBusy(true);
+    try {
+      const { data, error } = await _sb.auth.signUp({ email: email(), password: pass() });
+      if (error) return fail(error.message);
+      setBusy(false);
+      if (data.session) onAuthSuccess(data.session, data.user);
+      else if (msg) msg.textContent = "Conta criada. Se pedirem confirmação por e-mail, confirme e clique em Entrar.";
+    } catch (err) { fail(err.message); }
+  });
+}
+
+async function bootstrap() {
+  let cfg = null, reachable = false;
+  try { cfg = await fetch("/api/intelligence?type=auth_config").then((r) => r.json()); reachable = true; } catch { /* offline */ }
+
+  // (#12) Fail-open SÓ quando o servidor disse explicitamente authEnabled=false.
+  if (reachable && cfg && cfg.authEnabled === false) { _appStarted = true; showApp(null); init(); return; }
+  // Falha transitória ao falar com o servidor: NÃO fail-open (ele pode exigir auth).
+  if (!reachable || !cfg) { showLoginError("Não foi possível verificar o login (rede). Recarregue a página."); return; }
+  if (!window.supabase || !window.supabase.createClient) {
+    showLoginError("Não foi possível carregar o login (CDN). Recarregue a página."); return;
+  }
+
+  _sb = window.supabase.createClient(cfg.url, cfg.anonKey);
+  // Mantém o token fresco; perda de sessão com app rodando volta ao login (#11).
+  _sb.auth.onAuthStateChange((event, session) => {
+    _accessToken = session?.access_token || null;
+    if (_appStarted && !session && event === "SIGNED_OUT") handleAuthLost(401);
+  });
+
+  const { data } = await _sb.auth.getSession();
+  const session = data?.session || null;
+  if (session) onAuthSuccess(session, session.user);
+  else { wireLoginForm(); const ov = $("#login-overlay"); if (ov) ov.hidden = false; }
+}
+
+bootstrap();

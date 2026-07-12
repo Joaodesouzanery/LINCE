@@ -12,7 +12,9 @@ const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
 
 function authorized(req) {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return true; // sem secret configurado, libera (uso single-user)
+  // Fail-closed em PRODUCAO: sem CRON_SECRET, nega (evita ingestao/custo anonimo).
+  // Em preview/dev, libera (conveniencia). A Vercel injeta o secret nos crons.
+  if (!secret) return process.env.VERCEL_ENV !== "production";
   return timingSafeEqualStr(req.headers.authorization, `Bearer ${secret}`);
 }
 

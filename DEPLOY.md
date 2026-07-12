@@ -32,9 +32,16 @@ enxergarem os valores. Veja `.env.example` para o template local.
 | `DATAJUD_API_KEY` | `/api/external?type=datajud` (processos) | retorna `501 requires_key` |
 | `PORTAL_TRANSPARENCIA_API_KEY` | `/api/external?type=transparency` (contratos/pagamentos) | retorna `501 requires_key` |
 | `CRON_SECRET` | protege TODOS os endpoints de ingestao (`/api/ingest-*`, header `Authorization: Bearer <valor>`; a Vercel injeta nos crons) | endpoints de ingestao ficam abertos (abuso de custo/DoS) |
-| `APP_USER`, `APP_PASS` | **gate de acesso (Basic Auth via `middleware.js`)** — pede login e protege TODO o deploy (front + APIs), exceto `/api/ingest-*` | **o site inteiro fica ABERTO (fail-open)** — qualquer um que ache a URL le dossies/screening/CPF. **Configure antes de por dado real de cliente.** |
+| `SUPABASE_ANON_KEY` | **login (Supabase Auth)** — chave PUBLICA exposta ao front (tela de login) e usada pelo `middleware.js` para validar o JWT nas APIs | **as APIs ficam ABERTAS (fail-open)** — qualquer um que ache a URL le dossies/screening/CPF. **Configure antes de por dado real de cliente.** |
+| `ALLOWED_EMAILS` | allowlist de acesso (emails separados por virgula) — so eles acessam, mesmo com signup aberto | qualquer usuario que se cadastrar acessa (vazio = sem allowlist) |
 
-> **Gate de acesso (LGPD):** o LINCE produz dossie de contraparte, screening PEP/sancoes e toca CPF. Uma URL publica da Vercel **nao e privada por si** — sem `APP_USER`/`APP_PASS`, o `middleware.js` roda em modo **fail-open** (libera tudo) e registra um `console.warn` nos logs. Configurar **ambas** ativa o Basic Auth. Atencao: se setar so uma (ou errar o nome da env), continua aberto e silencioso.
+> **Gate de acesso (LGPD) — Supabase Auth. LEIA NA ORDEM:**
+> 1. **RLS PRIMEIRO (obrigatorio).** Rode no **SQL Editor** o bloco **"Fase M15"** de `supabase/schema.sql` (habilita Row Level Security em todas as tabelas). **Sem isso, expor a `SUPABASE_ANON_KEY` deixa qualquer um ler o banco inteiro (CPF/dossie) direto no PostgREST**, contornando o gate. O acesso server-side usa a service key (ignora RLS), entao o app segue funcionando.
+> 2. Supabase > **Authentication > Providers > Email** habilitado.
+> 3. Vercel env: **`SUPABASE_ANON_KEY`** (Project Settings > API > `anon public`), **`ALLOWED_EMAILS`** (seu email) e **`CRON_SECRET`** → Redeploy.
+> 4. Abrir o LINCE → **Criar conta** com um email da allowlist. **Depois de criar, desligue** "Enable Sign Ups" no Supabase (registro invite-only).
+>
+> **Producao e FAIL-CLOSED:** sem `SUPABASE_ANON_KEY` as APIs dao **503**; com `ALLOWED_EMAILS` vazia, **403**; sem `CRON_SECRET` os `/api/ingest-*` dao **401**. (Em preview/dev, fail-open por conveniencia.) O `SUPABASE_SERVICE_KEY` continua **so** server-side.
 
 Confira o que esta configurado **sem expor segredo**:
 `GET https://<sua-url>/api/intelligence?type=health` -> retorna booleanos por variavel.
@@ -89,15 +96,16 @@ npm run load:tcu           <arquivo.csv>
   credenciais ou ingestao — sem tela branca.
 - **Status do deploy** (sem acesso a conta Vercel):
   `gh api repos/Joaodesouzanery/LINCE/commits/main/status` mostra o contexto `vercel`.
-- **Gate de acesso ativo** (apos setar `APP_USER`/`APP_PASS` + Redeploy): uma
-  requisicao **sem credencial** deve dar **401**. Teste:
+- **Gate de acesso ativo (Supabase Auth)** (apos setar `SUPABASE_ANON_KEY` + Redeploy):
+  uma chamada de API **sem token** deve dar **401**; a config de login e publica.
   ```bash
-  curl -i "https://<sua-url>/api/intelligence?type=health"    # esperado: 401
-  curl -i -u "$APP_USER:$APP_PASS" "https://<sua-url>/api/intelligence?type=health"  # esperado: 200
+  curl -i "https://<sua-url>/api/intelligence?type=score"        # esperado: 401 (protegido)
+  curl -i "https://<sua-url>/api/intelligence?type=auth_config"  # esperado: 200 (publico, sem segredo)
   ```
-  Se o primeiro devolver 200, o gate esta **aberto** — falta `APP_USER`/`APP_PASS`
-  (ou uma delas) ou o Redeploy. A ingestao (`/api/ingest-*`) fica fora do Basic
-  Auth de proposito (protegida por `CRON_SECRET`).
+  Se o `type=score` devolver 200 sem login, o gate esta **aberto** — falta
+  `SUPABASE_ANON_KEY` ou o Redeploy. `/api/ingest-*` fica fora do gate JWT de
+  proposito (protegido por `CRON_SECRET`). No navegador: abra a URL → tela de
+  login → **Criar conta** (email da `ALLOWED_EMAILS`) → o app carrega.
 
 ## 6b. Atualização: grafo de vínculos + confiabilidade
 

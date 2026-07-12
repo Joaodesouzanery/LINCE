@@ -415,3 +415,41 @@ alter table documents add column if not exists themes text[];
 -- GIN permite filtrar "atos que contem o tema X" de forma eficiente
 -- (documents.themes @> array['Inteligência Artificial']).
 create index if not exists documents_themes_gin on documents using gin (themes);
+
+-- ============================================================================
+-- Fase M15: Row Level Security (RLS) — SEGURANCA / LGPD. OBRIGATORIO.
+-- A chave anon e exposta ao front (Supabase Auth). SEM RLS, qualquer um pega a
+-- anon key e le o banco INTEIRO (CPF/dossie/vinculos) direto no PostgREST do
+-- Supabase, contornando o gate do middleware (que so protege /api/* na Vercel).
+-- Ligar RLS SEM criar policy = NEGA anon/authenticated por padrao. O acesso
+-- server-side usa SUPABASE_SERVICE_KEY (lib/supabase.js), que IGNORA RLS -> os
+-- endpoints /api/* seguem funcionando; o front so usa a anon key para login.
+-- Bloco idempotente: rode no SQL Editor ANTES de expor a SUPABASE_ANON_KEY.
+-- ============================================================================
+alter table agencies enable row level security;
+alter table people enable row level security;
+alter table companies enable row level security;
+alter table documents enable row level security;
+alter table meetings enable row level security;
+alter table deliberations enable row level security;
+alter table votes enable row level security;
+alter table relationships enable row level security;
+alter table dossiers enable row level security;
+alter table alerts enable row level security;
+alter table contacts enable row level security;
+alter table domains enable row level security;
+alter table news_items enable row level security;
+alter table rss_feeds enable row level security;
+alter table bank_accounts_metadata enable row level security;
+alter table company_movements enable row level security;
+alter table mandates enable row level security;
+alter table party_links enable row level security;
+alter table contracts enable row level security;
+alter table jurisprudence enable row level security;
+alter table monitors enable row level security;
+alter table assets enable row level security;
+
+-- Reforco (defesa em profundidade): revoga os grants padrao de anon/authenticated
+-- nas tabelas atuais e futuras do schema public.
+revoke all on all tables in schema public from anon, authenticated;
+alter default privileges in schema public revoke all on tables from anon, authenticated;

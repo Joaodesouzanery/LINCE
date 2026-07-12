@@ -4,6 +4,7 @@
 const { getSupabase } = require("../lib/supabase");
 const { fetchContractsByOrgao } = require("../lib/pncp");
 const { timingSafeEqualStr } = require("../lib/timing");
+const { isValidCnpj } = require("../lib/text");
 
 function fmt(d) { return d.replace(/-/g, ""); }
 
@@ -11,7 +12,8 @@ function fmt(d) { return d.replace(/-/g, ""); }
 // (uso single-user); o middleware Basic Auth cobre o restante do deploy.
 function authorized(req) {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return true;
+  // Fail-closed em PRODUCAO: sem CRON_SECRET, nega. Preview/dev libera.
+  if (!secret) return process.env.VERCEL_ENV !== "production";
   return timingSafeEqualStr(req.headers.authorization, `Bearer ${secret}`);
 }
 
@@ -37,7 +39,9 @@ module.exports = async function handler(req, res) {
 
     for (const agency of agencies) {
       const cnpj = agency.collection_rules?.cnpj;
-      if (!cnpj) { noCnpj.push(agency.acronym); continue; }
+      // CNPJ ausente OU invalido (digito verificador) -> pula VISIVELMENTE (entra
+      // em agencies_without_cnpj) em vez de consultar CNPJ errado e voltar vazio.
+      if (!cnpj || !isValidCnpj(cnpj)) { noCnpj.push(agency.acronym); continue; }
 
       const result = await fetchContractsByOrgao(cnpj, dataInicial, dataFinal);
       if (!result.ok) continue;

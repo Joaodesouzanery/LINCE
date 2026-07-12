@@ -117,9 +117,10 @@
           <div class="user-card">
             <span class="avatar">RI</span>
             <span class="nav-text user-info">
-              <strong>Real-only mode</strong>
+              <strong id="user-email">Real-only mode</strong>
               <small>Sem dados fictícios</small>
             </span>
+            <button type="button" class="logout-btn nav-text" id="logout-btn" title="Sair" hidden>Sair</button>
           </div>
         </div>
       </aside>
@@ -159,6 +160,10 @@
         </header>
 
         <section class="view active" id="view-overview">
+          <div class="data-status" id="data-status">
+            <span class="ds-text" id="ds-text">Carregando status dos dados…</span>
+            <button type="button" class="ghost-button" id="refresh-btn" title="Dispara a ingestão do DOU de hoje">Atualizar agora</button>
+          </div>
           <div class="metric-grid">
             <article class="metric-card">
               <span>Atos DOU ingeridos</span>
@@ -691,6 +696,23 @@
       </main>
     </div>
 
+    <!-- Tela de login (Supabase Auth) — exibida pelo app.js quando não há sessão. -->
+    <div id="login-overlay" class="login-overlay" hidden>
+      <form class="login-card" id="login-form">
+        <div class="login-brand">LINCE</div>
+        <p class="login-kicker">Inteligência Regulatória · acesso restrito</p>
+        <label for="login-email">E-mail</label>
+        <input id="login-email" type="email" autocomplete="email" required placeholder="voce@exemplo.com" />
+        <label for="login-pass">Senha</label>
+        <input id="login-pass" type="password" autocomplete="current-password" required minlength="6" placeholder="••••••••" />
+        <div class="login-actions">
+          <button type="submit" class="primary-button" id="login-submit">Entrar</button>
+          <button type="button" class="ghost-button" id="login-signup">Criar conta</button>
+        </div>
+        <p class="login-msg" id="login-msg" role="status" aria-live="polite"></p>
+      </form>
+    </div>
+
     <!-- Documento de impressão (Exportar PDF) — preenchido sob demanda pelo app.js. -->
     <div id="print-root" aria-hidden="true"></div>
 
@@ -699,6 +721,8 @@
     <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+    <!-- Supabase Auth (login) — UMD via CDN, sem build. -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

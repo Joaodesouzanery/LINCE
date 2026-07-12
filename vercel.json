@@ -2,7 +2,10 @@
   "cleanUrls": true,
   "trailingSlash": false,
   "functions": {
-    "api/intelligence.js": { "maxDuration": 60 }
+    "api/intelligence.js": { "maxDuration": 60 },
+    "api/ingest-dou.js": { "maxDuration": 60 },
+    "api/ingest-people-dou.js": { "maxDuration": 60 },
+    "api/ingest-pncp.js": { "maxDuration": 60 }
   },
   "crons": [
     { "path": "/api/ingest-dou", "schedule": "0 12 * * *" },

@@ -12,7 +12,8 @@ const { timingSafeEqualStr } = require("../lib/timing");
 // Auth cobre o resto do deploy.
 function authorized(req) {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return true;
+  // Fail-closed em PRODUCAO: sem CRON_SECRET, nega. Preview/dev libera.
+  if (!secret) return process.env.VERCEL_ENV !== "production";
   return timingSafeEqualStr(req.headers.authorization, `Bearer ${secret}`);
 }
 
