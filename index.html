@@ -82,6 +82,10 @@
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V10l7-4 7 4v11M9 21v-6h6v6"/></svg>
             <span class="nav-text">Legislativo</span>
           </button>
+          <button class="nav-item" type="button" data-view="gerador" title="Gerador de Dossiê Comercial">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M9 13l2 2 4-4"/></svg>
+            <span class="nav-text">Gerador</span>
+          </button>
 
           <hr class="nav-sep" />
 
@@ -470,6 +474,108 @@
               <div class="panel-header" style="margin-top:14px"><div><p class="kicker">Legislativo recente</p><h2>Proposições</h2></div></div>
               <div class="news-list" id="radar-legislative"></div>
             </aside>
+          </div>
+        </section>
+
+        <section class="view" id="view-gerador">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="kicker">Compõe landscape + decisores + memo + contraparte (M14)</p>
+                <h2>Gerador de Dossiê Comercial</h2>
+              </div>
+              <button class="ghost-button" type="button" id="gerador-export" hidden>Exportar PDF</button>
+            </div>
+            <form class="monitor-form gerador-form" id="gerador-form">
+              <div class="field">
+                <label for="ger-theme">Tema regulatório</label>
+                <select id="ger-theme" class="dou-date"><option value="">Carregando temas…</option></select>
+              </div>
+              <div class="field">
+                <label for="ger-agency">Agências-alvo (opcional)</label>
+                <input id="ger-agency" class="dou-date" maxlength="120" placeholder="Ex.: ANEEL, ANATEL — vazio = mais ativas no tema" />
+              </div>
+              <div class="field">
+                <label for="ger-cnpj">Contraparte — CNPJ (opcional)</label>
+                <input id="ger-cnpj" class="dou-date" maxlength="18" placeholder="Due diligence de uma empresa" />
+              </div>
+              <div class="field">
+                <label for="ger-window">Janela</label>
+                <select id="ger-window" class="dou-date">
+                  <option value="180">Últimos 180 dias</option>
+                  <option value="365">Últimos 12 meses</option>
+                  <option value="90">Últimos 90 dias</option>
+                </select>
+              </div>
+              <button type="submit" class="primary-button">Gerar dossiê</button>
+            </form>
+            <p class="gerador-hint" id="gerador-hint"></p>
+          </section>
+
+          <div class="gerador-result" id="gerador-result" hidden>
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Interpretação executiva (IA) — leitura estratégica privada</p>
+                  <h2>Leitura estratégica</h2>
+                </div>
+                <span class="status-pill status-key" id="ger-narr-badge" hidden>IA</span>
+              </div>
+              <div id="ger-narrative"></div>
+            </section>
+
+            <div class="monitors-grid">
+              <section class="panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="kicker">Iniciativas por agência no tema</p>
+                    <h2>Mapa de Landscape</h2>
+                  </div>
+                  <span class="status-pill status-key" id="ger-land-count" hidden>0</span>
+                </div>
+                <div class="news-list" id="ger-landscape"></div>
+              </section>
+              <aside class="panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="kicker">Dirigentes das agências-alvo</p>
+                    <h2>Briefing de decisores</h2>
+                  </div>
+                </div>
+                <div class="news-list" id="ger-directors"></div>
+              </aside>
+            </div>
+
+            <div class="monitors-grid">
+              <section class="panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="kicker">Riscos regulatórios / captura</p>
+                    <h2>Memo — Riscos</h2>
+                  </div>
+                </div>
+                <div class="news-list" id="ger-risks"></div>
+              </section>
+              <aside class="panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="kicker">Contratos a vencer e consultas abertas</p>
+                    <h2>Memo — Oportunidades</h2>
+                  </div>
+                </div>
+                <div class="news-list" id="ger-opportunities"></div>
+              </aside>
+            </div>
+
+            <section class="panel" id="ger-counterparty-panel" hidden>
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Due diligence da contraparte</p>
+                  <h2>Contraparte</h2>
+                </div>
+              </div>
+              <div class="news-list" id="ger-counterparty"></div>
+            </section>
           </div>
         </section>
 

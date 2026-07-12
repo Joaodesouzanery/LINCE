@@ -2044,3 +2044,102 @@ button.entity-pill:hover {
     text-decoration: none;
   }
 }
+
+/* ═══════════ Gerador de Dossiê Comercial (M14) ═══════════ */
+/* Reset: o atributo [hidden] deve sempre ocultar, mesmo quando uma regra de
+   autor define display (ex.: .gerador-result{display:grid}, .status-pill
+   {display:inline-flex}). Sem isto, elementos com hidden continuam visiveis. */
+[hidden] { display: none !important; }
+.gerador-hint {
+  padding: 10px 14px 14px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.gerador-result {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+/* Barra de volume por agência no Mapa de Landscape */
+.ger-land-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ger-count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--blue-bright);
+}
+.ger-bar {
+  height: 6px;
+  border-radius: 4px;
+  background: var(--line-soft);
+  overflow: hidden;
+  margin: 6px 0;
+}
+.ger-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+}
+.ger-recent {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+.ger-recent li {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text);
+}
+.ger-recent a { color: var(--blue-bright); text-decoration: none; }
+.ger-recent a:hover { text-decoration: underline; }
+.ger-muted { color: var(--muted); font-size: 10.5px; }
+.ger-sub {
+  margin-top: 8px;
+  color: var(--faint, var(--muted));
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+/* Narrativa IA */
+.ger-narrative { display: grid; gap: 10px; }
+.ger-narr-summary { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--text); }
+.ger-narr-reco {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 4px;
+  font-size: 12.5px;
+}
+.ger-narr-block h4 {
+  margin: 0 0 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.ger-narr-block ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+.ger-narr-block li { font-size: 12px; line-height: 1.4; }
+/* Sinais/flags da contraparte */
+.ger-flags { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.ger-flag {
+  font-size: 11.5px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border-left: 3px solid var(--line-strong);
+  background: var(--card-2);
+}
+.ger-flag.sev-high { border-left-color: var(--red); background: var(--red-soft); }
+.ger-flag.sev-medium { border-left-color: var(--yellow); }
+.ger-flag.sev-info { border-left-color: var(--blue); background: var(--blue-soft); }

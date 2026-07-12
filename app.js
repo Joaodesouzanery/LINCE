@@ -102,7 +102,8 @@ const state = {
   graphView: null,
   transform: { x: 80, y: 60, scale: 1 },
   drag: null,
-  pan: null
+  pan: null,
+  gerador: { themesLoaded: false, dossier: null, narrative: null }
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -421,6 +422,7 @@ function setView(view) {
     monitors: ["Vigilancia continua (M10)", "Central de Monitoramento"],
     legislativo: ["Radar legislativo (M12)", "Legislativo"],
     radar: ["Risco & Oportunidade (M13)", "Radar"],
+    gerador: ["Composição comercial (M14)", "Gerador de Dossiê"],
     person: ["Screening de pessoa", "Consulta Pessoa"]
   };
   const [kicker, title] = titles[view] || ["LINCE", view];
@@ -433,6 +435,7 @@ function setView(view) {
   if (view === "monitors") loadMonitors();
   if (view === "legislativo") loadLegislativo();
   if (view === "radar") loadRadar();
+  if (view === "gerador") loadGerador();
   $("#view-kicker").textContent = kicker;
   $("#view-title").textContent = title;
 }
@@ -1583,14 +1586,15 @@ function renderRadarRisks(items) {
     </article>`).join("");
 }
 
-function renderRadarOpportunities(items) {
-  const el = $("#radar-opportunities");
+function renderRadarOpportunities(items, sel = "#radar-opportunities") {
+  const el = $(sel);
+  if (!el) return;
   if (!items.length) { el.innerHTML = emptyCard("Oportunidades", "Sem contratos a vencer nem consultas abertas na janela."); return; }
   el.innerHTML = items.map((x) => {
     const isContract = x.kind === "contrato_vencendo";
     const meta = isContract
-      ? `${x.agency || ""}${x.value ? " · " + escapeHtml(money(x.value)) : ""} · vence ${escapeHtml(x.ends_at || "-")}`
-      : `${x.agency || ""} · ${escapeHtml(x.date || "-")}`;
+      ? `${escapeHtml(x.agency || "")}${x.value ? " · " + escapeHtml(money(x.value)) : ""} · vence ${escapeHtml(x.ends_at || "-")}`
+      : `${escapeHtml(x.agency || "")} · ${escapeHtml(x.date || "-")}`;
     const url = safeUrl(x.link);
     return `
     <article class="news-card target-card">
@@ -1802,7 +1806,7 @@ function sourceNamesInUse() {
   return used.size ? [...used] : ["Fontes públicas conectadas"];
 }
 
-function buildPrintDoc({ title, subtitle, classification, ai, sections, sourcesUsed }) {
+function buildPrintDoc({ title, subtitle, classification, ai, sections, sourcesUsed, kicker }) {
   const summaryBlock = ai?.summary
     ? `<section class="print-summary">
         <h2>Resumo executivo (IA)</h2>
@@ -1816,7 +1820,7 @@ function buildPrintDoc({ title, subtitle, classification, ai, sections, sourcesU
       <div class="print-class-bar">${escapeHtml(classification)} — USO RESTRITO</div>
       <header class="print-head">
         <div>
-          <p class="print-kicker">LINCE · INTELIGÊNCIA REGULATÓRIA · REAL-ONLY</p>
+          <p class="print-kicker">${escapeHtml(kicker || "LINCE · INTELIGÊNCIA REGULATÓRIA · REAL-ONLY")}</p>
           <h1>${escapeHtml(title)}</h1>
           <p class="print-sub">${escapeHtml(subtitle)}</p>
         </div>
@@ -1924,6 +1928,312 @@ async function exportPersonPdf(d) {
     sections,
     sourcesUsed: ["DOU / INLABS", "TSE", "Portal da Transparência", "LINCE (base local)"]
   }));
+}
+
+// ══════════════════ Gerador de Dossiê Comercial (M14) ═════════════════════
+// Compõe os feeds (Landscape por tema + Briefing de decisores + Memo de
+// risco/oportunidade + Contraparte) num dossiê exportável em PDF — o módulo que
+// transforma o motor em entregável comercial. Privado: só o operador gera.
+
+// Abre a view: popula o dropdown de temas (uma vez) e mostra a distribuição.
+async function loadGerador() {
+  const sel = $("#ger-theme");
+  const hint = $("#gerador-hint");
+  if (!sel || state.gerador.themesLoaded) return;
+  if (hint) hint.textContent = "Carregando temas do acervo…";
+  try {
+    const r = await requestJson("/api/intelligence?type=landscape");
+    const labels = r.themes_available || [];
+    const dist = Object.fromEntries((r.distribution || []).map((d) => [d.theme, d.count]));
+    sel.innerHTML = `<option value="">Selecione um tema…</option>` + labels.map((t) => {
+      const n = dist[t] || 0;
+      return `<option value="${escapeHtml(t)}">${escapeHtml(t)}${n ? ` (${n})` : ""}</option>`;
+    }).join("");
+    state.gerador.themesLoaded = true;
+    if (!hint) return;
+    if (r.note === "themes_not_ready") {
+      hint.innerHTML = `⚠️ Classificação por tema ainda não ativada. Aplique a migração <strong>documents.themes</strong> e rode <strong>backfill:themes</strong>. Já dá para gerar (o Landscape virá vazio até lá).`;
+    } else {
+      const top = (r.distribution || []).slice(0, 3).map((d) => `${d.theme} (${d.count})`).join(" · ");
+      hint.textContent = top ? `Temas mais ativos: ${top}` : "Escolha um tema e gere o dossiê.";
+    }
+  } catch (e) {
+    if (hint) hint.textContent = `Falha ao carregar temas: ${e.message}`;
+  }
+}
+
+// Gera o dossiê: 1 GET compõe os DADOS (render imediato) + 1 POST traz a
+// narrativa IA (não bloqueia). Guarda em state para o export PDF.
+async function runGerador(event) {
+  event?.preventDefault();
+  const theme = $("#ger-theme").value;
+  const agency = ($("#ger-agency").value || "").trim();
+  const cnpjRaw = ($("#ger-cnpj").value || "").trim();
+  const cnpj = onlyDigits(cnpjRaw);
+  const days = $("#ger-window").value || "180";
+  const hint = $("#gerador-hint");
+  if (cnpjRaw && cnpj.length !== 14) {
+    if (hint) hint.textContent = "CNPJ inválido: informe 14 dígitos (ou deixe vazio).";
+    return;
+  }
+  if (!theme && !agency && cnpj.length !== 14) {
+    if (hint) hint.textContent = "Selecione um tema (ou informe agências/CNPJ) para gerar.";
+    return;
+  }
+
+  const btn = $("#gerador-form button[type=submit]");
+  const exportBtn = $("#gerador-export");
+  if (btn) { btn.disabled = true; btn.textContent = "Gerando…"; }
+  if (exportBtn) exportBtn.hidden = true;
+  $("#gerador-result").hidden = false;
+  $("#ger-narrative").innerHTML = emptyCard("Leitura estratégica", "Compondo o dossiê…");
+  $("#ger-landscape").innerHTML = emptyCard("Landscape", "Consultando atos por tema…");
+  $("#ger-directors").innerHTML = "";
+  $("#ger-risks").innerHTML = "";
+  $("#ger-opportunities").innerHTML = "";
+  $("#ger-counterparty-panel").hidden = true;
+
+  const params = new URLSearchParams({ type: "deal_dossier", days });
+  if (theme) params.set("theme", theme);
+  if (agency) params.set("agency", agency);
+  if (cnpj.length === 14) params.set("cnpj", cnpj);
+
+  try {
+    const dossier = await requestJson(`/api/intelligence?${params.toString()}`);
+    state.gerador.dossier = dossier;
+    state.gerador.narrative = null;
+    renderGerador(dossier);
+    if (exportBtn) exportBtn.hidden = false;
+    // Narrativa IA (não bloqueia os dados; degrada sem chave).
+    $("#ger-narrative").innerHTML = emptyCard("Leitura estratégica", "Gerando interpretação por IA…");
+    const narr = await postJson("/api/intelligence?type=deal_narrative", dossier).catch(() => null);
+    state.gerador.narrative = narr;
+    renderGeradorNarrative(narr);
+  } catch (e) {
+    const msg = `Não foi possível gerar: ${e.message}`;
+    $("#ger-narrative").innerHTML = emptyCard("Falha", msg);
+    $("#ger-landscape").innerHTML = emptyCard("Falha", "Consulta não concluída — verifique as ingestões/migração e tente de novo.");
+    $("#ger-directors").innerHTML = "";
+    $("#ger-risks").innerHTML = "";
+    $("#ger-opportunities").innerHTML = "";
+    const lc = $("#ger-land-count"); if (lc) lc.hidden = true;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Gerar dossiê"; }
+  }
+}
+
+function renderGerador(d) {
+  // Mapa de Landscape (por agência).
+  const landEl = $("#ger-landscape");
+  const byAg = d.landscape?.by_agency || [];
+  const landCount = $("#ger-land-count");
+  if (landCount) { landCount.hidden = !byAg.length; landCount.textContent = String(d.landscape?.total || 0); }
+  if (!byAg.length) {
+    const base = d.theme ? `Nenhum ato do tema “${d.theme}” na janela.` : "Selecione um tema para o recorte por agência.";
+    const needBackfill = d.landscape_ready === false ? " Classificação por tema ainda não ativada — rode a migração + backfill:themes." : "";
+    landEl.innerHTML = emptyCard("Mapa de Landscape", base + needBackfill);
+  } else {
+    const maxN = Math.max(...byAg.map((a) => a.count), 1);
+    landEl.innerHTML = byAg.map((a) => {
+      const pct = Math.round(100 * a.count / maxN);
+      const recent = (a.recent || []).slice(0, 3).map((it) => {
+        const url = safeUrl(it.link);
+        const t = escapeHtml((it.title || "").slice(0, 110));
+        return `<li>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${t}</a>` : t} <span class="ger-muted">${escapeHtml(it.date || "")}</span></li>`;
+      }).join("");
+      return `
+      <article class="dossier-item">
+        <div class="ger-land-head"><strong>${escapeHtml(a.agency || "?")}</strong><span class="ger-count">${a.count}</span></div>
+        <div class="ger-bar"><span style="width:${pct}%"></span></div>
+        ${recent ? `<ul class="ger-recent">${recent}</ul>` : ""}
+      </article>`;
+    }).join("");
+  }
+
+  // Briefing de decisores.
+  const dirEl = $("#ger-directors");
+  const dirs = d.directors || [];
+  if (!dirs.length) {
+    dirEl.innerHTML = emptyCard("Decisores", d.target_agencies?.length ? "Sem dirigentes ativos cadastrados nas agências-alvo." : "Defina tema/agências para listar os decisores.");
+  } else {
+    dirEl.innerHTML = dirs.slice(0, 20).map((p) => {
+      const meta = [p.agency, p.role].filter(Boolean).join(" · ");
+      const links = p.socio_links ? `${p.socio_links} vínculo(s) societário(s)${p.inaptas ? ` · ${p.inaptas} inapta(s)` : ""}` : "sem vínculo societário na base";
+      const sev = p.inaptas ? "var(--red)" : p.socio_links ? "var(--yellow)" : "var(--green)";
+      return `
+      <article class="news-card">
+        <span class="source-meta">${escapeHtml(meta || "Dirigente")}</span>
+        <strong>${escapeHtml(p.name || "?")}</strong>
+        <p>${escapeHtml(links)}${p.since ? ` · desde ${escapeHtml(p.since)}` : ""}</p>
+        ${cardFoot(sev, "decisor", "LINCE//DIR")}
+      </article>`;
+    }).join("");
+  }
+
+  // Memo — riscos.
+  const riskEl = $("#ger-risks");
+  const risks = d.risks || [];
+  if (!risks.length) {
+    riskEl.innerHTML = emptyCard("Riscos", "Sem sinais de porta-giratória entre os decisores das agências-alvo.");
+  } else {
+    riskEl.innerHTML = risks.slice(0, 20).map((r) => `
+      <article class="news-card">
+        <span class="source-meta">${escapeHtml([r.agency, r.role].filter(Boolean).join(" · ") || "Risco")}</span>
+        <strong>${escapeHtml(r.name || "?")}</strong>
+        <p>Sócio(a) de ${r.companies} empresa(s)${r.inaptas ? ` — ${r.inaptas} inapta(s)/baixada(s)` : ""}.</p>
+        ${cardFoot(r.severity === "high" ? "var(--red)" : "var(--yellow)", "captura", "LINCE//RISCO")}
+      </article>`).join("");
+  }
+
+  // Memo — oportunidades (reusa o renderer do radar, apontando pro container do Gerador).
+  renderRadarOpportunities(d.opportunities || [], "#ger-opportunities");
+
+  // Contraparte (opcional).
+  const cpPanel = $("#ger-counterparty-panel");
+  const cpEl = $("#ger-counterparty");
+  if (d.counterparty && d.counterparty.ok) {
+    cpPanel.hidden = false;
+    cpEl.innerHTML = renderCounterpartyHtml(d.counterparty);
+  } else if (d.counterparty) {
+    cpPanel.hidden = false;
+    cpEl.innerHTML = emptyCard("Contraparte", `Falha: ${escapeHtml(d.counterparty.error || "não foi possível compor.")}`);
+  } else {
+    cpPanel.hidden = true;
+  }
+}
+
+function renderCounterpartyHtml(cp) {
+  const c = cp.company;
+  const flags = (cp.flags || []).map((f) => `<li class="ger-flag sev-${escapeHtml(f.severity)}">${escapeHtml(f.flag)}</li>`).join("");
+  const socios = (cp.socios || []).slice(0, 12).map((s) => {
+    const meta = [s.papel, s.tipo, s.situacao].filter(Boolean).join(" · ");
+    return `<li>${escapeHtml(s.nome || "?")} ${meta ? `<span class="ger-muted">${escapeHtml(meta)}</span>` : ""}</li>`;
+  }).join("");
+  return `
+    <article class="dossier-item">
+      <span class="field-source">Cadastro + rede societária + screening</span>
+      <strong>${escapeHtml(c?.legal_name || "Empresa")}${c?.registration_status ? ` — ${escapeHtml(c.registration_status)}` : ""}</strong>
+      <p>CNPJ ${escapeHtml(formatCnpj(cp.cnpj))}${c?.cnae ? ` · CNAE ${escapeHtml(c.cnae)}` : ""} · ${cp.socios_count || 0} sócio(s)</p>
+      ${flags ? `<ul class="ger-flags">${flags}</ul>` : ""}
+      ${socios ? `<div class="ger-sub">Quadro societário</div><ul class="ger-recent">${socios}</ul>` : ""}
+    </article>`;
+}
+
+function renderGeradorNarrative(narr) {
+  const el = $("#ger-narrative");
+  const badge = $("#ger-narr-badge");
+  if (!el) return;
+  if (!narr || (!narr.summary && !(narr.scenarios || []).length)) {
+    const why = narr?.skipped === "no_api_key"
+      ? "Configure ANTHROPIC_API_KEY para habilitar a interpretação por IA — os dados abaixo já compõem o dossiê."
+      : (narr?.error ? `IA indisponível: ${narr.error}.` : "Interpretação por IA indisponível no momento.");
+    if (badge) badge.hidden = true;
+    el.innerHTML = emptyCard("Leitura estratégica", why);
+    return;
+  }
+  if (badge) badge.hidden = false;
+  const list = (title, arr) => (arr && arr.length)
+    ? `<div class="ger-narr-block"><h4>${title}</h4><ul>${arr.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul></div>`
+    : "";
+  el.innerHTML = `
+    <div class="ger-narrative">
+      <p class="ger-narr-summary">${escapeHtml(narr.summary || "")}</p>
+      ${narr.recommendation ? `<p class="ger-narr-reco"><strong>Recomendação:</strong> ${escapeHtml(narr.recommendation)}</p>` : ""}
+      ${list("Cenários prováveis", narr.scenarios)}
+      ${list("Oportunidades", narr.opportunities)}
+      ${list("Riscos", narr.risks)}
+      ${narr.confidence ? `<p class="ger-muted">Confiança da IA: ${Math.round(narr.confidence * 100)}%</p>` : ""}
+    </div>`;
+}
+
+// Exporta o dossiê comercial em PDF (reusa o motor de impressão). Marca
+// comercial no cabeçalho (IRIS fora do entregável faturado).
+async function exportGeradorPdf() {
+  const d = state.gerador.dossier;
+  if (!d) return;
+  const btn = $("#gerador-export");
+  if (btn) { btn.disabled = true; btn.textContent = "Gerando…"; }
+  let narr = state.gerador.narrative;
+  if (!narr) narr = await postJson("/api/intelligence?type=deal_narrative", d).catch(() => null);
+
+  const sections = [];
+  const byAg = d.landscape?.by_agency || [];
+  if (byAg.length) {
+    sections.push({
+      heading: `Mapa de Landscape${d.theme ? ` — ${d.theme}` : ""}`,
+      html: printItemsTable(byAg.map((a) => item(a.agency, `${a.count} iniciativa(s)`, "DOU / INLABS")))
+    });
+  }
+  const dirs = d.directors || [];
+  if (dirs.length) {
+    sections.push({
+      heading: "Briefing de decisores",
+      html: printItemsTable(dirs.slice(0, 25).map((p) => item(
+        p.name,
+        `${[p.agency, p.role].filter(Boolean).join(" · ")}${p.socio_links ? ` · ${p.socio_links} vínculo(s)${p.inaptas ? `, ${p.inaptas} inapta(s)` : ""}` : ""}`,
+        "DOU / Receita"
+      )))
+    });
+  }
+  const risks = d.risks || [];
+  if (risks.length) {
+    sections.push({
+      heading: "Memo — Riscos",
+      html: printItemsTable(risks.slice(0, 25).map((r) => item(
+        r.name,
+        `${[r.agency, r.role].filter(Boolean).join(" · ")} — sócio(a) de ${r.companies} empresa(s)${r.inaptas ? `, ${r.inaptas} inapta(s)` : ""}`,
+        r.severity === "high" ? "ALTO" : "MÉDIO"
+      )))
+    });
+  }
+  const opps = d.opportunities || [];
+  if (opps.length) {
+    sections.push({
+      heading: "Memo — Oportunidades",
+      html: printItemsTable(opps.slice(0, 30).map((o) => item(
+        (o.label || "").slice(0, 110),
+        o.kind === "contrato_vencendo"
+          ? `${o.agency || ""} · vence ${o.ends_at || "-"}${o.value ? ` · ${money(o.value)}` : ""}`
+          : `${o.agency || ""} · consulta ${o.date || ""}`,
+        o.kind === "contrato_vencendo" ? "PNCP" : "DOU"
+      )))
+    });
+  }
+  const cp = d.counterparty;
+  if (cp && cp.ok) {
+    const rows = [
+      item("Razão social", cp.company?.legal_name || "-", "Receita"),
+      item("CNPJ", formatCnpj(cp.cnpj), "Receita"),
+      item("Situação", cp.company?.registration_status || "-", "Receita"),
+      item("Sócios na base", String(cp.socios_count || 0), "Receita / QSA")
+    ];
+    for (const f of (cp.flags || [])) rows.push(item(`Sinal (${f.severity})`, f.flag, "LINCE"));
+    sections.push({ heading: "Contraparte — Due diligence", html: printItemsTable(rows) });
+  }
+
+  // Narrativa IA -> bloco "Resumo executivo (IA)" do print.
+  const ai = narr && narr.summary ? {
+    summary: narr.summary,
+    risk_flags: narr.risks || [],
+    highlights: [
+      ...(narr.recommendation ? [`Recomendação: ${narr.recommendation}`] : []),
+      ...(narr.scenarios || []),
+      ...(narr.opportunities || [])
+    ]
+  } : null;
+
+  const themeLabel = d.theme || "Panorama regulatório";
+  const agencyLabel = (d.target_agencies || []).map((a) => a.acronym).join(", ");
+  runPrint(buildPrintDoc({
+    title: `Dossiê Comercial — ${themeLabel}`,
+    subtitle: agencyLabel ? `Agências-alvo: ${agencyLabel}` : "Panorama nas agências reguladoras",
+    classification: "CONFIDENCIAL//COMERCIAL",
+    kicker: "INTELIGÊNCIA REGULATÓRIA · USO COMERCIAL RESTRITO",
+    ai,
+    sections,
+    sourcesUsed: ["DOU / INLABS", "PNCP Contratos", "Receita Federal (QSA)", "Portal da Transparência", "Câmara/Senado"]
+  }));
+  if (btn) { btn.disabled = false; btn.textContent = "Exportar PDF"; }
 }
 
 // ══════════════════ Consulta de pessoa (CPF ou nome) ═══════════════════════
@@ -2672,6 +2982,16 @@ function wireEvents() {
   wireMonitorList();
   $("#export-dossier")?.addEventListener("click", () => {
     exportDossierPdf().catch((error) => alert(`Falha ao exportar: ${error.message}`));
+  });
+
+  // Gerador de Dossiê Comercial (M14).
+  $("#gerador-form")?.addEventListener("submit", (e) => {
+    runGerador(e).catch((error) => {
+      $("#gerador-hint").textContent = `Falha ao gerar: ${error.message}`;
+    });
+  });
+  $("#gerador-export")?.addEventListener("click", () => {
+    exportGeradorPdf().catch((error) => alert(`Falha ao exportar: ${error.message}`));
   });
 }
 

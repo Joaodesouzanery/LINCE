@@ -1,6 +1,9 @@
 {
   "cleanUrls": true,
   "trailingSlash": false,
+  "functions": {
+    "api/intelligence.js": { "maxDuration": 60 }
+  },
   "crons": [
     { "path": "/api/ingest-dou", "schedule": "0 12 * * *" },
     { "path": "/api/ingest-people-dou", "schedule": "30 12 * * *" }

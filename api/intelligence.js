@@ -1,8 +1,9 @@
 // Motor de Inteligencia Nacional: score de risco por setor/agencia,
 // radar de normas dos proximos 30/60/90 dias, resumo executivo diario,
-// monitores de vigilancia (CRUD) e resumo executivo de dossie por IA.
-// GET /api/intelligence?type=radar|score|daily|monitors|monitor_alerts|holdings
-// POST /api/intelligence?type=monitor_save|monitor_toggle|monitor_delete|exec_summary
+// monitores de vigilancia (CRUD), Gerador de Dossie Comercial (landscape por
+// tema, dossie de deal e narrativa IA) e resumo executivo de dossie por IA.
+// GET /api/intelligence?type=radar|score|daily|landscape|deal_dossier|monitors|monitor_alerts|holdings
+// POST /api/intelligence?type=monitor_save|monitor_toggle|monitor_delete|deal_narrative|exec_summary
 const { getSupabase } = require("../lib/supabase");
 const { normalizeName, onlyDigits } = require("../lib/text");
 
@@ -83,6 +84,88 @@ async function weeklyAgencyAnalysis(supabase, weeks = 8) {
   }
   anomalies.sort((a, b) => (b.ratio || 0) - (a.ratio || 0));
   return { series, anomalies, truncated: rows.length >= 20000 };
+}
+
+// ── Mapa de Landscape (M14) ─────────────────────────────────────────────────
+// Compoe a distribuicao de atos do DOU por TEMA (habilitado pela coluna
+// documents.themes) e, quando um tema e escolhido, o recorte por agencia com os
+// atos mais recentes. Base do Gerador de Dossie. Retorna ready:false (sem
+// lancar) quando a coluna 'themes' ainda nao existe (migracao Fase M14 pendente)
+// -> o caller degrada com uma mensagem de "rode a migracao + backfill".
+async function computeLandscape(supabase, { theme, days, agencies }) {
+  const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const { THEME_LABELS } = require("../lib/themes");
+
+  // Sonda barata: a coluna 'themes' existe? (head+count com filtro @>). Erro de
+  // COLUNA AUSENTE (codigo 42703/PGRST204 ou mensagem citando 'themes') =>
+  // migracao Fase M14 pendente -> degrada sem lancar. Qualquer outro erro e um
+  // erro real de banco e NAO deve ser mascarado como "sem tema".
+  const probe = await supabase.from("documents")
+    .select("id", { count: "exact", head: true })
+    .eq("source_name", "DOU").contains("themes", [THEME_LABELS[0]]);
+  if (probe.error) {
+    const msg = probe.error.message || "";
+    if (probe.error.code === "42703" || probe.error.code === "PGRST204" || /themes/i.test(msg)) {
+      return { ready: false, themes_available: THEME_LABELS, distribution: [], by_agency: [], total: 0, theme: theme || null };
+    }
+    throw new Error(msg);
+  }
+
+  // Distribuicao: 1 contagem head por tema, em paralelo (GIN cobre o @>).
+  // Propaga erro real de query (nao coalesce silenciosamente para 0).
+  const counts = await Promise.all(THEME_LABELS.map((t) =>
+    supabase.from("documents")
+      .select("id", { count: "exact", head: true })
+      .eq("source_name", "DOU").gte("published_at", since).contains("themes", [t])
+      .then((r) => ({ theme: t, count: r.count || 0, error: r.error?.message || null }))
+  ));
+  const countErr = counts.find((c) => c.error);
+  if (countErr) throw new Error(countErr.error);
+  const distribution = counts.filter((c) => c.count > 0).sort((a, b) => b.count - a.count);
+
+  // Recorte por agencia + atos recentes: so quando ha tema selecionado.
+  let by_agency = [], total = 0;
+  if (theme) {
+    // Reusa a lista de agencias se o caller ja a carregou (evita round-trip).
+    let agList = agencies;
+    if (!agList) {
+      const agRes = await supabase.from("agencies").select("id, acronym, name").eq("sector", "regulatory");
+      if (agRes.error) throw new Error(agRes.error.message);
+      agList = agRes.data || [];
+    }
+    const agById = Object.fromEntries(agList.map((a) => [a.id, a]));
+    // Total consistente com a distribuicao (head count do tema), sem teto de 6000.
+    total = distribution.find((d) => d.theme === theme)?.count || 0;
+    // Pagina para agregar por agencia + 5 atos recentes. Ordem com DESEMPATE
+    // estavel (published_at e DATE -> muitos empates; id desempata) para nao
+    // pular/duplicar registros na fronteira das paginas. Projeta so o necessario
+    // (sem metadata jsonb, que e pesado e nao e usado no recorte).
+    const byAg = {};
+    const PAGE = 1000;
+    for (let from = 0; from < 8000; from += PAGE) {
+      const { data, error } = await supabase.from("documents")
+        .select("id, title, published_at, document_type, source_url, agency_id")
+        .eq("source_name", "DOU").gte("published_at", since).contains("themes", [theme])
+        .order("published_at", { ascending: false }).order("id", { ascending: false })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(error.message);
+      for (const d of data || []) {
+        const ag = agById[d.agency_id];
+        if (!ag) continue;
+        const b = (byAg[ag.acronym] = byAg[ag.acronym] || { agency: ag.acronym, name: ag.name, count: 0, recent: [] });
+        b.count++;
+        if (b.recent.length < 5) {
+          b.recent.push({ title: d.title, date: d.published_at, type: d.document_type, link: d.source_url });
+        }
+      }
+      if (!data || data.length < PAGE) break;
+    }
+    by_agency = Object.values(byAg).sort((a, b) => b.count - a.count);
+    // Piso: se o head count nao cobriu (tema fora da distribuicao), usa a soma agregada.
+    const agg = by_agency.reduce((s, a) => s + a.count, 0);
+    if (!total || agg > total) total = agg;
+  }
+  return { ready: true, themes_available: THEME_LABELS, distribution, by_agency, total, theme: theme || null };
 }
 
 module.exports = async function handler(req, res) {
@@ -853,6 +936,176 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    // ── Mapa de Landscape (M14): distribuicao de atos por TEMA x agencia. ────
+    // GET ?type=landscape[&theme=<label>][&days=180]. Sem theme: so distribuicao
+    // + lista de temas (para o dropdown do Gerador). Com theme: recorte por
+    // agencia + atos recentes. Degrada se a coluna 'themes' ainda nao existir.
+    if (type === "landscape") {
+      res.setHeader("Cache-Control", "s-maxage=900, stale-while-revalidate=3600");
+      const theme = req.query.theme ? String(req.query.theme) : null;
+      const days = Math.min(Math.max(Number(req.query.days) || 180, 30), 720);
+      const lp = await computeLandscape(supabase, { theme, days });
+      if (!lp.ready) {
+        return res.status(200).json({
+          ok: true, type: "landscape", note: "themes_not_ready", days,
+          themes_available: lp.themes_available, distribution: [], by_agency: [], total: 0
+        });
+      }
+      return res.status(200).json({ ok: true, type: "landscape", days, ...lp });
+    }
+
+    // ── Dossie Comercial (M14): compoe Landscape + Briefing de decisores +
+    // Memo (riscos/oportunidades) + Contraparte (opcional). So DADOS; a
+    // narrativa IA vem de type=deal_narrative (POST). ─────────────────────────
+    // GET ?type=deal_dossier&theme=<label>[&agency=ANEEL,ANATEL][&cnpj=][&days=180]
+    if (type === "deal_dossier") {
+      res.setHeader("Cache-Control", "s-maxage=600, stale-while-revalidate=1800");
+      const theme = req.query.theme ? String(req.query.theme) : null;
+      const days = Math.min(Math.max(Number(req.query.days) || 180, 30), 720);
+      const agencyList = String(req.query.agency || "").toUpperCase().split(",").map((s) => s.trim()).filter(Boolean);
+      const cnpj = onlyDigits(req.query.cnpj);
+      const today = new Date().toISOString().slice(0, 10);
+      const in90 = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+      const since45 = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+
+      // Agencias uma unica vez (reusada no landscape e no agByAcr). Erro real
+      // aqui NAO pode virar "agencias-alvo vazias" silenciosamente -> propaga.
+      const agRes = await supabase.from("agencies").select("id, acronym, name").eq("sector", "regulatory");
+      if (agRes.error) throw new Error(agRes.error.message);
+      const agenciesAll = agRes.data || [];
+      const agByAcr = Object.fromEntries(agenciesAll.map((a) => [a.acronym, a]));
+
+      // 1) Landscape do tema + 2) Contraparte (independentes) em paralelo.
+      const [landscape, counterparty] = await Promise.all([
+        computeLandscape(supabase, { theme, days, agencies: agenciesAll }),
+        cnpj.length === 14
+          ? require("../lib/counterparty").composeCounterparty(cnpj)
+          : Promise.resolve(null)
+      ]);
+
+      // Agencias-alvo: as informadas, senao as mais ativas do tema no landscape.
+      let targetAcr = agencyList.filter((a) => agByAcr[a]);
+      if (!targetAcr.length && landscape.by_agency?.length) targetAcr = landscape.by_agency.slice(0, 4).map((a) => a.agency);
+      const targetAgencies = targetAcr.map((a) => agByAcr[a]).filter(Boolean);
+      const targetIds = targetAgencies.map((a) => a.id);
+
+      // 3) Briefing de decisores: dirigentes ATIVOS das agencias-alvo + vinculos
+      //    societarios (padrao de radar_intel: relationships socio -> companies).
+      async function computeBriefing() {
+        const directors = [], risks = [];
+        if (!targetIds.length) return { directors, risks };
+        const { data: mandates } = await supabase.from("mandates")
+          .select("person_id, role, started_at, agency_id, people(full_name), agencies(acronym)")
+          .is("ended_at", null).in("agency_id", targetIds).limit(500);
+        const pids = [...new Set((mandates || []).map((m) => m.person_id).filter(Boolean))];
+        let linksByPerson = {};
+        if (pids.length) {
+          const { data: rels } = await supabase.from("relationships")
+            .select("from_id, to_id, metadata")
+            .eq("from_kind", "person").eq("to_kind", "company").eq("relationship", "socio")
+            .in("from_id", pids).limit(4000);
+          const compIds = [...new Set((rels || []).map((r) => r.to_id))];
+          let compById = {};
+          if (compIds.length) {
+            const { data: comps } = await supabase.from("companies")
+              .select("id, cnpj, legal_name, registration_status").in("id", compIds);
+            compById = Object.fromEntries((comps || []).map((c) => [c.id, c]));
+          }
+          for (const r of rels || []) {
+            const c = compById[r.to_id];
+            if (!c) continue;
+            (linksByPerson[r.from_id] = linksByPerson[r.from_id] || []).push({ ...c, socio_role: r.metadata?.role });
+          }
+        }
+        const seen = new Set();
+        for (const m of mandates || []) {
+          if (seen.has(m.person_id)) continue;
+          seen.add(m.person_id);
+          const links = linksByPerson[m.person_id] || [];
+          const inaptas = links.filter((c) => c.registration_status && !/ativ/i.test(c.registration_status));
+          directors.push({
+            person_id: m.person_id, name: m.people?.full_name || "?",
+            agency: m.agencies?.acronym || null, role: m.role || null, since: m.started_at || null,
+            socio_links: links.length, inaptas: inaptas.length,
+            companies: links.slice(0, 5).map((c) => ({ cnpj: c.cnpj, legal_name: c.legal_name, status: c.registration_status, role: c.socio_role }))
+          });
+          // Risco: dirigente ativo com vinculo societario (porta giratoria).
+          if (links.length) {
+            risks.push({
+              kind: "porta_giratoria", person_id: m.person_id, name: m.people?.full_name || "?",
+              agency: m.agencies?.acronym || null, role: m.role || null,
+              companies: links.length, inaptas: inaptas.length,
+              severity: inaptas.length ? "high" : "medium"
+            });
+          }
+        }
+        directors.sort((a, b) => (b.inaptas - a.inaptas) || (b.socio_links - a.socio_links));
+        risks.sort((a, b) => (b.inaptas - a.inaptas) || (b.companies - a.companies));
+        return { directors, risks };
+      }
+
+      // 4) Memo — oportunidades: contratos a vencer + consultas abertas. O filtro
+      //    por agencia-alvo vai DENTRO da query (antes do limit), senao o
+      //    .limit(40) global descartaria consultas da agencia-alvo alem do top-40.
+      async function computeOpportunities() {
+        let consultasQuery = supabase.from("documents")
+          .select("title, published_at, source_url, agency_id, agencies(acronym)")
+          .eq("source_name", "DOU").gte("published_at", since45)
+          .or("title.ilike.%consulta p%,title.ilike.%audi%,title.ilike.%tomada de subs%");
+        if (targetIds.length) consultasQuery = consultasQuery.in("agency_id", targetIds);
+        consultasQuery = consultasQuery.order("published_at", { ascending: false }).limit(40);
+
+        const [contractsR, consultasR] = await Promise.all([
+          targetIds.length
+            ? supabase.from("contracts")
+                .select("object, supplier_name, ends_at, value, agencies(acronym)")
+                .in("agency_id", targetIds).gte("ends_at", today).lte("ends_at", in90)
+                .order("ends_at").limit(30)
+            : Promise.resolve({ data: [] }),
+          consultasQuery
+        ]);
+        // Rede de seguranca (targetIds vazio => mantem tudo; senao ja veio filtrado).
+        const consultas = (consultasR.data || []).filter((d) => !targetIds.length || targetIds.includes(d.agency_id));
+        return [
+          ...(contractsR.data || []).map((c) => ({
+            kind: "contrato_vencendo", label: (c.object || "Contrato").slice(0, 140),
+            supplier: c.supplier_name || null, agency: c.agencies?.acronym || null,
+            ends_at: c.ends_at, value: c.value || null
+          })),
+          ...consultas.map((d) => ({
+            kind: "consulta_aberta", label: d.title, agency: d.agencies?.acronym || null,
+            date: d.published_at, link: d.source_url
+          }))
+        ];
+      }
+
+      // Briefing e oportunidades sao independentes -> em paralelo (corta latencia).
+      const [{ directors, risks }, opportunities] = await Promise.all([
+        computeBriefing(), computeOpportunities()
+      ]);
+
+      return res.status(200).json({
+        ok: true, type: "deal_dossier", theme: theme || null, days,
+        landscape_ready: landscape.ready,
+        target_agencies: targetAgencies.map((a) => ({ acronym: a.acronym, name: a.name })),
+        landscape: { distribution: landscape.distribution, by_agency: landscape.by_agency, total: landscape.total },
+        directors, risks, opportunities, counterparty,
+        generated_at: new Date().toISOString()
+      });
+    }
+
+    // Narrativa IA COMERCIAL sobre o dossie composto (o front envia o payload de
+    // type=deal_dossier no body). Degrada sem ANTHROPIC_API_KEY (skipped).
+    if (type === "deal_narrative") {
+      res.setHeader("Cache-Control", "no-store");
+      if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST com o dossie no body." });
+      const { narrateDeal } = require("../lib/anthropic");
+      const payload = req.body && typeof req.body === "object" ? req.body : null;
+      if (!payload) return res.status(400).json({ ok: false, error: "Body JSON ausente." });
+      const ai = await narrateDeal(payload);
+      return res.status(200).json({ ok: true, ...ai });
+    }
+
     // Resumo executivo IA do dossie de EMPRESA (o front envia o dossie compacto
     // ja montado em state; o de pessoa usa /api/dossier-person?id=&ai=1).
     if (type === "exec_summary") {
@@ -902,7 +1155,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "alerts", items: alerts || [] });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, radar_intel, correlations, trends_anomalies, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary" });
+    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, radar_intel, correlations, trends_anomalies, landscape, deal_dossier, deal_narrative, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }
