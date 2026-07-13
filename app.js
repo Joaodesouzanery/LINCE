@@ -429,6 +429,7 @@ function setView(view) {
     intelligence: ["Inteligencia regulatoria", "Inteligencia Nacional"],
     consultas: ["Participacao social (M5)", "Consultas Publicas"],
     agenda: ["Calendario regulatorio (M8)", "Agenda e Pautas"],
+    "agenda-reg": ["Pipeline regulatorio (M8+)", "Agenda Regulatoria"],
     monitors: ["Vigilancia continua (M10)", "Central de Monitoramento"],
     legislativo: ["Radar legislativo (M12)", "Legislativo"],
     radar: ["Risco & Oportunidade (M13)", "Radar"],
@@ -442,6 +443,7 @@ function setView(view) {
   if (view === "intelligence") loadIntelligence();
   if (view === "consultas") loadConsultas();
   if (view === "agenda") loadAgenda();
+  if (view === "agenda-reg") loadAgendaRegulatoria();
   if (view === "monitors") loadMonitors();
   if (view === "legislativo") loadLegislativo();
   if (view === "radar") loadRadar();
@@ -2660,6 +2662,87 @@ async function loadAgenda() {
   }
 }
 
+// ══════════════════ Agenda Regulatória (M8+) ══════════════════════════════
+// Board por agência: temas formais (regulatory_agenda) + atos de agenda +
+// consultas abertas + pautas, do DOU já ingerido. Notícias só ao clicar.
+async function loadAgendaRegulatoria() {
+  const board = $("#agreg-board");
+  const hint = $("#agreg-hint");
+  if (!board) return;
+  const sector = $("#agreg-filter")?.value || "";
+  board.innerHTML = "";
+  if (hint) hint.textContent = "Carregando agenda regulatória…";
+  try {
+    const data = await requestJson(`/api/rss-feeds?type=agenda_regulatoria${sector ? `&sector=${encodeURIComponent(sector)}` : ""}`);
+    const ags = data.agencies || [];
+    if (hint) {
+      hint.textContent = ags.length
+        ? `${ags.length} agência(s) com movimento regulatório recente.${data.temas_ready ? "" : " (Temas formais itemizados ainda não carregados — precisa do load:agenda com a IA.)"}`
+        : "Sem movimento recente no DOU para este recorte.";
+    }
+    board.innerHTML = ags.map(renderAgregAgency).join("");
+    board.querySelectorAll("[data-agreg-news]").forEach((btn) => {
+      btn.addEventListener("click", () => loadAgregNews(btn.dataset.agregNews, btn.dataset.agregName, btn));
+    });
+  } catch (e) {
+    if (hint) hint.textContent = `Falha ao carregar: ${e.message}`;
+  }
+}
+
+function agregLane(title, items, kind) {
+  if (!items || !items.length) return "";
+  const li = items.map((it) => {
+    const url = safeUrl(it.link);
+    const t = escapeHtml((it.title || it.theme_title || "").slice(0, 130));
+    const meta = kind === "tema"
+      ? [it.status, it.area, it.biennium].filter(Boolean).map((x) => escapeHtml(x)).join(" · ")
+      : escapeHtml(it.date || "");
+    return `<li>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${t}</a>` : t}${meta ? ` <span class="ger-muted">${meta}</span>` : ""}</li>`;
+  }).join("");
+  return `<div class="agreg-lane"><h4>${escapeHtml(title)}</h4><ul class="ger-recent">${li}</ul></div>`;
+}
+
+function renderAgregAgency(a) {
+  return `
+  <section class="panel agreg-card">
+    <div class="panel-header">
+      <div><h3 class="agreg-ag">${escapeHtml(a.agency)}</h3><p class="kicker">${escapeHtml(a.agency_name || "")}</p></div>
+      <button type="button" class="ghost-button" data-agreg-news="${escapeHtml(a.agency)}" data-agreg-name="${escapeHtml(a.agency_name || a.agency)}">Notícias</button>
+    </div>
+    <div class="agreg-lanes">
+      ${agregLane("Agenda formal — temas", a.temas, "tema")}
+      ${agregLane("Atos de Agenda Regulatória", a.agenda, "ato")}
+      ${agregLane("Consultas / audiências abertas", a.consultas, "ato")}
+      ${agregLane("Pautas / deliberações", a.pautas, "ato")}
+    </div>
+    <div class="agreg-news" id="agreg-news-${escapeHtml(a.agency)}" hidden></div>
+  </section>`;
+}
+
+async function loadAgregNews(agency, agencyName, btn) {
+  const el = document.getElementById(`agreg-news-${agency}`);
+  if (!el) return;
+  if (el.dataset.loaded) { el.hidden = !el.hidden; return; } // já carregado -> só alterna
+  el.hidden = false;
+  el.innerHTML = emptyCard("Notícias", "Buscando notícias recentes…");
+  btn.disabled = true;
+  try {
+    const data = await requestJson(`/api/news?q=${encodeURIComponent(`${agencyName} agenda regulatória`)}`);
+    el.dataset.loaded = "1";
+    const items = data.items || [];
+    el.innerHTML = items.length
+      ? `<div class="agreg-news-list">${items.slice(0, 6).map((n) => {
+          const url = safeUrl(n.link);
+          return `<article class="news-card"><span class="source-meta">${escapeHtml(n.source || "")} · ${escapeHtml((n.date || "").slice(0, 16))}</span><strong>${escapeHtml((n.title || "").slice(0, 140))}</strong>${url ? `<div class="entity-row"><a class="entity-pill" href="${escapeHtml(url)}" target="_blank" rel="noopener">Abrir ↗</a></div>` : ""}</article>`;
+        }).join("")}</div>`
+      : emptyCard("Notícias", "Nenhuma notícia recente encontrada.");
+  } catch (e) {
+    el.innerHTML = emptyCard("Notícias", `Falha: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function ensureCnpjGraphView() {
   if (state.graphView || !$("#graph-cy")) return state.graphView;
   state.graphView = createGraphView({
@@ -3003,6 +3086,9 @@ function wireEvents() {
   $("#gerador-export")?.addEventListener("click", () => {
     exportGeradorPdf().catch((error) => alert(`Falha ao exportar: ${error.message}`));
   });
+
+  // Agenda Regulatória: filtro de setor recarrega o board.
+  $("#agreg-filter")?.addEventListener("change", () => loadAgendaRegulatoria());
 
   // B3 — "Atualizar agora": dispara a ingestão do DOU de hoje (via type=refresh,
   // JWT-gated; repassa o CRON_SECRET server-side). Pode demorar; feedback no status.

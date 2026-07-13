@@ -2191,3 +2191,14 @@ button.entity-pill:hover {
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
 }
 .data-status .ds-text { color: var(--muted); font-size: 12.5px; font-family: var(--font-mono); min-width: 0; }
+
+/* Agenda Regulatória — board por agência */
+.agreg-board { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; margin-top: 14px; }
+@media (max-width: 860px) { .agreg-board { grid-template-columns: 1fr; } }
+.agreg-card { padding: 16px 18px; }
+.agreg-ag { font-family: var(--font-mono); font-size: 16px; font-weight: 700; margin: 0; color: var(--text); letter-spacing: 0.04em; }
+.agreg-lanes { display: grid; gap: 12px; margin-top: 10px; }
+.agreg-lane h4 { margin: 0 0 4px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.agreg-lane .ger-recent li { font-size: 12px; line-height: 1.4; }
+.agreg-news { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.agreg-news-list { display: grid; gap: 8px; }

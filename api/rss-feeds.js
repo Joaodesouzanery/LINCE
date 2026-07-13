@@ -79,6 +79,81 @@ module.exports = async function handler(req, res) {
     return res.status(200).json({ ...result, type, fetchedAt: new Date().toISOString() });
   }
 
+  // Agenda Regulatoria (M8+): monitora, POR AGENCIA, o pipeline regulatorio a
+  // partir do DOU ja ingerido — atos de Agenda Regulatoria (tema) + consultas/
+  // audiencias abertas + pautas/deliberacoes — e, quando houver, os temas
+  // itemizados da agenda formal (tabela regulatory_agenda). Degrada se o tema
+  // nao foi backfillado ou a tabela ainda nao existe (supabase-js nao lanca).
+  if (type === "agenda_regulatoria") {
+    res.setHeader("Cache-Control", "s-maxage=1800, stale-while-revalidate=7200");
+    const sector = req.query.sector ? String(req.query.sector).toLowerCase() : null;
+    const agencyFilter = req.query.agency ? String(req.query.agency).toUpperCase() : null;
+    try {
+      const supabase = getSupabase();
+      const { data: allAgencies, error: agErr } = await supabase.from("agencies").select("acronym,name").eq("sector", "regulatory");
+      if (agErr) throw new Error(agErr.message); // nao ignorar: senao o filtro por setor/agencia seria silenciosamente ignorado
+      const sectorSet = sector && SECTOR_THEMES[sector] ? new Set(SECTOR_THEMES[sector]) : null;
+      const agencies = (allAgencies || []).filter((ag) =>
+        (!sectorSet || sectorSet.has(ag.acronym)) && (!agencyFilter || ag.acronym === agencyFilter));
+      const acronymSet = new Set(agencies.map((a) => a.acronym));
+      const nameByAcr = Object.fromEntries(agencies.map((a) => [a.acronym, a.name]));
+
+      const cols = "title, published_at, source_url, metadata, agency_id, agencies(acronym, name)";
+      const consultasOr = DOU_CONSULTAS.map((p) => `title.ilike.%${p}%`).join(",");
+      const pautasOr = DOU_AGENDA.map((p) => `title.ilike.%${p}%`).join(",");
+      const [agendaRes, consultasRes, pautasRes, temasRes] = await Promise.all([
+        supabase.from("documents").select(cols).eq("source_name", "DOU")
+          .contains("themes", ["Agenda Regulatória"]).order("published_at", { ascending: false }).limit(80),
+        supabase.from("documents").select(cols).eq("source_name", "DOU")
+          .or(consultasOr).order("published_at", { ascending: false }).limit(80),
+        supabase.from("documents").select(cols).eq("source_name", "DOU")
+          .or(pautasOr).order("published_at", { ascending: false }).limit(80),
+        supabase.from("regulatory_agenda")
+          .select("biennium, theme_title, status, area, source_url, agencies(acronym, name)")
+          .order("biennium", { ascending: false }).limit(500)
+      ]);
+
+      // Monta o board por agencia (so agencias com algum item).
+      const board = {};
+      const ensure = (acr) => (board[acr] = board[acr] || {
+        agency: acr, agency_name: nameByAcr[acr] || acr, temas: [], agenda: [], consultas: [], pautas: []
+      });
+      const docItem = (d) => ({
+        title: d.title, link: d.source_url, date: d.published_at,
+        summary: (d.metadata?.ai_summary || "").slice(0, 300)
+      });
+      const pushDocs = (rows, lane) => {
+        for (const d of rows || []) {
+          const acr = d.agencies?.acronym || d.metadata?.agency_acronym;
+          if (!acr || (acronymSet.size && !acronymSet.has(acr))) continue;
+          const b = ensure(acr);
+          if (b[lane].length < 8) b[lane].push(docItem(d));
+        }
+      };
+      pushDocs(agendaRes.data, "agenda");
+      pushDocs(consultasRes.data, "consultas");
+      pushDocs(pautasRes.data, "pautas");
+      for (const t of temasRes.data || []) {
+        const acr = t.agencies?.acronym;
+        if (!acr || (acronymSet.size && !acronymSet.has(acr))) continue;
+        const b = ensure(acr);
+        if (b.temas.length < 20) b.temas.push({ theme_title: t.theme_title, status: t.status, area: t.area, biennium: t.biennium, link: t.source_url });
+      }
+
+      const boardArr = Object.values(board)
+        .map((b) => ({ ...b, total: b.temas.length + b.agenda.length + b.consultas.length + b.pautas.length }))
+        .filter((b) => b.total > 0)
+        .sort((a, b) => b.total - a.total);
+
+      return res.status(200).json({
+        ok: true, type: "agenda_regulatoria", sector: sector || null, sectors: Object.keys(SECTOR_THEMES),
+        temas_ready: !temasRes.error && (temasRes.data || []).length > 0, agencies: boardArr, fetchedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      return res.status(502).json({ ok: false, error: error.message });
+    }
+  }
+
   const keywords = type === "agenda" ? AGENDA_KW : CONSULTAS_KW;
   const sector = req.query.sector ? String(req.query.sector).toLowerCase() : null;
   const agencyFilter = req.query.agency ? String(req.query.agency).toUpperCase() : null;

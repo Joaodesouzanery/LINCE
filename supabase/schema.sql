@@ -453,3 +453,25 @@ alter table assets enable row level security;
 -- nas tabelas atuais e futuras do schema public.
 revoke all on all tables in schema public from anon, authenticated;
 alter default privileges in schema public revoke all on tables from anon, authenticated;
+
+-- ============================================================================
+-- Fase M16: Agenda Regulatoria itemizada (os temas formais que cada agencia
+-- planeja regular no bienio). Populada por scripts/load-agenda.js (extrai do
+-- texto do ato de aprovacao ja em documents; qualidade com a IA). Bloco
+-- idempotente + RLS (padrao M15). Rodar no SQL Editor.
+-- ============================================================================
+create table if not exists regulatory_agenda (
+  id uuid primary key default gen_random_uuid(),
+  agency_id uuid references agencies(id),
+  biennium text,                    -- ex.: "2026-2027"
+  theme_title text not null,        -- o tema/atividade regulatoria
+  status text,                      -- ex.: "planejado", "em consulta", "concluido"
+  area text,                        -- area/superintendencia responsavel
+  source_document_id uuid references documents(id),  -- o ato de aprovacao no DOU
+  source_url text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists regulatory_agenda_agency_idx on regulatory_agenda (agency_id);
+create index if not exists regulatory_agenda_biennium_idx on regulatory_agenda (biennium);
+alter table regulatory_agenda enable row level security;
