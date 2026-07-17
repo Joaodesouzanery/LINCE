@@ -67,8 +67,7 @@ module.exports = async function handler(req, res) {
     res.setHeader("Cache-Control", "s-maxage=1800, stale-while-revalidate=7200");
     const q = req.query.q ? String(req.query.q) : "";
     if (!q && !req.query.ano) {
-      // Sem filtro -> HISTORICO persistido (M18/load:proposicoes). Degrada para
-      // 400 se a tabela nao existir (supabase-js retorna {error}, nao lanca).
+      // Sem filtro -> HISTORICO persistido (M18/load:proposicoes).
       try {
         const supabase = getSupabase();
         const { data, error } = await supabase.from("proposicoes")
@@ -77,8 +76,18 @@ module.exports = async function handler(req, res) {
         if (!error) {
           return res.status(200).json({ ok: true, type, source: "persistido", items: data || [], fetchedAt: new Date().toISOString() });
         }
-      } catch (e) { console.error("[proposicoes historico]", e.message); }
-      return res.status(400).json({ ok: false, error: "Informe ?q=<tema> (ou ?ano=)." });
+        // supabase-js retorna {error} (nao lanca). NAO mascarar um erro real de
+        // banco como "faltou ?q=" — logar sempre e distinguir tabela-ausente
+        // (M18 nao aplicada -> 400 com dica) de falha real (-> 500).
+        console.error("[proposicoes historico]", error.code || "", error.message);
+        if (error.code === "42P01") {
+          return res.status(400).json({ ok: false, error: "Historico indisponivel (tabela 'proposicoes' ausente — aplique a M18). Informe ?q=<tema> ou ?ano=." });
+        }
+        return res.status(500).json({ ok: false, error: "Falha ao ler historico de proposicoes." });
+      } catch (e) {
+        console.error("[proposicoes historico]", e.message);
+        return res.status(500).json({ ok: false, error: "Falha ao ler historico de proposicoes." });
+      }
     }
     const result = await searchProposicoes({
       q,
