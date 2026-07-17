@@ -16,6 +16,7 @@ const fs = require("fs");
 const readline = require("readline");
 const { getSupabase } = require("../lib/supabase");
 const { normalizeNameKey, parseCsvLine } = require("../lib/text");
+const { fetchAllPeople, buildPeopleNameIndex } = require("../lib/tse-match");
 
 function parseDate(s) {
   if (!s) return null;
@@ -25,20 +26,6 @@ function parseDate(s) {
   const m2 = s.match(/(\d{4})-(\d{2})-(\d{2})/);
   if (m2) return s.slice(0, 10);
   return null;
-}
-
-// Le TODAS as pessoas paginando (o PostgREST limita cada resposta a 1000 linhas).
-async function fetchAllPeople(supabase) {
-  const all = [];
-  const PAGE = 1000;
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase.from("people").select("id, full_name")
-      .order("created_at", { ascending: true }).range(from, from + PAGE - 1);
-    if (error) { console.error(`Erro lendo people: ${error.message}`); process.exit(1); }
-    all.push(...(data || []));
-    if (!data || data.length < PAGE) break;
-  }
-  return all;
 }
 
 async function main() {
@@ -57,18 +44,10 @@ async function main() {
 
   // Carrega diretores do banco (people so tem id/full_name; sem normalized_*).
   // Checar `error`: coluna inexistente nao deve virar "0 diretores".
-  const people = await fetchAllPeople(supabase); // pagina (PostgREST corta em 1000)
-  // Chave de nome -> person_id, DESCARTANDO chaves ambiguas (homonimos): sem CPF
-  // nao da p/ desambiguar, e atribuir filiacao a pessoa errada e pior que perder.
-  const nameIndex = new Map();
-  const ambiguous = new Set();
-  for (const p of people || []) {
-    const key = normalizeNameKey(p.full_name);
-    if (!key || ambiguous.has(key)) continue;
-    const prev = nameIndex.get(key);
-    if (prev && prev !== p.id) { nameIndex.delete(key); ambiguous.add(key); }
-    else nameIndex.set(key, p.id);
-  }
+  // people so tem id/full_name (sem CPF, LGPD); match por nome com homonimos
+  // ambiguos descartados. Ver lib/tse-match.js.
+  const people = await fetchAllPeople(supabase);
+  const { byNameKey: nameIndex, ambiguous } = buildPeopleNameIndex(people);
   console.log(`Diretores no banco: ${nameIndex.size} (chaves ambiguas descartadas: ${ambiguous.size})`);
 
   const rl = readline.createInterface({ input: fs.createReadStream(csvPath, "latin1"), crlfDelay: Infinity });

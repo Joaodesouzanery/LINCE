@@ -21,6 +21,7 @@ const fs = require("fs");
 const readline = require("readline");
 const { getSupabase } = require("../lib/supabase");
 const { normalizeNameKey, parseCsvLine } = require("../lib/text");
+const { fetchAllPeople, buildPeopleNameIndex } = require("../lib/tse-match");
 
 const BATCH_SIZE = 500;
 
@@ -34,20 +35,6 @@ function parseMoney(s) {
   const clean = String(s || "").replace(/\./g, "").replace(",", ".").trim();
   const n = Number(clean);
   return Number.isFinite(n) ? n : null;
-}
-
-// Le TODAS as pessoas paginando de 1000 em 1000 (o PostgREST limita cada resposta).
-async function fetchAllPeople(supabase) {
-  const all = [];
-  const PAGE = 1000;
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase.from("people").select("id, full_name")
-      .order("created_at", { ascending: true }).range(from, from + PAGE - 1);
-    if (error) { console.error(`Erro lendo people: ${error.message}`); process.exit(1); }
-    all.push(...(data || []));
-    if (!data || data.length < PAGE) break;
-  }
-  return all;
 }
 
 // Detecta indices de colunas pelo cabecalho (nomes variam pouco entre anos).
@@ -76,28 +63,11 @@ async function main() {
 
   const supabase = getSupabase();
 
-  // Pass 0: indice da base local por chave de nome. A tabela `people` NAO tem
-  // CPF (LGPD: nao persistimos CPF) nem colunas normalized_*, entao o unico
-  // sinal disponivel e o nome -> match_method='name' (fraco, homonimo sinalizado
-  // na UI). Checar `error`: se o select falhar (coluna inexistente), nao tratar
-  // como "0 pessoas".
-  // Paginar: o PostgREST corta cada resposta em 1000 linhas. Sem isso, so as
-  // 1000 primeiras pessoas entrariam no indice (a base tem milhares).
+  // Pass 0: indice da base local por chave de nome (people nao tem CPF — LGPD;
+  // match so por nome, homonimos ambiguos descartados). Ver lib/tse-match.js.
   const people = await fetchAllPeople(supabase);
-  // Chave de nome -> person_id. Se duas pessoas distintas colapsam na mesma chave
-  // (homonimo), a chave e AMBIGUA: removemos do indice para nao atribuir bem a
-  // qualquer uma delas (nao ha como desambiguar so pelo nome).
-  const byNameKey = new Map();
-  const ambiguousLocal = new Set();
-  for (const p of people || []) {
-    const key = normalizeNameKey(p.full_name);
-    if (!key) continue;
-    if (ambiguousLocal.has(key)) continue;
-    const prev = byNameKey.get(key);
-    if (prev && prev !== p.id) { byNameKey.delete(key); ambiguousLocal.add(key); }
-    else byNameKey.set(key, p.id);
-  }
-  console.log(`Pessoas na base local: ${(people || []).length} | chaves unicas: ${byNameKey.size} | descartadas por homonimia: ${ambiguousLocal.size}`);
+  const { byNameKey, ambiguous: ambiguousLocal } = buildPeopleNameIndex(people);
+  console.log(`Pessoas na base local: ${people.length} | chaves unicas: ${byNameKey.size} | descartadas por homonimia: ${ambiguousLocal.size}`);
 
   // Pass 1: consulta_cand -> so candidatos que casam com people entram no indice.
   // Se DOIS candidatos distintos (SQ diferentes) tem o mesmo nome, a chave e
