@@ -2363,7 +2363,8 @@ const natGraph = {
   selectedId: null,
   drag: null,
   pan: null,
-  panoramic: false
+  panoramic: false,
+  aggregate: false
 };
 
 const NAT_EXPAND_LIMIT = 80; // teto de vizinhos por expansao (legibilidade do grafo).
@@ -2455,7 +2456,13 @@ async function populateGraphAgencies() {
 async function loadNationalGraph() {
   await populateGraphAgencies();
   const agency = $("#graph-agency")?.value?.trim();
-  const url = `/api/graph${agency ? `?agency=${encodeURIComponent(agency)}&limit=800` : "?limit=800"}`;
+  // Panorama agregado (super-nos por agencia) so sem filtro de agencia.
+  const aggregate = natGraph.aggregate && !agency;
+  // limit=1000 (teto do PostgREST) p/ maior amostra; alem disso, o duplo-clique
+  // num no busca a rede real dele no backend (sem esse teto).
+  const url = aggregate
+    ? "/api/graph?mode=aggregate"
+    : `/api/graph${agency ? `?agency=${encodeURIComponent(agency)}&limit=1000` : "?limit=1000"}`;
   try {
     const g = await requestJson(url);
     if (!g.nodes?.length) {
@@ -2482,7 +2489,9 @@ async function loadNationalGraph() {
       natGraph.expanded = new Set();
     }
     rebuildNatVisible();
-    const trunc = g.meta?.truncated ? ` · amostra de ${g.meta.limit} (refine por agência)` : "";
+    const trunc = aggregate
+      ? ` · panorama agregado (${g.meta?.cross_agency_suppliers ?? 0} fornecedores transversais)`
+      : (g.meta?.truncated ? ` · amostra de ${g.meta.limit} (refine por agência ou dê 2 cliques num nó)` : "");
     $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos${trunc}`;
     natGraph.graphView?.fit();
   } catch (error) {
@@ -2491,13 +2500,47 @@ async function loadNationalGraph() {
   }
 }
 
-// Expande um no: revela seus vizinhos diretos a partir do dataset ja carregado.
-function expandNatNode(nodeId) {
-  // Na visao panoramica a rede inteira ja esta visivel: expandir e no-op
-  // (evita botao "Colapsar" enganoso sem revelar nada).
-  if (!nodeId || natGraph.panoramic) return;
-  natGraph.expanded.add(nodeId);
+// Mescla a rede (nodes/edges) de uma expansao no dataset acumulado. ATUALIZA nos
+// ja existentes com a versao nova (ex.: um super-no agregado "N contratos" vira a
+// sigla real ao dar drill-in) — manter o primeiro deixaria o rotulo stale.
+function mergeNatNetwork(g) {
+  if (!g || !Array.isArray(g.nodes)) return;
+  const idx = new Map(natGraph.allNodes.map((n, i) => [n.id, i]));
+  for (const n of g.nodes) {
+    if (!n) continue;
+    if (idx.has(n.id)) natGraph.allNodes[idx.get(n.id)] = n;
+    else { idx.set(n.id, natGraph.allNodes.length); natGraph.allNodes.push(n); }
+  }
+  const ek = (e) => `${e.from}->${e.to}:${e.relationship}`;
+  const haveE = new Set(natGraph.allEdges.map(ek));
+  for (const e of g.edges || []) if (e && !haveE.has(ek(e))) { natGraph.allEdges.push(e); haveE.add(ek(e)); }
+}
+
+// Expande um no: busca a rede REAL desse no no backend (nao limitada pela amostra
+// panoramica de 800) e mescla — assim da p/ navegar por entidade ate a rede
+// inteira: decisor -> agencia -> fornecedor -> socios -> socios-dos-socios.
+async function expandNatNode(nodeId) {
+  if (!nodeId) return;
+  let g;
+  try {
+    // ?node=<kind:id> devolve os vinculos diretos do no (relationships + derivados).
+    g = await requestJson(`/api/graph?node=${encodeURIComponent(nodeId)}&limit=400`);
+  } catch (e) {
+    // NAO drillar num grafo vazio em silencio: avisa e mantem o estado atual.
+    $("#nat-graph-title").textContent = `Falha ao expandir o nó: ${e.message}`;
+    return;
+  }
+  mergeNatNetwork(g);
+  if (natGraph.panoramic) {
+    // Primeiro duplo-clique a partir do panorama: entra no modo focado nesse no.
+    natGraph.panoramic = false;
+    natGraph.centerId = nodeId;
+    natGraph.expanded = new Set([nodeId]);
+  } else {
+    natGraph.expanded.add(nodeId);
+  }
   rebuildNatVisible();
+  natGraph.graphView?.fit();
   $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos`;
 }
 
@@ -2523,7 +2566,18 @@ function wireNatGraph() {
     natGraph.graphView?.fit();
     $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos`;
   });
-  $("#graph-agency")?.addEventListener("change", () => loadNationalGraph());
+  $("#graph-agency")?.addEventListener("change", () => {
+    // Escolher uma agencia sai do modo agregado (panorama e so a visao geral).
+    if ($("#graph-agency").value) natGraph.aggregate = false;
+    $("#nat-aggregate")?.classList.toggle("active", natGraph.aggregate);
+    loadNationalGraph();
+  });
+  $("#nat-aggregate")?.addEventListener("click", () => {
+    natGraph.aggregate = !natGraph.aggregate;
+    $("#nat-aggregate")?.classList.toggle("active", natGraph.aggregate);
+    if (natGraph.aggregate && $("#graph-agency")) $("#graph-agency").value = "";
+    loadNationalGraph();
+  });
   const search = $("#graph-search");
   if (search) {
     const run = () => natGraph.graphView?.search(search.value);

@@ -82,6 +82,73 @@ async function expandSocio(supabase, startKind, startId, depth, limit) {
   };
 }
 
+// Panorama NACIONAL agregado: 1 super-no por agencia (com contagens) + as
+// empresas que contratam com >=2 agencias (fornecedores transversais — sinal de
+// concentracao). Cabe na tela sem virar "teia" de milhares de nos; clicar num
+// no leva a navegacao por entidade (expand). Nao sofre o teto de 800 do
+// panoramico bruto (agrega tudo server-side).
+async function aggregateGraph(supabase) {
+  const agencies = await safeRun(supabase.from("agencies").select("id, acronym, name").eq("sector", "regulatory"));
+  const validAg = new Set(agencies.map((a) => a.id)); // so agencias reguladoras viram no
+
+  // Contratos (paginado). NAO engolir erro: se uma pagina falha, sinalizar
+  // `partial` (senao um agregado vazio por erro de rede vira "concentracao zero").
+  const contracts = [];
+  let partial = false;
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase.from("contracts")
+      .select("agency_id, supplier_company_id, supplier_name").order("id", { ascending: true }).range(from, from + PAGE - 1);
+    if (error) { console.error(`[graph:aggregate] contracts: ${error.message}`); partial = true; break; }
+    const rows = data || [];
+    contracts.push(...rows);
+    if (rows.length < PAGE) break;
+  }
+  const contractCount = {};
+  const compAgencies = new Map(); // company_id -> Set(agency_id) — SO reguladoras
+  const compName = new Map();
+  for (const c of contracts) {
+    if (!c.agency_id || !validAg.has(c.agency_id)) continue; // ignora agencia nao-reguladora
+    contractCount[c.agency_id] = (contractCount[c.agency_id] || 0) + 1;
+    if (c.supplier_company_id) {
+      if (!compAgencies.has(c.supplier_company_id)) compAgencies.set(c.supplier_company_id, new Set());
+      compAgencies.get(c.supplier_company_id).add(c.agency_id);
+      if (c.supplier_name) compName.set(c.supplier_company_id, c.supplier_name);
+    }
+  }
+
+  // Dirigentes por agencia (head-count, barato).
+  const mandCount = {};
+  await Promise.all(agencies.map(async (a) => {
+    try {
+      const { count } = await supabase.from("mandates").select("id", { count: "exact", head: true }).eq("agency_id", a.id);
+      mandCount[a.id] = count || 0;
+    } catch { mandCount[a.id] = 0; }
+  }));
+
+  const nodes = agencies.map((a) => ({
+    id: k("agency", a.id), type: "agency", title: a.acronym || a.name,
+    subtitle: `${contractCount[a.id] || 0} contratos · ${mandCount[a.id] || 0} dirigentes`,
+    weight: contractCount[a.id] || 0
+  }));
+
+  const edges = [];
+  const usedComp = [];
+  for (const [compId, agSet] of compAgencies) {
+    if (agSet.size < 2) continue; // so fornecedores transversais
+    const cid = k("company", compId);
+    usedComp.push({ id: cid, type: "company", title: compName.get(compId) || "Empresa", subtitle: `${agSet.size} agências`, weight: agSet.size });
+    for (const agId of agSet) edges.push({ from: cid, to: k("agency", agId), relationship: "reported", weight: 1, meta: {} });
+  }
+
+  return {
+    ok: true, nodes: [...nodes, ...usedComp], edges,
+    meta: { mode: "aggregate", agencies: agencies.length, cross_agency_suppliers: usedComp.length,
+      partial, relationship_types: usedComp.length ? ["reported"] : [] },
+    fetchedAt: new Date().toISOString()
+  };
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=600");
   try {
@@ -95,6 +162,11 @@ module.exports = async function handler(req, res) {
     if ((req.query.expand === "socio") && nKind && nId) {
       const depth = Math.min(Math.max(Number(req.query.depth) || 2, 1), 5);
       return res.status(200).json(await expandSocio(supabase, nKind, nId, depth, limit));
+    }
+
+    // Modo panorama NACIONAL agregado (super-nos por agencia).
+    if (req.query.mode === "aggregate") {
+      return res.status(200).json(await aggregateGraph(supabase));
     }
 
     // Acumuladores comuns: arestas + ids necessarios por tipo + nos sinteticos (party).
@@ -199,12 +271,21 @@ module.exports = async function handler(req, res) {
       const acronym = String(req.query.agency).toUpperCase();
       agencyKey = Object.values(labels).find((n) => n.type === "agency" && (n.subtitle || "").toUpperCase() === acronym)?.id || null;
     }
+    // BFS por N hops a partir da agencia (antes so 1 hop -> nao alcancava os
+    // socios do fornecedor). ?hops=2 (default) abre agencia->fornecedor->socios;
+    // teto 4. Cada hop expande SO a fronteira anterior (nao inunda num passo).
     let allowed = null;
     if (agencyKey) {
+      const hops = Math.min(Math.max(Number(req.query.hops) || 2, 1), 4);
       allowed = new Set([agencyKey]);
-      for (const e of edges) {
-        if (e.from === agencyKey) allowed.add(e.to);
-        if (e.to === agencyKey) allowed.add(e.from);
+      let frontier = new Set([agencyKey]);
+      for (let h = 0; h < hops && frontier.size; h++) {
+        const nextF = new Set();
+        for (const e of edges) {
+          if (frontier.has(e.from) && !allowed.has(e.to)) { allowed.add(e.to); nextF.add(e.to); }
+          if (frontier.has(e.to) && !allowed.has(e.from)) { allowed.add(e.from); nextF.add(e.from); }
+        }
+        frontier = nextF;
       }
     }
 
