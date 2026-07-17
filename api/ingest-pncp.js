@@ -2,7 +2,7 @@
 // O CNPJ de cada agencia deve estar em agencies.collection_rules.cnpj.
 // GET /api/ingest-pncp?acronym=ANEEL&dataInicial=20260101&dataFinal=20260612
 const { getSupabase } = require("../lib/supabase");
-const { fetchContractsByOrgao } = require("../lib/pncp");
+const { fetchAllContractsByOrgao } = require("../lib/pncp");
 const { timingSafeEqualStr } = require("../lib/timing");
 const { isValidCnpj } = require("../lib/text");
 
@@ -43,7 +43,7 @@ module.exports = async function handler(req, res) {
       // em agencies_without_cnpj) em vez de consultar CNPJ errado e voltar vazio.
       if (!cnpj || !isValidCnpj(cnpj)) { noCnpj.push(agency.acronym); continue; }
 
-      const result = await fetchContractsByOrgao(cnpj, dataInicial, dataFinal);
+      const result = await fetchAllContractsByOrgao(cnpj, dataInicial, dataFinal);
       if (!result.ok) continue;
 
       for (const c of result.items) {

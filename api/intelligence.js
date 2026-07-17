@@ -250,6 +250,49 @@ module.exports = async function handler(req, res) {
   try {
     const supabase = getSupabase();
 
+    // Saude dos dados (M-ops): contagens por tabela/fonte + ultima ingestao +
+    // lacunas acionaveis + flags de env. Degrada (null) para tabela ausente.
+    if (type === "data_health") {
+      res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=900");
+      const count = async (t, f) => {
+        let q = supabase.from(t).select("id", { count: "exact", head: true });
+        if (f) q = f(q);
+        const { count: c, error } = await q;
+        return error ? null : c;
+      };
+      const [documents, raw, people, companies, contracts, mandates, relationships, party_links, assets, monitors, open_alerts, proposicoes, deliberations, regulatory_agenda] = await Promise.all([
+        count("documents"), count("documents", (q) => q.eq("extraction_status", "raw")),
+        count("people"), count("companies"), count("contracts"), count("mandates"), count("relationships"),
+        count("party_links"), count("assets"), count("monitors"),
+        count("alerts", (q) => q.is("acknowledged_at", null)),
+        count("proposicoes"), count("deliberations"), count("regulatory_agenda")
+      ]);
+      const { data: last } = await supabase.from("documents").select("published_at")
+        .eq("source_name", "DOU").order("published_at", { ascending: false }).limit(1);
+      const lastIngest = last?.[0]?.published_at || null;
+      const daysStale = lastIngest ? Math.floor((Date.now() - new Date(lastIngest + "T12:00:00Z")) / 86400000) : null;
+
+      const gaps = [];
+      if (!process.env.ANTHROPIC_API_KEY) gaps.push(`IA desligada: ${raw ?? "?"} atos sem resumo (adicione ANTHROPIC_API_KEY).`);
+      if (party_links === 0) gaps.push("0 vinculos partidarios — rode load:tse-filiacao.");
+      if (assets === 0) gaps.push("0 patrimonio (TSE) — rode load:tse-bens.");
+      if (contracts !== null && contracts < 300) gaps.push("Poucos contratos PNCP — rode ingest:pncp.");
+      if (proposicoes === null) gaps.push("Proposicoes nao persistidas — aplique a migracao M18 + load:proposicoes.");
+      if (daysStale !== null && daysStale > 3) gaps.push(`Ultima ingestao ha ${daysStale} dias — verifique o cron do DOU.`);
+
+      return res.status(200).json({
+        ok: true, type: "data_health",
+        counts: { documents, raw, people, companies, contracts, mandates, relationships, party_links, assets, monitors, open_alerts, proposicoes, deliberations, regulatory_agenda },
+        last_ingest: lastIngest, days_stale: daysStale,
+        env: {
+          anthropic: !!process.env.ANTHROPIC_API_KEY, inlabs: !!process.env.INLABS_EMAIL,
+          portal_transparencia: !!process.env.PORTAL_TRANSPARENCIA_API_KEY, cron_secret: !!process.env.CRON_SECRET,
+          allowed_emails: !!process.env.ALLOWED_EMAILS, supabase_anon: !!process.env.SUPABASE_ANON_KEY
+        },
+        gaps, fetchedAt: new Date().toISOString()
+      });
+    }
+
     if (type === "trend") {
       // Serie temporal de atos para o grafico de tendencia (ultimos N dias).
       const days = Math.min(Number(req.query.days) || 30, 90);
@@ -1159,25 +1202,39 @@ module.exports = async function handler(req, res) {
       if (!q) return res.status(400).json({ ok: false, error: "Informe ?q=termo" });
       const agency = req.query.agency ? String(req.query.agency).toUpperCase() : null;
       const limit = Math.min(Number(req.query.limit) || 30, 100);
-      const term = `%${q.replace(/\s+/g, "%")}%`;
-      let query = supabase
-        .from("documents")
-        .select("id, title, document_type, published_at, source_url, metadata, agencies(acronym)")
-        .ilike("extracted_text", term)
-        .eq("source_name", "DOU")
-        .order("published_at", { ascending: false })
-        .limit(limit);
-      const { data: docs } = await query;
-      let items = (docs || []).map((d) => ({
-        id: d.id,
-        title: d.title,
-        type: d.document_type,
-        date: d.published_at,
-        agency: d.agencies?.acronym || d.metadata?.agency_acronym || "?",
-        link: d.source_url
+      const sel = "id, title, document_type, published_at, source_url, metadata, agencies(acronym)";
+
+      // Filtro por agencia DENTRO da query (antes do limit) — resolve sigla->id.
+      // Senao o ?agency= filtraria so o top-N global e poderia dar 0 indevidamente.
+      let agencyId = null;
+      if (agency) {
+        const { data: ag } = await supabase.from("agencies").select("id").eq("acronym", agency).maybeSingle();
+        if (!ag) return res.status(200).json({ ok: true, type: "search", q, engine: "none", total: 0, items: [] });
+        agencyId = ag.id;
+      }
+      const base = () => {
+        let query = supabase.from("documents").select(sel).eq("source_name", "DOU");
+        if (agencyId) query = query.eq("agency_id", agencyId);
+        return query;
+      };
+
+      // Busca full-text nativa (M17): tokeniza, stemming pt, operadores websearch
+      // ("frase exata", -exclui, OR). Ordenado por recencia. Fallback ILIKE se a
+      // coluna search_tsv ainda nao existir (migracao M17 nao aplicada -> {error}).
+      let engine = "fts";
+      let result = await base().textSearch("search_tsv", q, { type: "websearch", config: "portuguese" })
+        .order("published_at", { ascending: false }).limit(limit);
+      if (result.error) {
+        engine = "ilike";
+        const term = `%${q.replace(/\s+/g, "%")}%`;
+        result = await base().ilike("extracted_text", term)
+          .order("published_at", { ascending: false }).limit(limit);
+      }
+      const items = (result.data || []).map((d) => ({
+        id: d.id, title: d.title, type: d.document_type, date: d.published_at,
+        agency: d.agencies?.acronym || d.metadata?.agency_acronym || "?", link: d.source_url
       }));
-      if (agency) items = items.filter((i) => i.agency === agency);
-      return res.status(200).json({ ok: true, type: "search", q, total: items.length, items });
+      return res.status(200).json({ ok: true, type: "search", q, engine, total: items.length, items });
     }
 
     if (type === "alerts") {
@@ -1191,7 +1248,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "alerts", items: alerts || [] });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, radar_intel, correlations, trends_anomalies, landscape, deal_dossier, deal_narrative, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary, auth_config, refresh" });
+    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, radar_intel, correlations, trends_anomalies, landscape, deal_dossier, deal_narrative, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary, auth_config, refresh, data_health" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }

@@ -475,3 +475,34 @@ create table if not exists regulatory_agenda (
 create index if not exists regulatory_agenda_agency_idx on regulatory_agenda (agency_id);
 create index if not exists regulatory_agenda_biennium_idx on regulatory_agenda (biennium);
 alter table regulatory_agenda enable row level security;
+
+-- ============================================================================
+-- Fase M17: Busca full-text (FTS) nativa do Postgres — alternativa SEM IA ao
+-- embedding. Coluna gerada tsvector (portugues) sobre titulo+texto + indice GIN.
+-- api/intelligence.js (type=search) usa websearch_to_tsquery; se a coluna nao
+-- existir, degrada para ILIKE. Bloco idempotente. O `left(...,900000)` mantem a
+-- entrada sob o limite de 1 MB do tsvector (senao um edital/anexo gigante
+-- quebraria a ingestao do ato). ATENCAO OPERACIONAL: por ser coluna STORED
+-- gerada, o ADD COLUMN reescreve a tabela documents inteira sob lock (ACCESS
+-- EXCLUSIVE) uma vez — rode em janela de baixo trafego (leva alguns segundos).
+-- ============================================================================
+alter table documents add column if not exists search_tsv tsvector
+  generated always as (to_tsvector('portuguese', left(coalesce(title, '') || ' ' || coalesce(extracted_text, ''), 900000))) stored;
+create index if not exists documents_search_gin on documents using gin (search_tsv);
+
+-- ============================================================================
+-- Fase M18: Proposicoes legislativas PERSISTIDAS (Camara/Senado) — hoje o radar
+-- legislativo e so ao vivo (sem historico). scripts/load-proposicoes.js grava
+-- por tema (upsert por id estavel "camara:"/"senado:"), preservando first_seen.
+-- Bloco idempotente + RLS (padrao M15).
+-- ============================================================================
+create table if not exists proposicoes (
+  id text primary key,              -- "camara:<id>" / "senado:<cod>"
+  casa text, tipo text, numero text, ano int,
+  ementa text, titulo text, autor text, url text,
+  first_seen timestamptz not null default now(),
+  last_seen timestamptz not null default now(),
+  metadata jsonb not null default '{}'::jsonb
+);
+create index if not exists proposicoes_ano_idx on proposicoes (ano desc);
+alter table proposicoes enable row level security;

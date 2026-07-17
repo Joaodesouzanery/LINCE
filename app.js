@@ -778,7 +778,7 @@ async function runKeywordSearch(query) {
             </div>
             <span class="card-prio">${escapeHtml(d.agency || "DOU")}</span>
           </div>
-          ${d.link ? `<div class="entity-row"><a class="entity-pill" href="${escapeHtml(d.link)}" target="_blank" rel="noopener">Abrir no DOU</a></div>` : ""}
+          ${safeUrl(d.link) ? `<div class="entity-row"><a class="entity-pill" href="${escapeHtml(safeUrl(d.link))}" target="_blank" rel="noopener">Abrir no DOU</a></div>` : ""}
         </div>
         ${cardFoot("var(--blue)", "Busca textual", `DOU//${d.agency || "BR"}`)}
       </article>`).join("");
@@ -3179,9 +3179,39 @@ async function loadTrend(days = 30) {
   if (docEl && trend) docEl.textContent = trend.total;
 }
 
+// Painel "Saúde dos dados" (cobertura + lacunas acionáveis). Reusa type=data_health.
+async function loadDataHealth() {
+  const countsEl = $("#dh-counts"), gapsEl = $("#dh-gaps"), fresh = $("#dh-fresh");
+  if (!countsEl) return;
+  try {
+    const d = await requestJson("/api/intelligence?type=data_health");
+    const c = d.counts || {};
+    const cell = (label, val) => `<div class="dh-cell"><strong>${val == null ? "—" : val}</strong><span>${escapeHtml(label)}</span></div>`;
+    countsEl.innerHTML = [
+      cell("Atos DOU", c.documents), cell("Sem resumo IA", c.raw), cell("Diretores", c.people),
+      cell("Empresas", c.companies), cell("Contratos", c.contracts), cell("Vínculos", c.relationships),
+      cell("Vínc. partidário", c.party_links), cell("Patrimônio TSE", c.assets),
+      cell("Proposições", c.proposicoes), cell("Deliberações", c.deliberations),
+      cell("Agenda (temas)", c.regulatory_agenda), cell("Monitores", c.monitors)
+    ].join("");
+    if (fresh) {
+      const stale = d.days_stale;
+      fresh.hidden = false;
+      fresh.textContent = d.last_ingest ? `DOU ${d.last_ingest}${stale != null ? ` · ${stale}d` : ""}` : "sem ingestão";
+      fresh.className = "status-pill " + (stale != null && stale > 3 ? "status-key" : "status-ok");
+    }
+    gapsEl.innerHTML = (d.gaps || []).length
+      ? `<ul class="dh-gap-list">${d.gaps.map((g) => `<li>⚠ ${escapeHtml(g)}</li>`).join("")}</ul>`
+      : `<p class="dh-ok">✓ Sem lacunas críticas.</p>`;
+  } catch (e) {
+    if (gapsEl) gapsEl.innerHTML = emptyCard("Saúde dos dados", `Falha: ${e.message}`);
+  }
+}
+
 async function loadOverviewMetrics() {
   try {
     loadTrend(30);
+    loadDataHealth();
     requestJson("/api/intelligence?type=recent&limit=20").then((r) => {
       renderRecentActs(r?.items);
       const ds = $("#ds-text");

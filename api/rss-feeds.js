@@ -67,6 +67,17 @@ module.exports = async function handler(req, res) {
     res.setHeader("Cache-Control", "s-maxage=1800, stale-while-revalidate=7200");
     const q = req.query.q ? String(req.query.q) : "";
     if (!q && !req.query.ano) {
+      // Sem filtro -> HISTORICO persistido (M18/load:proposicoes). Degrada para
+      // 400 se a tabela nao existir (supabase-js retorna {error}, nao lanca).
+      try {
+        const supabase = getSupabase();
+        const { data, error } = await supabase.from("proposicoes")
+          .select("id, casa, tipo, numero, ano, ementa, titulo, autor, url, last_seen")
+          .order("last_seen", { ascending: false }).limit(50);
+        if (!error) {
+          return res.status(200).json({ ok: true, type, source: "persistido", items: data || [], fetchedAt: new Date().toISOString() });
+        }
+      } catch (e) { console.error("[proposicoes historico]", e.message); }
       return res.status(400).json({ ok: false, error: "Informe ?q=<tema> (ou ?ano=)." });
     }
     const result = await searchProposicoes({

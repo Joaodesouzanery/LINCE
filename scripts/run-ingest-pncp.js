@@ -3,7 +3,7 @@
 // Uso: node scripts/run-ingest-pncp.js [AAAAMMDD inicial] [AAAAMMDD final]
 require("dotenv").config();
 const { getSupabase } = require("../lib/supabase");
-const { fetchContractsByOrgao } = require("../lib/pncp");
+const { fetchAllContractsByOrgao } = require("../lib/pncp");
 
 async function main() {
   const supabase = getSupabase();
@@ -20,7 +20,7 @@ async function main() {
   for (const ag of agencies || []) {
     const cnpj = ag.collection_rules?.cnpj;
     if (!cnpj) { noCnpj.push(ag.acronym); continue; }
-    const result = await fetchContractsByOrgao(cnpj, dataInicial, dataFinal);
+    const result = await fetchAllContractsByOrgao(cnpj, dataInicial, dataFinal);
     if (!result.ok) { console.log(`  ${ag.acronym}: ${result.error}`); continue; }
     console.log(`${ag.acronym}: ${result.items.length} contratos retornados`);
 

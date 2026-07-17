@@ -2202,3 +2202,13 @@ button.entity-pill:hover {
 .agreg-lane .ger-recent li { font-size: 12px; line-height: 1.4; }
 .agreg-news { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
 .agreg-news-list { display: grid; gap: 8px; }
+
+/* Painel Saúde dos dados */
+.dh-counts { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 12px; }
+@media (max-width: 760px) { .dh-counts { grid-template-columns: repeat(3, 1fr); } }
+.dh-cell { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 8px 6px; text-align: center; }
+.dh-cell strong { display: block; font-size: 18px; color: var(--text); font-variant-numeric: tabular-nums; }
+.dh-cell span { font-size: 10px; color: var(--muted); font-family: var(--font-mono); }
+.dh-gap-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+.dh-gap-list li { font-size: 12.5px; color: var(--yellow); }
+.dh-ok { color: var(--green); font-size: 13px; margin: 0; }

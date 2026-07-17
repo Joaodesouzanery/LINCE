@@ -1,13 +1,13 @@
 [
-  { "name": "Agencia Nacional de Energia Eletrica", "acronym": "ANEEL", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/aneel", "collection_rules": { "cnpj": "02016243000104" } },
+  { "name": "Agencia Nacional de Energia Eletrica", "acronym": "ANEEL", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/aneel", "collection_rules": { "cnpj": "02270669000129" } },
   { "name": "Agencia Nacional de Telecomunicacoes", "acronym": "ANATEL", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anatel", "collection_rules": { "cnpj": "02030715000112" } },
-  { "name": "Agencia Nacional do Petroleo, Gas Natural e Biocombustiveis", "acronym": "ANP", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anp", "collection_rules": { "cnpj": "03523097000144" } },
+  { "name": "Agencia Nacional do Petroleo, Gas Natural e Biocombustiveis", "acronym": "ANP", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anp", "collection_rules": { "cnpj": "02313673000127" } },
   { "name": "Agencia Nacional de Vigilancia Sanitaria", "acronym": "ANVISA", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anvisa", "collection_rules": { "cnpj": "03112386000111" } },
   { "name": "Agencia Nacional de Saude Suplementar", "acronym": "ANS", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/ans", "collection_rules": { "cnpj": "03589068000146" } },
-  { "name": "Agencia Nacional de Aguas e Saneamento Basico", "acronym": "ANA", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/ana", "collection_rules": { "cnpj": "03769998000175" } },
+  { "name": "Agencia Nacional de Aguas e Saneamento Basico", "acronym": "ANA", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/ana", "collection_rules": { "cnpj": "04204444000108" } },
   { "name": "Agencia Nacional de Transportes Terrestres", "acronym": "ANTT", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/antt", "collection_rules": { "cnpj": "04898488000177" } },
-  { "name": "Agencia Nacional de Transportes Aquaviarios", "acronym": "ANTAQ", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/antaq", "collection_rules": { "cnpj": "04932580000107" } },
-  { "name": "Agencia Nacional de Aviacao Civil", "acronym": "ANAC", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anac", "collection_rules": { "cnpj": "07699109000143" } },
+  { "name": "Agencia Nacional de Transportes Aquaviarios", "acronym": "ANTAQ", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/antaq", "collection_rules": { "cnpj": "04903587000108" } },
+  { "name": "Agencia Nacional de Aviacao Civil", "acronym": "ANAC", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anac", "collection_rules": { "cnpj": "07947821000189" } },
   { "name": "Agencia Nacional do Cinema", "acronym": "ANCINE", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/ancine", "collection_rules": { "cnpj": "04884574000120" } },
-  { "name": "Agencia Nacional de Mineracao", "acronym": "ANM", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anm", "collection_rules": { "cnpj": "30373778000189" } }
+  { "name": "Agencia Nacional de Mineracao", "acronym": "ANM", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anm", "collection_rules": { "cnpj": "29406625000130" } }
 ]
