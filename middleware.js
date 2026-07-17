@@ -43,14 +43,17 @@ export default async function middleware(request) {
   // Config publica de auth (a tela de login precisa dela antes de existir sessao).
   if (pathname.startsWith("/api/intelligence") && url.searchParams.get("type") === "auth_config") return;
 
-  const isProd = process.env.VERCEL_ENV === "production";
+  // Fail-CLOSED em produção E PREVIEW: URLs de preview da Vercel sao publicas e
+  // exporiam os dados sem token. So o dev LOCAL (VERCEL_ENV 'development' ou
+  // ausente) fica aberto por conveniencia.
+  const secured = process.env.VERCEL_ENV === "production" || process.env.VERCEL_ENV === "preview";
   const supaUrl = process.env.SUPABASE_URL;
   const anon = process.env.SUPABASE_ANON_KEY;
 
-  // Sem config de auth: em PRODUCAO -> fail-CLOSED (503); em preview/dev -> libera.
+  // Sem config de auth: em prod/preview -> fail-CLOSED (503); em dev local -> libera.
   if (!supaUrl || !anon) {
-    if (isProd) return jsonResponse(503, { ok: false, error: "Login nao configurado (SUPABASE_ANON_KEY)." });
-    console.warn("[LINCE] middleware fail-open (preview/dev): SUPABASE_ANON_KEY ausente.");
+    if (secured) return jsonResponse(503, { ok: false, error: "Login nao configurado (SUPABASE_ANON_KEY)." });
+    console.warn("[LINCE] middleware fail-open (dev local): SUPABASE_ANON_KEY ausente.");
     return;
   }
 
@@ -72,7 +75,7 @@ export default async function middleware(request) {
   // (senao qualquer um que se cadastre acessaria). Em preview/dev, libera.
   const allow = allowedEmails();
   if (!allow.length) {
-    if (isProd) return jsonResponse(403, { ok: false, error: "Allowlist (ALLOWED_EMAILS) nao configurada." });
+    if (secured) return jsonResponse(403, { ok: false, error: "Allowlist (ALLOWED_EMAILS) nao configurada." });
   } else if (!allow.includes(String(user.email || "").toLowerCase())) {
     return jsonResponse(403, { ok: false, error: "Email nao autorizado a acessar o LINCE." });
   }

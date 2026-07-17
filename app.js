@@ -1200,7 +1200,7 @@ async function loadDouFeed() {
             <p>${highlightEntities(entry.summary || "Sem resumo de IA.", entry.entities)}</p>
             <div class="entity-row">
               ${(entry.entities || []).slice(0, 4).map((e) => `<span class="entity-pill">${escapeHtml(e.name || "")}</span>`).join("")}
-              ${entry.link ? `<a class="entity-pill" href="${escapeHtml(entry.link)}" target="_blank" rel="noreferrer">Abrir DOU</a>` : ""}
+              ${safeUrl(entry.link) ? `<a class="entity-pill" href="${escapeHtml(safeUrl(entry.link))}" target="_blank" rel="noreferrer">Abrir DOU</a>` : ""}
             </div>
           </div>
           ${cardFoot(queueColor(entry.type), DOU_TYPE_LABEL[entry.type] || entry.type || "Ato", `DOU//${entry.agency || "BR"}`)}
@@ -2623,7 +2623,7 @@ async function loadConsultas() {
           </div>
           <p>${escapeHtml(c.summary || "")}</p>
           <div class="entity-row">
-            ${c.link ? `<a class="entity-pill" href="${escapeHtml(c.link)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+            ${safeUrl(c.link) ? `<a class="entity-pill" href="${escapeHtml(safeUrl(c.link))}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
           </div>
         </div>
         ${cardFoot("var(--green)", "Consulta pública", `RSS//${c.agency || "AGÊNCIA"}`)}
@@ -2652,7 +2652,7 @@ async function loadAgenda() {
           </div>
           <p>${escapeHtml(c.summary || "")}</p>
           <div class="entity-row">
-            ${c.link ? `<a class="entity-pill" href="${escapeHtml(c.link)}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+            ${safeUrl(c.link) ? `<a class="entity-pill" href="${escapeHtml(safeUrl(c.link))}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
           </div>
         </div>
         ${cardFoot("var(--blue-bright)", "Pauta / reunião", `RSS//${c.agency || "AGÊNCIA"}`)}
@@ -3166,7 +3166,7 @@ function renderRecentActs(items) {
     <tr>
       <td><strong>${escapeHtml(it.agency || "?")}</strong></td>
       <td><span class="tag ${escapeHtml(it.type || "ato")}">${escapeHtml((it.type || "ato").replace("_", " "))}</span></td>
-      <td>${it.link ? `<a href="${escapeHtml(it.link)}" target="_blank" rel="noreferrer" style="color:inherit">${escapeHtml(it.title)}</a>` : escapeHtml(it.title)}</td>
+      <td>${safeUrl(it.link) ? `<a href="${escapeHtml(safeUrl(it.link))}" target="_blank" rel="noreferrer" style="color:inherit">${escapeHtml(it.title)}</a>` : escapeHtml(it.title)}</td>
       <td>${escapeHtml(it.date || "")}</td>
       <td>${conf(it.confidence)}</td>
     </tr>`).join("");
@@ -3374,7 +3374,9 @@ function wireLoginForm() {
   if (!form) return;
   const email = () => ($("#login-email").value || "").trim();
   const pass = () => $("#login-pass").value || "";
-  const setBusy = (b) => { $("#login-submit").disabled = b; $("#login-signup").disabled = b; };
+  // #login-signup foi removido do HTML (acesso restrito); optional chaining evita
+  // null-deref que travaria o login inteiro.
+  const setBusy = (b) => { $("#login-submit").disabled = b; const s = $("#login-signup"); if (s) s.disabled = b; };
   const fail = (e) => { if (msg) msg.textContent = `Falha: ${traduzAuthErro(e)}`; setBusy(false); };
 
   form.addEventListener("submit", async (e) => {
@@ -3387,7 +3389,10 @@ function wireLoginForm() {
     } catch (err) { fail(err.message); }
   });
 
-  $("#login-signup").addEventListener("click", async () => {
+  // Cadastro pela página foi removido (acesso restrito, usuário único). O handler
+  // fica guardado caso o botão seja reintroduzido, mas não quebra sem ele.
+  const signupBtn = $("#login-signup");
+  if (signupBtn) signupBtn.addEventListener("click", async () => {
     if (!email() || pass().length < 6) { if (msg) msg.textContent = "Informe e-mail e senha (mín. 6 caracteres)."; return; }
     if (msg) msg.textContent = "Criando conta…"; setBusy(true);
     try {

@@ -744,7 +744,8 @@
         <input id="login-pass" type="password" autocomplete="current-password" required minlength="6" placeholder="••••••••" />
         <div class="login-actions">
           <button type="submit" class="primary-button" id="login-submit">Entrar</button>
-          <button type="button" class="ghost-button" id="login-signup">Criar conta</button>
+          <!-- Cadastro removido: acesso restrito (usuário único). Criar conta pelo
+               painel do Supabase. Desligue "Allow new users to sign up" no Supabase. -->
         </div>
         <p class="login-msg" id="login-msg" role="status" aria-live="polite"></p>
       </form>
@@ -753,13 +754,15 @@
     <!-- Documento de impressão (Exportar PDF) — preenchido sob demanda pelo app.js. -->
     <div id="print-root" aria-hidden="true"></div>
 
-    <!-- Cytoscape.js (grafo de vínculos) — UMD via CDN, sem build. -->
-    <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
-    <!-- Supabase Auth (login) — UMD via CDN, sem build. -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <!-- Cytoscape.js (grafo de vínculos) — UMD via CDN, sem build. Versões FIXAS +
+         Subresource Integrity (SRI): se a CDN for comprometida e servir bytes
+         diferentes, o browser recusa o script (protege o JWT no localStorage). -->
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js" integrity="sha384-IWROdLKRsN1UuJywMlWl7/blXQ8GEooN2n7dzTxfEPd7ybYIKCUJ2Ol/1Gpf3YV4" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js" integrity="sha384-5E2lB9AIGE6LRCnOOSTnZRlYZFZ01iMeN2fw97Z1r4Z/kXALxKw2AC+ZzQqoeDsG" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js" integrity="sha384-RswRBkrMsPUYpJLbZ1CVA08zbNzAkykE2oGJTujBwfjWNdfxv2WVjLJNqv1LhAOp" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js" integrity="sha384-uk5Wbjq1+KqUdHO30w7N7GrEGdzBhaJeW9o/ANF6v9+yx3M/cBmoX51C000JNCUf" crossorigin="anonymous"></script>
+    <!-- Supabase Auth (login) — UMD via CDN, versão FIXA + SRI. -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.7/dist/umd/supabase.min.js" integrity="sha384-BmlQlKlDvXvKoxkn5OQuUo/aJQCTXeB+Kls6EccBmG4Kf8AXvp89RtO9MtPxP/r5" crossorigin="anonymous"></script>
     <script src="./app.js"></script>
   </body>
 </html>
