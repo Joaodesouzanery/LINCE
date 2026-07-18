@@ -22,7 +22,8 @@
     "load:tse-bens": "node scripts/load-tse-bens.js",
     "load:tse-partido": "node scripts/load-tse-partido.js",
     "clean:people": "node scripts/clean-people.js",
-    "sync:votos-iris": "node scripts/sync-votos-iris.js"
+    "sync:votos-iris": "node scripts/sync-votos-iris.js",
+    "collect:votos": "node scripts/collect-votos.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

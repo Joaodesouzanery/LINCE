@@ -1,0 +1,39 @@
+# Auto-coletor de votos do colegiado (modulo Voto dos Diretores).
+# Roda AQUI (GitHub Actions), nao no Vercel: puppeteer (navegador) + agendamento
+# ilimitado que o Vercel Hobby nao permite. Gratis (runner Ubuntu com Chrome).
+#
+# PRE-REQUISITOS (uma vez): em Settings > Secrets and variables > Actions do repo,
+# criar os secrets:
+#   SUPABASE_URL         -> a Project URL do Supabase do LINCE
+#   SUPABASE_SERVICE_KEY -> a service_role key do LINCE
+# (o coletor escreve direto no Supabase; a M19 precisa estar aplicada.)
+name: coletar-votos
+
+on:
+  schedule:
+    - cron: "17 8 * * *" # todo dia ~08:17 UTC (~05:17 BRT)
+  workflow_dispatch: {} # permite disparar manualmente na aba Actions
+
+concurrency:
+  group: coletar-votos
+  cancel-in-progress: false
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Instalar deps do projeto
+        run: npm ci --no-audit --no-fund
+      - name: Instalar puppeteer (so no Actions — nao vai no deploy do Vercel)
+        run: npm i puppeteer --no-save --no-audit --no-fund
+      - name: Rodar coletor
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          COLLECTOR_MAX_PER_SITE: "25"
+        run: node scripts/collect-votos.js
