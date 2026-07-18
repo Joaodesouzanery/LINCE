@@ -506,3 +506,41 @@ create table if not exists proposicoes (
 );
 create index if not exists proposicoes_ano_idx on proposicoes (ano desc);
 alter table proposicoes enable row level security;
+
+-- ============================================================================
+-- Fase M19: Modulo "Voto dos Diretores" (Colegiado) — voto nominal/inferido de
+-- cada diretor em cada deliberacao. Port do modulo homonimo do IRIS. SEM IA
+-- (extracao/inferencia por regex). As tabelas votes/deliberations JA existem
+-- (M3/M?) e o grafo (api/graph.js) e o dossie (api/dossier-person.js) JA as leem
+-- -> voto ingerido aparece automaticamente no grafo e no dossie.
+-- ============================================================================
+-- votes: is_nominal (extraido por nome) vs inferido por mandato; is_dissent ja
+-- cobre is_divergente; vote_direction ja cobre tipo_voto.
+alter table votes add column if not exists is_nominal boolean not null default false;
+-- Idempotencia: 1 voto por (deliberacao, diretor). votes esta vazia hoje.
+create unique index if not exists votes_delib_voter_uidx on votes (deliberation_id, voter_person_id);
+
+-- deliberations: campos extraidos do PDF/ata (espelham o IRIS). theme ja cobre
+-- microtema; result ja cobre resultado; deliberation_number ja cobre numero.
+alter table deliberations add column if not exists data_reuniao date;
+alter table deliberations add column if not exists reuniao_ordinaria text;
+alter table deliberations add column if not exists interessado text;
+alter table deliberations add column if not exists pauta_interna boolean not null default false;
+alter table deliberations add column if not exists auto_classified boolean not null default false;
+alter table deliberations add column if not exists raw_text text;
+
+-- Esteira de upload (writer unico dos votos): dedup por hash do arquivo.
+create table if not exists upload_jobs (
+  id uuid primary key default gen_random_uuid(),
+  filename text not null,
+  file_hash text unique,
+  status text not null default 'pending',
+  agency_id uuid references agencies(id) on delete set null,
+  storage_path text,
+  error_message text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists upload_jobs_status_idx on upload_jobs (status);
+alter table upload_jobs enable row level security;
