@@ -23,6 +23,7 @@
     "load:tse-partido": "node scripts/load-tse-partido.js",
     "clean:people": "node scripts/clean-people.js",
     "fix:agency": "node scripts/fix-agency-attribution.js",
+    "clean:orphan-people": "node scripts/clean-orphan-people.js",
     "sync:votos-iris": "node scripts/sync-votos-iris.js",
     "collect:votos": "node scripts/collect-votos.js"
   },
