@@ -260,6 +260,17 @@ module.exports = async function handler(req, res) {
       return res.status(out.ok ? 200 : 400).json(out);
     }
 
+    // Esteira de upload (writer de votos): recebe um PDF (base64) ou texto + a
+    // sigla da agencia -> extrai -> grava deliberacao + votos (lib/vote-pipeline).
+    if (type === "upload_deliberacao") {
+      const p = req.body && typeof req.body === "object" ? req.body : {};
+      if (!p.pdf_base64 && !p.text) return res.status(400).json({ ok: false, error: "envie pdf_base64 (ou text) e agency" });
+      const { processPdfToVotos } = require("../lib/vote-pipeline");
+      const buffer = p.pdf_base64 ? Buffer.from(p.pdf_base64, "base64") : null;
+      const out = await processPdfToVotos(supabase, { buffer, text: p.text, agencyAcronym: p.agency, filename: p.filename, source: "upload" });
+      return res.status(out.ok ? 200 : 400).json(out);
+    }
+
     // Saude dos dados (M-ops): contagens por tabela/fonte + ultima ingestao +
     // lacunas acionaveis + flags de env. Degrada (null) para tabela ausente.
     if (type === "data_health") {
