@@ -425,6 +425,7 @@ function setView(view) {
     sources: ["Conectores", "Fontes reais"],
     dou: ["Diario Oficial da Uniao", "Monitor DOU"],
     directors: ["Dossie de dirigentes", "Diretores"],
+    votacao: ["Voto do colegiado (M19)", "Votação"],
     graph: ["Rede de influencia (M7)", "Grafo Nacional"],
     intelligence: ["Inteligencia regulatoria", "Inteligencia Nacional"],
     consultas: ["Participacao social (M5)", "Consultas Publicas"],
