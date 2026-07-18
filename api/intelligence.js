@@ -474,8 +474,9 @@ module.exports = async function handler(req, res) {
     }
 
     if (type === "giratoria") {
-      // Porta giratoria: diretores (mandatos em agencias) que tambem sao socios
-      // de empresas com contratos ou relacoes com agencias reguladoras.
+      // Porta giratoria + SELF-DEALING: diretores que sao socios de empresas, e
+      // (o sinal forte) cujas empresas FORNECEM a PROPRIA agencia que dirigem.
+      // Correlacao deterministica: mandates x relationships(socio) x contracts.
       const { data: mandates } = await supabase
         .from("mandates")
         .select("person_id, agency_id, role, started_at, ended_at, people(full_name), agencies(acronym)")
@@ -484,54 +485,73 @@ module.exports = async function handler(req, res) {
       const personIds = [...new Set((mandates || []).map((m) => m.person_id))];
       if (personIds.length === 0) return res.status(200).json({ ok: true, type: "giratoria", cases: [] });
 
-      // Busca relacoes de socio dessas pessoas com empresas
-      const { data: socioRels } = await supabase
-        .from("relationships")
-        .select("from_id, to_id, metadata, companies(cnpj, legal_name)")
-        .eq("from_kind", "person")
-        .eq("to_kind", "company")
-        .eq("relationship", "socio")
-        .in("from_id", personIds);
+      const [socioRes, partyRes] = await Promise.all([
+        supabase.from("relationships").select("from_id, to_id, metadata, companies(id, cnpj, legal_name)")
+          .eq("from_kind", "person").eq("to_kind", "company").eq("relationship", "socio").in("from_id", personIds),
+        supabase.from("party_links").select("person_id, party").in("person_id", personIds)
+      ]);
+      const socioRels = socioRes.data || [];
 
-      // Busca filiacao partidaria
-      const { data: partyLinks } = await supabase
-        .from("party_links")
-        .select("person_id, party, joined_at, status")
-        .in("person_id", personIds);
+      // Contratos das empresas-socio -> quais agencias cada empresa fornece (+ datas/valores).
+      const socioCompanyIds = [...new Set(socioRels.map((r) => r.to_id).filter(Boolean))];
+      const supplierAgencies = {}; // company_id -> { agency_id -> [{signed_at, value}] }
+      for (let i = 0; i < socioCompanyIds.length; i += 200) {
+        const { data: cts } = await supabase.from("contracts")
+          .select("supplier_company_id, agency_id, signed_at, value")
+          .in("supplier_company_id", socioCompanyIds.slice(i, i + 200));
+        for (const c of cts || []) {
+          if (!c.supplier_company_id || !c.agency_id) continue;
+          const m = (supplierAgencies[c.supplier_company_id] = supplierAgencies[c.supplier_company_id] || {});
+          (m[c.agency_id] = m[c.agency_id] || []).push({ signed_at: c.signed_at, value: c.value });
+        }
+      }
 
       const partyByPerson = {};
-      for (const pl of partyLinks || []) {
-        if (!partyByPerson[pl.person_id]) partyByPerson[pl.person_id] = [];
-        partyByPerson[pl.person_id].push(pl);
-      }
-
+      for (const pl of partyRes.data || []) (partyByPerson[pl.person_id] = partyByPerson[pl.person_id] || []).push(pl.party);
       const socioByPerson = {};
-      for (const r of socioRels || []) {
-        if (!socioByPerson[r.from_id]) socioByPerson[r.from_id] = [];
-        socioByPerson[r.from_id].push({ company: r.companies?.legal_name, cnpj: r.companies?.cnpj, role: r.metadata?.role });
-      }
+      for (const r of socioRels) (socioByPerson[r.from_id] = socioByPerson[r.from_id] || [])
+        .push({ company_id: r.to_id, company: r.companies?.legal_name, cnpj: r.companies?.cnpj, role: r.metadata?.role });
 
-      // Monta casos de porta giratoria (diretor + vinculo empresarial)
       const seen = new Set();
       const cases = [];
       for (const m of mandates || []) {
-        if (!socioByPerson[m.person_id] && !partyByPerson[m.person_id]) continue;
-        const key = m.person_id;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        const socios = socioByPerson[m.person_id];
+        if (!socios || !socios.length) continue; // REQUER vinculo societario (filiacao-so NAO e porta-giratoria)
+        if (seen.has(m.person_id)) continue;
+        seen.add(m.person_id);
+
+        const selfDealing = [], publicSupplier = [];
+        let duringMandate = false;
+        for (const s of socios) {
+          const ags = supplierAgencies[s.company_id];
+          if (!ags) continue;
+          if (m.agency_id && ags[m.agency_id]) {
+            selfDealing.push(s);
+            // timing: contrato assinado DENTRO da janela do mandato?
+            for (const c of ags[m.agency_id]) {
+              if (c.signed_at && m.started_at && c.signed_at >= m.started_at && (!m.ended_at || c.signed_at <= m.ended_at)) duringMandate = true;
+            }
+          } else {
+            publicSupplier.push(s);
+          }
+        }
+        const severity = selfDealing.length ? "critical" : (publicSupplier.length ? "high" : "medium");
         cases.push({
-          person_id: m.person_id,
-          name: m.people?.full_name || "?",
-          agency: m.agencies?.acronym,
-          role: m.role,
-          mandate_from: m.started_at,
-          mandate_to: m.ended_at,
-          companies: socioByPerson[m.person_id] || [],
-          parties: (partyByPerson[m.person_id] || []).map((pl) => pl.party)
+          person_id: m.person_id, name: m.people?.full_name || "?", agency: m.agencies?.acronym, role: m.role,
+          mandate_from: m.started_at, mandate_to: m.ended_at, active: !m.ended_at,
+          companies: socios, self_dealing: selfDealing, public_supplier: publicSupplier,
+          contract_during_mandate: duringMandate,
+          parties: partyByPerson[m.person_id] || [], severity,
+          rationale: selfDealing.length
+            ? `Sócio de ${selfDealing.length} fornecedor(es) da PRÓPRIA agência (${m.agencies?.acronym})${duringMandate ? " — com contrato assinado durante o mandato" : ""}`
+            : (publicSupplier.length ? "Sócio de fornecedor público (outra agência)" : "Vínculo societário durante o mandato")
         });
       }
-      cases.sort((a, b) => b.companies.length - a.companies.length);
-      return res.status(200).json({ ok: true, type: "giratoria", total: cases.length, cases });
+      cases.sort((a, b) => (b.self_dealing.length - a.self_dealing.length) || (b.companies.length - a.companies.length));
+      return res.status(200).json({
+        ok: true, type: "giratoria", total: cases.length,
+        self_dealing_count: cases.filter((c) => c.self_dealing.length).length, cases
+      });
     }
 
     if (type === "agency_stats") {
@@ -729,12 +749,29 @@ module.exports = async function handler(req, res) {
         (r) => r.companies?.registration_status && !/ativ/i.test(r.companies.registration_status)
       ).length;
 
-      // Componentes 0-100 (transparentes: o front pode exibir o detalhamento).
+      // SELF-DEALING: alguma empresa-socio FORNECE uma agencia que a pessoa dirige?
+      // (o sinal forte, deterministico: socio x contract x mandate mesma agencia).
+      const mandateAgencies = new Set(mandates.map((m) => m.agency_id).filter(Boolean));
+      const socioCompanyIds = [...new Set(socioRels.map((r) => r.to_id).filter(Boolean))];
+      const selfDealingCompanies = [];
+      if (socioCompanyIds.length && mandateAgencies.size) {
+        const { data: cts } = await supabase.from("contracts")
+          .select("supplier_company_id, agency_id").in("supplier_company_id", socioCompanyIds);
+        const flagged = new Set();
+        for (const c of cts || []) if (c.supplier_company_id && mandateAgencies.has(c.agency_id)) flagged.add(c.supplier_company_id);
+        for (const cid of flagged) selfDealingCompanies.push(companiesById[cid]?.legal_name || cid);
+      }
+
+      // Patrimonio declarado (TSE) — sinal a monitorar (nao pontua alto sozinho).
+      const { data: assetsRows } = await supabase.from("assets").select("value").eq("person_id", id);
+      const patrimonio = (assetsRows || []).reduce((s, a) => s + (Number(a.value) || 0), 0);
+
+      // Componentes 0-100 (transparentes: o front exibe o detalhamento).
       const components = {
         partidario: Math.min(30, parties.length * 15),
-        porta_giratoria: activeMandate && socio.length ? 25 : 0,
-        rede_societaria: Math.min(25, socio.length * 5),
-        empresas_inaptas: Math.min(20, inactiveCompanies * 10)
+        self_dealing: selfDealingCompanies.length ? 35 : (activeMandate && socio.length ? 12 : 0),
+        rede_societaria: Math.min(20, socio.length * 5),
+        empresas_inaptas: Math.min(15, inactiveCompanies * 10)
       };
       const score = Math.min(100, Object.values(components).reduce((a, b) => a + b, 0));
       const band = score >= 70 ? "alto" : score >= 40 ? "medio" : "baixo";
@@ -747,6 +784,8 @@ module.exports = async function handler(req, res) {
           parties: parties.map((p) => ({ party: p.party, type: p.link_type, amount: p.amount, year: p.reference_year })),
           active_mandate: activeMandate,
           mandate_count: mandates.length,
+          self_dealing_companies: selfDealingCompanies,
+          patrimonio_declarado: patrimonio,
           companies: socio.map((r) => ({
             cnpj: r.companies?.cnpj, legal_name: r.companies?.legal_name,
             status: r.companies?.registration_status, role: r.metadata?.role

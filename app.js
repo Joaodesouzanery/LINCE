@@ -1474,6 +1474,7 @@ function renderPoliticalRisk(pr) {
   const bandLabel = { alto: "ALTO", medio: "MÉDIO", baixo: "BAIXO" }[pr.band] || String(pr.band || "").toUpperCase();
   const COMP_LABEL = {
     partidario: "Partidário/doações",
+    self_dealing: "Self-dealing",
     porta_giratoria: "Porta giratória",
     rede_societaria: "Rede societária",
     empresas_inaptas: "Empresas inaptas"
@@ -1481,6 +1482,7 @@ function renderPoliticalRisk(pr) {
   const comps = Object.entries(pr.components || {})
     .map(([k, v]) => `<span class="entity-pill ${v > 0 ? "score-mid" : "score-low"}">${escapeHtml(COMP_LABEL[k] || k)}: ${Number(v) || 0}</span>`)
     .join("");
+  const selfDealing = pr.signals?.self_dealing_companies || [];
   return `
     <article class="news-card">
       <span class="source-meta">Risco político (sinais de captura)</span>
@@ -1489,6 +1491,8 @@ function renderPoliticalRisk(pr) {
         <span style="font-size:.8rem;opacity:.6">/ 100 · risco ${escapeHtml(bandLabel)}</span>
       </div>
       <div class="score-bar-wrap"><div class="score-bar-fill" style="width:${score}%"></div></div>
+      ${selfDealing.length ? `<div class="activity-alert" style="margin-top:8px"><span class="alert-icon">⚠</span><span style="font-size:.78rem"><strong>Self-dealing:</strong> sócio de fornecedor da PRÓPRIA agência — ${selfDealing.map((n) => escapeHtml(n)).join(", ")}</span></div>` : ""}
+      ${pr.signals?.patrimonio_declarado ? `<p style="font-size:.72rem;opacity:.55;margin:6px 0 0">Patrimônio declarado (TSE): ${escapeHtml(money(pr.signals.patrimonio_declarado))}</p>` : ""}
       <div class="entity-row" style="margin-top:8px">${comps}</div>
     </article>`;
 }
