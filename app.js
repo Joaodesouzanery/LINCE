@@ -625,6 +625,9 @@ async function renderNatInspector(nodeId) {
   const nNeighbors = neighborSet.size;
   const nEdges = natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId).length;
   const expandBtn = `<button type="button" class="entity-pill" id="nat-expand" style="cursor:pointer">${isExpanded ? "Colapsar" : "Expandir conexões"}</button>`;
+  const relPills = [...new Set(
+    natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId).map((e) => e.relationship)
+  )].map((r) => `<span class="entity-pill">${escapeHtml(r)}</span>`).join(" ");
 
   if (kind === "agency") {
     const acronym = node.subtitle || node.title;
@@ -673,9 +676,6 @@ async function renderNatInspector(nodeId) {
     const intel = dossier?.intelligence || {};
     const mandates = dossier?.mandates || [];
     const agencies = [...new Set(mandates.map((m) => m.agencies?.acronym).filter(Boolean))];
-    const relPills = [...new Set(
-      natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId).map((e) => e.relationship)
-    )].map((r) => `<span class="entity-pill">${escapeHtml(r)}</span>`).join(" ");
     const score = intel.capture_score ?? 0;
     body.innerHTML = `
       <div class="object-section">
@@ -704,6 +704,29 @@ async function renderNatInspector(nodeId) {
         </div>
       </div>`;
       })() : ""}
+      ${(() => {
+        const scr = dossier?.screening?.flags;
+        const badges = [];
+        if (scr?.is_pep) badges.push('<span class="status-pill status-error">PEP</span>');
+        if (scr?.has_sanctions) badges.push('<span class="status-pill status-error">Sanção</span>');
+        if (scr?.is_servidor) badges.push('<span class="status-pill">Servidor federal</span>');
+        const note = dossier?.screening?.available === false
+          ? '<span style="font-size:.68rem;opacity:.4">screening indisponível (sem chave do Portal)</span>'
+          : (badges.length ? badges.join(" ") : '<span style="font-size:.72rem;opacity:.5">Sem PEP/sanções encontrados</span>');
+        return `<div class="object-section"><p class="object-section-title">Screening (Transparência)</p><div class="entity-row">${note}</div></div>`;
+      })()}
+      ${(dossier?.party_links || []).length ? `
+      <div class="object-section"><p class="object-section-title">Partido / doações</p>
+        ${dossier.party_links.map((p) => `<p style="font-size:.76rem;margin:2px 0"><strong>${escapeHtml(p.party || "")}</strong>${p.link_type ? ` <span style="opacity:.5">(${escapeHtml(p.link_type)}${p.reference_year ? " " + p.reference_year : ""})</span>` : ""}${p.amount ? ` · ${escapeHtml(money(p.amount))}` : ""}</p>`).join("")}
+      </div>` : ""}
+      ${(intel.votes_total || intel.deliberations_relatadas) ? `
+      <div class="object-section"><p class="object-section-title">Colegiado</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+          <div class="detail-stat"><span>${intel.votes_total || 0}</span><small>votos</small></div>
+          <div class="detail-stat"><span>${intel.dissent_votes || 0}</span><small>divergentes</small></div>
+          <div class="detail-stat"><span>${intel.deliberations_relatadas || 0}</span><small>relatadas</small></div>
+        </div>
+      </div>` : ""}
       ${relPills ? `<div class="object-section"><p class="object-section-title">Relações</p><div class="entity-row">${relPills}</div></div>` : ""}
       <div class="object-section">
         <div class="entity-row">
@@ -715,28 +738,61 @@ async function renderNatInspector(nodeId) {
       document.querySelector("[data-view='directors']")?.click();
       openDirectorDossier(id);
     });
-  } else {
-    const cnpj = node.subtitle || "";
-    const relPills = [...new Set(
-      natGraph.allEdges.filter((e) => e.from === nodeId || e.to === nodeId).map((e) => e.relationship)
-    )].map((r) => `<span class="entity-pill">${escapeHtml(r)}</span>`).join(" ");
+  } else if (kind === "company") {
+    // Dossiê da empresa: contratos ingeridos + QSA + deliberações que a afetam + sanções.
+    const dossier = await requestJson(`/api/dossier-person?company=${encodeURIComponent(id)}`).catch(() => null);
+    const c = dossier?.company || {};
+    const cs = dossier?.contracts_summary || {};
+    const scr = dossier?.screening?.flags;
+    const badges = [];
+    if (scr?.has_sanctions) badges.push('<span class="status-pill status-error">Sanção</span>');
+    if (dossier?.intelligence?.is_inactive) badges.push('<span class="status-pill status-error">Inativa</span>');
     body.innerHTML = `
       <div class="object-section">
-        <p class="object-section-title">Detalhes</p>
-        ${cnpj ? `<p style="font-size:.78rem;opacity:.6;margin:0 0 4px">CNPJ: ${escapeHtml(cnpj)}</p>` : ""}
+        <p class="object-section-title">Empresa ${badges.join(" ")}</p>
+        <p style="font-size:.8rem;margin:0 0 4px"><strong>${escapeHtml(c.legal_name || node.title)}</strong></p>
+        ${c.cnpj ? `<p style="font-size:.74rem;opacity:.6;margin:0">CNPJ: ${escapeHtml(c.cnpj)}${c.registration_status ? " · " + escapeHtml(c.registration_status) : ""}</p>` : ""}
+      </div>
+      <div class="object-section"><p class="object-section-title">Contratos públicos</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div class="detail-stat"><span>${cs.count ?? 0}</span><small>contratos</small></div>
+          <div class="detail-stat"><span>${escapeHtml(money(cs.total_value || 0))}</span><small>valor total</small></div>
+        </div>
+        ${(cs.agencies || []).length ? `<p style="font-size:.72rem;opacity:.55;margin:6px 0 0">Agências: ${escapeHtml((cs.agencies || []).join(", "))}</p>` : ""}
+      </div>
+      ${(dossier?.socios || []).length ? `<div class="object-section"><p class="object-section-title">Quadro societário (${dossier.socios.length})</p>${dossier.socios.slice(0, 8).map((s) => `<p style="font-size:.74rem;margin:2px 0">${escapeHtml(s.nome)}${s.role ? ` <span style="opacity:.5">(${escapeHtml(s.role)})</span>` : ""}</p>`).join("")}</div>` : ""}
+      ${(dossier?.deliberations_afeta || []).length ? `<div class="object-section"><p class="object-section-title">Deliberações que a afetam (${dossier.deliberations_afeta.length})</p>${dossier.deliberations_afeta.slice(0, 6).map((d) => `<p style="font-size:.74rem;margin:2px 0"><strong>${escapeHtml(d.deliberation_number || "")}</strong> · ${escapeHtml(d.result || "—")} <span style="opacity:.5">${escapeHtml((d.title || "").slice(0, 42))}</span></p>`).join("")}</div>` : ""}
+      ${dossier?.screening?.available === false ? `<div class="object-section"><p style="font-size:.68rem;opacity:.4;margin:0">Sanções: screening indisponível (sem chave do Portal)</p></div>` : ""}
+      ${relPills ? `<div class="object-section"><p class="object-section-title">Relações</p><div class="entity-row">${relPills}</div></div>` : ""}
+      <div class="object-section"><div class="entity-row">${expandBtn}${c.cnpj ? `<button type="button" class="alert-btn primary" id="nat-investigate-cnpj">Investigar CNPJ</button>` : ""}</div></div>`;
+    $("#nat-investigate-cnpj")?.addEventListener("click", () => {
+      const el = $("#global-search");
+      if (el) { el.value = c.cnpj; el.form?.requestSubmit(); }
+    });
+  } else if (kind === "deliberation") {
+    body.innerHTML = `
+      <div class="object-section"><p class="object-section-title">Deliberação</p>
+        <p style="font-size:.8rem;margin:0 0 4px"><strong>${escapeHtml(node.title || "Deliberação")}</strong></p>
+        ${node.subtitle ? `<p style="font-size:.74rem;opacity:.6;margin:0">Tema: ${escapeHtml(node.subtitle)}</p>` : ""}
+        <p style="font-size:.74rem;opacity:.6;margin:2px 0">${nNeighbors} vínculo(s) (agência / relator / empresa afetada / votos)</p>
+      </div>
+      ${relPills ? `<div class="object-section"><p class="object-section-title">Relações</p><div class="entity-row">${relPills}</div></div>` : ""}
+      <div class="object-section"><div class="entity-row">${expandBtn}</div></div>`;
+  } else if (kind === "party") {
+    body.innerHTML = `
+      <div class="object-section"><p class="object-section-title">Partido</p>
+        <p style="font-size:.8rem;margin:0 0 4px"><strong>${escapeHtml(node.title || id)}</strong></p>
+        <p style="font-size:.74rem;opacity:.6;margin:0">${nNeighbors} filiado(s)/doador(es) no grafo</p>
+      </div>
+      ${relPills ? `<div class="object-section"><p class="object-section-title">Relações</p><div class="entity-row">${relPills}</div></div>` : ""}
+      <div class="object-section"><div class="entity-row">${expandBtn}</div></div>`;
+  } else {
+    body.innerHTML = `
+      <div class="object-section"><p class="object-section-title">Detalhes</p>
         <p style="font-size:.78rem;margin:2px 0">${nNeighbors} conexão(ões) · ${nEdges} relação(ões)</p>
       </div>
       ${relPills ? `<div class="object-section"><p class="object-section-title">Relações</p><div class="entity-row">${relPills}</div></div>` : ""}
-      <div class="object-section">
-        <div class="entity-row">
-          ${expandBtn}
-          ${cnpj ? `<button type="button" class="alert-btn primary" id="nat-investigate-cnpj">Investigar CNPJ</button>` : ""}
-        </div>
-      </div>`;
-    $("#nat-investigate-cnpj")?.addEventListener("click", () => {
-      const el = $("#global-search");
-      if (el) { el.value = cnpj; el.form?.requestSubmit(); }
-    });
+      <div class="object-section"><div class="entity-row">${expandBtn}</div></div>`;
   }
 
   // Wire expand/collapse
@@ -1272,23 +1328,31 @@ async function openDirectorDossier(id) {
     const pr = prRes.status === "fulfilled" && prRes.value?.ok ? prRes.value : null;
     const intel = d.intelligence || {};
     const mandates = (d.mandates || []).map((m) => `<span class="entity-pill">${escapeHtml(m.agencies?.acronym || "")} ${escapeHtml(m.role || "")}</span>`).join("");
-    const parties = (d.party_links || []).map((p) => `<span class="entity-pill">${escapeHtml(p.party)}</span>`).join("");
+    const parties = (d.party_links || []).map((p) => `<span class="entity-pill">${escapeHtml(p.party)}${p.link_type === "doacao" && p.amount ? ` · ${escapeHtml(money(p.amount))}` : (p.link_type ? ` · ${escapeHtml(p.link_type)}` : "")}</span>`).join("");
     const rels = (d.relationships || []).length;
     const socios = (d.relationships || []).filter((r) => r.relationship === "socio").length;
     const ties = intel.corporate_ties ?? socios;
     const tiesPill = ties ? `<span class="entity-pill${intel.corporate_inactive ? " score-high" : ""}">${ties} vínculo(s) societário(s)${intel.corporate_inactive ? ` · ${intel.corporate_inactive} inapta(s)` : ""}</span>` : "";
+    const scr = d.screening?.flags;
+    const scrPills = [
+      scr?.is_pep ? '<span class="entity-pill score-high">PEP</span>' : "",
+      scr?.has_sanctions ? '<span class="entity-pill score-high">Sanção</span>' : "",
+      scr?.is_servidor ? '<span class="entity-pill">Servidor federal</span>' : ""
+    ].filter(Boolean).join("");
     list.innerHTML = `
       <article class="news-card">
         <button type="button" class="entity-pill" id="director-back">&larr; Voltar a lista</button>
         <span class="source-meta">${escapeHtml(d.person.full_name)} | ${escapeHtml(d.person.role || "dirigente")}</span>
         <strong>Score de captura: ${intel.capture_score ?? "-"}/100 | Votos vencidos: ${intel.dissent_votes ?? 0}</strong>
-        <p>Mandato ativo: ${intel.active_mandate ? "sim" : "nao"} | Conexoes: ${rels} | SIAPE: ${(d.siape || []).length} registro(s)</p>
-        <div class="entity-row">${mandates}${parties}${tiesPill}</div>
+        <p>Mandato ativo: ${intel.active_mandate ? "sim" : "nao"} | Conexoes: ${rels} | SIAPE: ${(d.siape || []).length} registro(s) | Votos: ${intel.votes_total ?? 0} | Relatadas: ${intel.deliberations_relatadas ?? 0}</p>
+        <div class="entity-row">${mandates}${parties}${tiesPill}${scrPills}</div>
+        ${d.screening?.available === false ? `<p style="font-size:.7rem;opacity:.4;margin:4px 0 0">Screening PEP/sanções indisponível (sem chave do Portal da Transparência).</p>` : ""}
         <div class="entity-row">
           <button type="button" class="alert-btn primary" id="director-export">Exportar PDF</button>
         </div>
       </article>
       ${renderPoliticalRisk(pr)}
+      ${renderColegiadoVotes(d)}
       ${renderCorporateNetwork(d)}
       ${renderPersonPatrimony(d, socios)}`;
     $("#director-back")?.addEventListener("click", () => loadDirectors());
@@ -1296,6 +1360,32 @@ async function openDirectorDossier(id) {
   } catch (error) {
     list.innerHTML = emptyCard("Diretores", `Falha: ${error.message}`);
   }
+}
+
+// Votos e deliberações relatadas no dossiê de pessoa (colegiado / M19).
+function renderColegiadoVotes(d) {
+  const votes = d.votes || [];
+  const relatadas = d.deliberations_relatadas || [];
+  if (!votes.length && !relatadas.length) return "";
+  const voteRows = votes.slice(0, 25).map((v) => {
+    const del = v.deliberations || {};
+    return `<tr>
+      <td>${escapeHtml(del.deliberation_number || "—")}</td>
+      <td>${escapeHtml(v.vote_direction || "—")}${v.is_dissent ? ' <span class="entity-pill score-high">divergente</span>' : ""}</td>
+      <td>${escapeHtml(del.result || "—")}</td>
+      <td>${escapeHtml((del.title || "").slice(0, 48))}</td>
+    </tr>`;
+  }).join("");
+  const relRows = relatadas.slice(0, 15).map((r) =>
+    `<span class="entity-pill">${escapeHtml(r.deliberation_number || "")} · ${escapeHtml(r.result || "—")}</span>`
+  ).join(" ");
+  return `
+    <article class="news-card">
+      <span class="source-meta">Colegiado — votos e deliberações</span>
+      <strong>${votes.length} voto(s)${votes.length ? ` · ${votes.filter((v) => v.is_dissent).length} divergente(s)` : ""} | ${relatadas.length} relatada(s)</strong>
+      ${relRows ? `<div class="entity-row" style="margin:6px 0">Relatou: ${relRows}</div>` : ""}
+      ${votes.length ? `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Delib.</th><th>Voto</th><th>Resultado</th><th>Assunto</th></tr></thead><tbody>${voteRows}</tbody></table></div>` : ""}
+    </article>`;
 }
 
 // Patrimônio declarado (TSE) + vínculos societários no dossiê de pessoa.
@@ -2643,6 +2733,7 @@ function mergeNatNetwork(g) {
 // inteira: decisor -> agencia -> fornecedor -> socios -> socios-dos-socios.
 async function expandNatNode(nodeId) {
   if (!nodeId) return;
+  const [kind] = nodeId.split(":");
   let g;
   try {
     // ?node=<kind:id> devolve os vinculos diretos do no (relationships + derivados).
@@ -2653,6 +2744,12 @@ async function expandNatNode(nodeId) {
     return;
   }
   mergeNatNetwork(g);
+  // Para pessoa/empresa, tambem puxa a CADEIA societaria multi-nivel (socios de
+  // socios, holdings) num clique — nao so 1 hop. Best-effort (nao quebra se falhar).
+  if (kind === "person" || kind === "company") {
+    const chain = await requestJson(`/api/graph?node=${encodeURIComponent(nodeId)}&expand=socio&depth=2&limit=400`).catch(() => null);
+    if (chain) mergeNatNetwork(chain);
+  }
   if (natGraph.panoramic) {
     // Primeiro duplo-clique a partir do panorama: entra no modo focado nesse no.
     natGraph.panoramic = false;
