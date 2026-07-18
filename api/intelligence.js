@@ -23,19 +23,26 @@ async function weeklyAgencyAnalysis(supabase, weeks = 8) {
 
   // Pagina para nao estourar o teto de linhas do PostgREST (ha dezenas de
   // milhares de atos; 8 semanas ainda pode passar de 1000 linhas).
+  // ORDEM DESCENDENTE (mais recente primeiro): se a janela passar do teto, os atos
+  // DESCARTADOS sao os mais ANTIGOS — a SEMANA ATUAL sempre entra. Isso garante que
+  // `archiveStale` (baseado em currentWeek) seja confiavel; com ordem ascendente,
+  // >20k atos derrubavam a semana atual e archiveStale ficava sempre true,
+  // suprimindo SILENCIOSAMENTE todos os alertas de silencio.
   const rows = [];
   const PAGE = 1000;
-  for (let from = 0; from < 20000; from += PAGE) {
+  const CAP = 40000;
+  for (let from = 0; from < CAP; from += PAGE) {
     const { data } = await supabase
       .from("documents")
       .select("agency_id, published_at, document_type")
       .eq("source_name", "DOU")
       .gte("published_at", since)
-      .order("published_at", { ascending: true })
+      .order("published_at", { ascending: false })
       .range(from, from + PAGE - 1);
     rows.push(...(data || []));
     if (!data || data.length < PAGE) break;
   }
+  const truncated = rows.length >= CAP;
 
   // Chave de semana = domingo (mesmo criterio do agency_stats).
   const weekKey = (dateStr) => {
@@ -86,7 +93,7 @@ async function weeklyAgencyAnalysis(supabase, weeks = 8) {
     }
   }
   anomalies.sort((a, b) => (b.ratio || 0) - (a.ratio || 0));
-  return { series, anomalies, truncated: rows.length >= 20000 };
+  return { series, anomalies, truncated };
 }
 
 // ── Mapa de Landscape (M14) ─────────────────────────────────────────────────

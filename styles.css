@@ -84,6 +84,13 @@ a {
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr);
   min-height: 100vh;
+  transition: grid-template-columns 0.16s ease;
+}
+/* Sidebar expandida (210px) empurra a coluna de conteudo em vez de sobrepor:
+   a 1a faixa do grid acompanha a largura do rail. Sem isto o rail sticky
+   transborda a celula de 48px e cobre o modulo. */
+.app-shell:has(.sidebar.expanded) {
+  grid-template-columns: 210px minmax(0, 1fr);
 }
 
 /* ── Rail lateral fino de ícones (Gotham) ─────────────────────────────────── */
@@ -100,6 +107,7 @@ a {
   align-self: start;
   max-height: 100vh;
   overflow-y: auto;
+  transition: width 0.16s ease, padding 0.16s ease;
 }
 
 /* Rail recolhido (default): só ícones, rótulo via tooltip title= */
