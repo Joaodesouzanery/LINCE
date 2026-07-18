@@ -250,6 +250,16 @@ module.exports = async function handler(req, res) {
   try {
     const supabase = getSupabase();
 
+    // Modulo "Voto dos Diretores" (M19): metricas de votacao/colegiado. Uma unica
+    // branch delega para lib/vote-data (busca+mapeia) + lib/vote-metrics (funcoes
+    // puras portadas do IRIS) — nao incha o hub nem cria novo arquivo em api/.
+    if (type.startsWith("votos_")) {
+      res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=600");
+      const { serveVoteMetric } = require("../lib/vote-data");
+      const out = await serveVoteMetric(supabase, type, req.query);
+      return res.status(out.ok ? 200 : 400).json(out);
+    }
+
     // Saude dos dados (M-ops): contagens por tabela/fonte + ultima ingestao +
     // lacunas acionaveis + flags de env. Degrada (null) para tabela ausente.
     if (type === "data_health") {
