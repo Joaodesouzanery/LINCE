@@ -30,7 +30,7 @@ module.exports = async function handler(req, res) {
 
     const { data: agencies, error: agErr } = await supabase
       .from("agencies")
-      .select("id, acronym")
+      .select("id, acronym, name")
       .eq("sector", "regulatory");
     if (agErr) throw agErr;
     if (!agencies?.length) {

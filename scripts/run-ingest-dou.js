@@ -14,7 +14,7 @@ async function main() {
 
   const { data: agencies } = await supabase
     .from("agencies")
-    .select("id, acronym")
+    .select("id, acronym, name")
     .eq("sector", "regulatory");
 
   console.log(`Coletando DOU de ${date} para ${agencies?.length || 0} agencias...`);

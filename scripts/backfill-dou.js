@@ -121,7 +121,7 @@ async function main() {
 
   const { data: agencies } = await supabase
     .from("agencies")
-    .select("id, acronym")
+    .select("id, acronym, name")
     .eq("sector", "regulatory");
 
   const dates = dateRange(fromDate, toDate);
