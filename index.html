@@ -62,6 +62,10 @@
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
             <span class="nav-text">Diretores</span>
           </button>
+          <button class="nav-item" type="button" data-view="votacao" title="Votação do Colegiado">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><rect x="7" y="10" width="3" height="8"/><rect x="12" y="6" width="3" height="12"/><rect x="17" y="13" width="3" height="5"/></svg>
+            <span class="nav-text">Votação</span>
+          </button>
           <button class="nav-item" type="button" data-view="graph" title="Grafo Nacional">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>
             <span class="nav-text">Grafo Nacional</span>
@@ -450,6 +454,28 @@
               </div>
               <div class="news-list" id="directors-list"></div>
             </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-votacao">
+          <div class="view-body">
+            <div class="graph-tools" style="margin-bottom:14px; flex-wrap:wrap; gap:8px">
+              <select id="votacao-agency" class="dou-date" style="width:170px"></select>
+              <label class="ghost-button" style="cursor:pointer" title="Enviar um PDF de deliberação/ata">
+                Enviar PDF
+                <input id="votacao-upload" type="file" accept="application/pdf" hidden />
+              </label>
+              <button type="button" id="votacao-refresh" class="ghost-button">Atualizar</button>
+              <span id="votacao-upload-msg" class="card-sub"></span>
+            </div>
+            <div id="votacao-overview" class="dh-counts" style="margin-bottom:14px"></div>
+            <div class="votacao-grid">
+              <div class="vt-panel"><h3 class="vt-title">Distribuição de votos</h3><div id="votacao-distribution"></div></div>
+              <div class="vt-panel"><h3 class="vt-title">Consenso por mês</h3><div id="votacao-consenso"></div></div>
+            </div>
+            <div class="vt-panel" style="margin-top:14px"><h3 class="vt-title">Matriz diretor × voto</h3><div id="votacao-matrix" style="overflow-x:auto"></div></div>
+            <div class="vt-panel" style="margin-top:14px"><h3 class="vt-title">Fidelidade dos diretores</h3><div id="votacao-fidelidade" style="overflow-x:auto"></div></div>
+            <div class="news-list" id="votacao-empty" hidden style="margin-top:14px"><p>Sem votos ainda. Envie um PDF de deliberação (botão acima) ou rode o auto-coletor. As tabelas/deliberações precisam do roster de diretores (people + mandatos) da agência.</p></div>
           </div>
         </section>
 

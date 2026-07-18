@@ -440,6 +440,7 @@ function setView(view) {
   if (view === "dou") loadDouFeed();
   if (view === "directors") loadDirectors();
   if (view === "graph") loadNationalGraph();
+  if (view === "votacao") loadVotacao();
   if (view === "intelligence") loadIntelligence();
   if (view === "consultas") loadConsultas();
   if (view === "agenda") loadAgenda();
@@ -2451,6 +2452,126 @@ async function populateGraphAgencies() {
         (sc.scores || []).map((s) => `<option value="${escapeHtml(s.agency)}">${escapeHtml(s.agency)}</option>`).join("");
     }
   } catch { /* silencioso */ }
+}
+
+// ─── Votação do Colegiado (M19) — métricas dos votos dos diretores ──────────
+let _votAgLoaded = false, _votacaoWired = false;
+
+async function populateVotacaoAgencies() {
+  if (_votAgLoaded) return;
+  const sel = $("#votacao-agency"); if (!sel) return;
+  try {
+    const sc = await requestJson("/api/intelligence?type=score");
+    sel.innerHTML = `<option value="">Todas as agências</option>` +
+      (sc.scores || []).map((s) => `<option value="${escapeHtml(s.agency)}">${escapeHtml(s.agency)}</option>`).join("");
+    _votAgLoaded = true;
+  } catch { /* silencioso */ }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+function wireVotacao() {
+  $("#votacao-refresh")?.addEventListener("click", () => loadVotacao());
+  $("#votacao-agency")?.addEventListener("change", () => loadVotacao());
+  const up = $("#votacao-upload");
+  if (up) up.addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0]; if (!file) return;
+    const agency = $("#votacao-agency")?.value?.trim();
+    const msg = $("#votacao-upload-msg");
+    if (!agency) { if (msg) msg.textContent = "Selecione a agência antes de enviar o PDF."; up.value = ""; return; }
+    if (msg) msg.textContent = `Enviando ${file.name}…`;
+    try {
+      const b64 = await fileToBase64(file);
+      const r = await postJson("/api/intelligence?type=upload_deliberacao", { pdf_base64: b64, agency, filename: file.name });
+      if (r.ok) { if (msg) msg.textContent = `OK: deliberação ${escapeHtml(String(r.numero))} · ${r.votos} voto(s) (${r.nominais} nominais)`; loadVotacao(); }
+      else if (msg) msg.textContent = `Falha: ${escapeHtml(r.error || "erro")}`;
+    } catch (err) { if (msg) msg.textContent = `Falha: ${escapeHtml(err.message)}`; }
+    up.value = "";
+  });
+}
+
+function bar(pct, color) {
+  const w = Math.max(0, Math.min(100, Number(pct) || 0));
+  return `<div class="vt-bar"><div class="vt-bar-fill" style="width:${w}%; background:${color}"></div></div>`;
+}
+
+function renderVotOverview(d) {
+  const el = $("#votacao-overview"); if (!el) return;
+  if (!d) { el.innerHTML = ""; return; }
+  const cell = (label, val) => `<div class="dh-cell"><span class="dh-num">${escapeHtml(String(val))}</span><span class="card-sub">${escapeHtml(label)}</span></div>`;
+  el.innerHTML =
+    cell("Deliberações", d.total_deliberacoes ?? 0) +
+    cell("Deferidas", d.deferidos ?? 0) +
+    cell("Indeferidas", d.indeferidos ?? 0) +
+    cell("Taxa de deferimento", `${d.taxa_deferimento ?? 0}%`) +
+    cell("Reuniões", d.reunioes_unicas ?? 0) +
+    cell("Top microtema", d.top_microtema || "—");
+}
+
+function renderVotDistribution(rows) {
+  const el = $("#votacao-distribution"); if (!el) return;
+  if (!rows || !rows.length) { el.innerHTML = `<p class="card-sub">Sem votos.</p>`; return; }
+  const COLOR = { Favoravel: "var(--green,#3fb950)", Desfavoravel: "var(--red,#f85149)", Abstencao: "var(--amber,#d29922)", Ausente: "var(--muted,#8b949e)" };
+  el.innerHTML = rows.map((r) =>
+    `<div class="vt-row"><span class="vt-lbl">${escapeHtml(r.tipo_voto)}</span>${bar(r.pct, COLOR[r.tipo_voto] || "var(--blue)")}<span class="vt-val">${r.count} · ${escapeHtml(String(r.pct))}%</span></div>`
+  ).join("");
+}
+
+function renderVotConsenso(rows) {
+  const el = $("#votacao-consenso"); if (!el) return;
+  if (!rows || !rows.length) { el.innerHTML = `<p class="card-sub">Sem série.</p>`; return; }
+  el.innerHTML = rows.map((r) =>
+    `<div class="vt-row"><span class="vt-lbl">${escapeHtml(r.period)}</span>${bar(r.pct_consenso, "var(--blue)")}<span class="vt-val">${escapeHtml(String(r.pct_consenso))}% · ${r.total_itens} itens</span></div>`
+  ).join("");
+}
+
+function renderVotMatrix(rows) {
+  const el = $("#votacao-matrix"); if (!el) return;
+  if (!rows || !rows.length) { el.innerHTML = `<p class="card-sub">Sem votos.</p>`; return; }
+  const th = `<tr><th>Diretor</th><th>Total</th><th>Favor</th><th>Contra</th><th>Abst.</th><th>Diverg.</th></tr>`;
+  const body = rows.map((r) =>
+    `<tr><td>${escapeHtml(r.diretor_nome || r.diretor_id)}</td><td>${r.total ?? 0}</td><td>${r.favoravel ?? 0}</td><td>${r.desfavoravel ?? 0}</td><td>${r.abstencao ?? 0}</td><td>${r.divergente ?? 0}</td></tr>`
+  ).join("");
+  el.innerHTML = `<table class="vt-table"><thead>${th}</thead><tbody>${body}</tbody></table>`;
+}
+
+function renderVotFidelidade(rows) {
+  const el = $("#votacao-fidelidade"); if (!el) return;
+  if (!rows || !rows.length) { el.innerHTML = `<p class="card-sub">Sem votos.</p>`; return; }
+  const th = `<tr><th>Diretor</th><th>Votos</th><th>Nominais</th><th>Divergentes</th><th>Fidelidade</th></tr>`;
+  const body = rows.map((r) =>
+    `<tr><td>${escapeHtml(r.diretor_nome || r.diretor_id)}</td><td>${r.total_votos ?? 0}</td><td>${r.votos_nominais ?? 0}</td><td>${r.votos_divergentes ?? 0}</td><td>${escapeHtml(String(r.taxa_fidelidade ?? 0))}%</td></tr>`
+  ).join("");
+  el.innerHTML = `<table class="vt-table"><thead>${th}</thead><tbody>${body}</tbody></table>`;
+}
+
+async function loadVotacao() {
+  populateVotacaoAgencies();
+  if (!_votacaoWired) { wireVotacao(); _votacaoWired = true; }
+  const agency = $("#votacao-agency")?.value?.trim() || "";
+  const q = agency ? `&agency=${encodeURIComponent(agency)}` : "";
+  const url = (t) => `/api/intelligence?type=${t}${q}`;
+  const [ov, dist, matrix, fid, cons] = await Promise.all([
+    requestJson(url("votos_overview")).catch(() => null),
+    requestJson(url("votos_distribution")).catch(() => null),
+    requestJson(url("votos_matrix")).catch(() => null),
+    requestJson(url("votos_fidelidade")).catch(() => null),
+    requestJson(url("votos_consenso")).catch(() => null),
+  ]);
+  const total = ov?.data?.total_deliberacoes || 0;
+  $("#votacao-empty")?.toggleAttribute("hidden", total > 0);
+  renderVotOverview(ov?.data);
+  renderVotDistribution(dist?.data);
+  renderVotConsenso(cons?.data);
+  renderVotMatrix(matrix?.data);
+  renderVotFidelidade(fid?.data);
 }
 
 async function loadNationalGraph() {
