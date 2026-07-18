@@ -20,6 +20,7 @@ require("dotenv").config();
 const fs = require("fs");
 const readline = require("readline");
 const { getSupabase } = require("../lib/supabase");
+const { normalizeNameKey } = require("../lib/text");
 
 const QUALIF_SOCIO = {
   "05": "Administrador",
@@ -32,9 +33,11 @@ const QUALIF_SOCIO = {
   "65": "Titular",
 };
 
-function normalize(name) {
-  return (name || "").toUpperCase().replace(/[^A-Z\s]/g, "").replace(/\s+/g, " ").trim();
-}
+// Chave de nome UNICA em toda a plataforma (lib/text.normalizeNameKey): translitera
+// acento (JOAO, nao JOO), ordena tokens e remove conectivos ("SILVA, RICARDO" ==
+// "RICARDO SILVA"). O normalize local antigo apagava letras acentuadas e era
+// sensivel a ordem -> quase nenhum socio casava com diretor. Este destrava o cruzamento.
+const nameKey = (name) => normalizeNameKey(name);
 
 async function main() {
   const csvPath = process.argv[2];
@@ -50,14 +53,23 @@ async function main() {
 
   const supabase = getSupabase();
 
-  // Carrega nomes normalizados dos diretores ja no banco
-  const { data: people } = await supabase.from("people").select("id, full_name, normalized_name");
+  // Carrega TODOS os diretores ja no banco (paginado — select cru trunca em 1000).
   const nameIndex = new Map();
-  for (const p of people || []) {
-    const key = normalize(p.normalized_name || p.full_name);
-    if (key) nameIndex.set(key, p.id);
+  let peopleCount = 0;
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data: people, error } = await supabase
+      .from("people").select("id, full_name, normalized_name")
+      .order("id", { ascending: true }).range(from, from + PAGE - 1);
+    if (error) throw new Error(`people: ${error.message}`);
+    for (const p of people || []) {
+      const key = nameKey(p.normalized_name || p.full_name);
+      if (key) nameIndex.set(key, p.id);
+      peopleCount++;
+    }
+    if (!people || people.length < PAGE) break;
   }
-  console.log(`Diretores no banco: ${nameIndex.size}`);
+  console.log(`Diretores no banco: ${peopleCount} (chaves unicas: ${nameIndex.size})`);
 
   // Carrega CNPJs das agencias (basico = 8 digitos) para filtrar empresas reguladas
   const { data: agencies } = await supabase.from("agencies").select("id, acronym, collection_rules");
@@ -84,7 +96,7 @@ async function main() {
 
     const cnpjBasico = cols[0].padStart(8, "0");
     const idSocio = cols[1];
-    const nomeSocio = normalize(cols[2]);
+    const nomeSocio = nameKey(cols[2]);
     const docSocio = (cols[3] || "").replace(/\D/g, "");
     const qualCod = cols[4] || "";
     const role = QUALIF_SOCIO[qualCod] || "Socio";

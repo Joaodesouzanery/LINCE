@@ -3373,12 +3373,18 @@ function wireEvents() {
     const btn = $("#refresh-btn"), ds = $("#ds-text");
     const prev = btn.textContent;
     btn.disabled = true; btn.textContent = "Atualizando…";
-    if (ds) ds.textContent = "Disparando ingestão do DOU de hoje… (pode levar até 1 min)";
+    if (ds) ds.textContent = "Disparando ingestão do DOU (últimos dias)… (pode levar até 1 min)";
     try {
-      const r = await postJson("/api/intelligence?type=refresh", {});
-      if (ds) ds.textContent = r?.ok
-        ? `Ingestão concluída: ${r.inserted ?? 0} novo(s) ato(s), ${r.skipped ?? 0} já existente(s).`
-        : `Falha na ingestão: ${r?.error || "erro"}`;
+      // days=3: cobre buracos de fim de semana/feriado sem depender do CLI.
+      const r = await postJson("/api/intelligence?type=refresh&days=3", {});
+      if (ds) {
+        if (r?.ok) {
+          const warn = (r.warnings || []).length ? ` (${r.warnings.length} dia(s) anterior(es) com falha — use o CLI backfill:dou)` : "";
+          ds.textContent = `Ingestão concluída (${(r.dates || []).length} dia(s)): ${r.inserted ?? 0} novo(s) ato(s).${warn}`;
+        } else {
+          ds.textContent = `Falha na ingestão: ${r?.error || "erro"}`;
+        }
+      }
       loadOverviewMetrics();
     } catch (e) {
       if (ds) ds.textContent = `Falha ao atualizar: ${e.message}`;
@@ -3516,7 +3522,9 @@ async function loadOverviewMetrics() {
     }
     const contracts = await requestJson("/api/intelligence?type=radar").catch(() => null);
     if (contracts) {
-      const total = (contracts.radar?.["30d"]?.length || 0) + (contracts.radar?.["60d"]?.length || 0) + (contracts.radar?.["90d"]?.length || 0);
+      // So contratos vencendo 90d (o radar tambem traz fim de mandato -> nao contar aqui).
+      const buckets = [contracts.radar?.["30d"], contracts.radar?.["60d"], contracts.radar?.["90d"]];
+      const total = buckets.reduce((s, arr) => s + (arr || []).filter((e) => e.type === "contrato").length, 0);
       const el = $("#metric-contracts");
       if (el) el.textContent = total;
     }

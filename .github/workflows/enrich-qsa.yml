@@ -1,0 +1,45 @@
+# Enriquecimento do quadro societario (QSA) das empresas ja no banco.
+# Roda AQUI (GitHub Actions), nao no Vercel: agendamento diario que o Hobby nao
+# permite (2 crons ja usados por ingest-dou/ingest-people-dou) + tolera o job
+# longo do throttle do CNPJ.ws gratuito (~3 req/min). Gratis (runner Ubuntu).
+#
+# O QSA e o elo que DESTRAVA as correlacoes: liga o `person_id` de um diretor
+# (people, via normalized_key) a empresa da qual ele e socio -> alimenta
+# self-dealing / porta-giratoria (api/intelligence.js). --only-empty processa
+# so quem ainda nao tem socios; a cada rodada avanca a fila (PNCP traz fornecedores novos).
+#
+# PRE-REQUISITOS (uma vez): em Settings > Secrets and variables > Actions do repo:
+#   SUPABASE_URL         -> a Project URL do Supabase do LINCE
+#   SUPABASE_SERVICE_KEY -> a service_role key do LINCE
+name: enriquecer-qsa
+
+on:
+  schedule:
+    - cron: "42 9 * * *" # todo dia ~09:42 UTC (~06:42 BRT), apos os crons de ingestao
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Maximo de empresas por rodada (throttle ~21s/empresa)"
+        required: false
+        default: "30"
+
+concurrency:
+  group: enriquecer-qsa
+  cancel-in-progress: false
+
+jobs:
+  enriquecer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Instalar deps do projeto
+        run: npm ci --no-audit --no-fund
+      - name: Rodar backfill de QSA (only-empty)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node scripts/backfill-qsa.js --only-empty --limit ${{ github.event.inputs.limit || '30' }}

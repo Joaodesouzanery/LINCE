@@ -55,6 +55,8 @@ async function weeklyAgencyAnalysis(supabase, weeks = 8) {
 
   const currentWeek = weekKey(new Date().toISOString().slice(0, 10));
   const midweek = new Date().getUTCDay() >= 3; // silencio so vale de quarta em diante
+  // Se a semana atual esta vazia para TODAS as agencias, e FALHA DE INGESTAO (cron
+  // parado), nao "silencio" regulatorio real -> nao pintar tudo de vermelho.
 
   // Todas as semanas da janela (mesmo as sem atividade): semanas zeradas
   // ENTRAM na baseline — senao a media fica inflada e o pico nunca dispara.
@@ -63,6 +65,7 @@ async function weeklyAgencyAnalysis(supabase, weeks = 8) {
     allWeeks.push(weekKey(new Date(Date.now() - i * 7 * 86400000).toISOString().slice(0, 10)));
   }
 
+  const archiveStale = !Object.values(buckets).some((byWeek) => (byWeek[currentWeek]?.total || 0) > 0);
   const series = [];
   const anomalies = [];
   for (const [agencyId, byWeek] of Object.entries(buckets)) {
@@ -77,7 +80,7 @@ async function weeklyAgencyAnalysis(supabase, weeks = 8) {
       const current = byWeek[currentWeek]?.[metric] || 0;
       if (baseline >= 2 && current >= 5 && current >= baseline * 2) {
         anomalies.push({ agency: ag.acronym, metric, kind: "pico", current, baseline: Math.round(baseline * 10) / 10, ratio: Math.round((current / baseline) * 10) / 10 });
-      } else if (metric === "total" && baseline >= 5 && current === 0 && midweek) {
+      } else if (metric === "total" && baseline >= 5 && current === 0 && midweek && !archiveStale) {
         anomalies.push({ agency: ag.acronym, metric, kind: "silencio", current: 0, baseline: Math.round(baseline * 10) / 10, ratio: 0 });
       }
     }
@@ -235,15 +238,70 @@ module.exports = async function handler(req, res) {
     const base = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "";
     if (!base) return res.status(200).json({ ok: false, error: "Atualizacao indisponivel (sem VERCEL_URL). Rode a ingestao pelo cron/CLI." });
     const secret = process.env.CRON_SECRET;
-    const qDate = req.query.date ? `?date=${encodeURIComponent(String(req.query.date))}` : "";
+    // Backfilla um RANGE curto (nao so hoje): cobre buracos de fim de semana/feriado
+    // sem depender do CLI. `date` explicito = 1 dia; `days=N` = ultimos N dias (cap 5).
+    // Ordem do MAIS NOVO -> mais antigo: HOJE sempre entra primeiro, entao mesmo que
+    // um dia anterior estoure o tempo (cada ingest-dou e ele mesmo ate 60s), o dado de
+    // hoje ja foi persistido. So a falha de HOJE (1o dia) e fatal -> sinaliza INLABS
+    // caido na hora; dias anteriores que falhem viram aviso nao-fatal.
+    // CAVEAT (Bloco H): quando a ANTHROPIC_API_KEY entrar, cada ingest fica lento
+    // (analyzeAto) e um range >2 pode estourar 60s -> revisar days aqui.
+    const dates = [];
+    if (req.query.date) {
+      dates.push(String(req.query.date));
+    } else {
+      const n = Math.min(5, Math.max(1, parseInt(req.query.days, 10) || 1));
+      const base0 = new Date();
+      for (let i = 0; i < n; i++) {
+        const d = new Date(base0); d.setDate(d.getDate() - i);
+        dates.push(d.toISOString().slice(0, 10));
+      }
+    }
+    const results = [];
+    const warnings = [];
+    // Orcamento de tempo de parede: a funcao tem maxDuration 60s; paramos de INICIAR
+    // novos dias em ~50s p/ retornar JSON limpo em vez de ser morto (504 sem corpo).
+    // Cada ingest-dou (INLABS login + 3 zips + parse + inserts) pode levar dezenas de
+    // segundos; sem esta trava um range de 3+ dias estouraria o limite.
+    const startedAt = Date.now();
+    const BUDGET_MS = 50000;
     try {
-      const r = await fetch(`${base}/api/ingest-dou${qDate}`, {
-        headers: secret ? { authorization: `Bearer ${secret}` } : {}
-      });
-      const data = await r.json().catch(() => ({}));
-      return res.status(r.ok ? 200 : 502).json({ ok: r.ok, triggered: "ingest-dou", ...data });
+      for (let i = 0; i < dates.length; i++) {
+        const d = dates[i];
+        const remaining = BUDGET_MS - (Date.now() - startedAt);
+        if (i > 0 && remaining < 8000) { // sem tempo seguro p/ mais um dia -> para limpo
+          warnings.push(`Tempo esgotado antes de ${d}: rode o CLI backfill:dou para dias mais antigos.`);
+          break;
+        }
+        let r, data;
+        try {
+          r = await fetch(`${base}/api/ingest-dou?date=${encodeURIComponent(d)}`, {
+            headers: secret ? { authorization: `Bearer ${secret}` } : {},
+            signal: AbortSignal.timeout(Math.max(8000, remaining))
+          });
+          data = await r.json().catch(() => ({}));
+        } catch (fe) {
+          // Timeout/abort do fetch deste dia. Fatal so se for o 1o (hoje).
+          if (i === 0) return res.status(502).json({ ok: false, triggered: "ingest-dou", results, error: `Falha ao ingerir ${d}: ${fe.message}` });
+          warnings.push(`Falha ao ingerir ${d}: ${fe.message}`);
+          break;
+        }
+        results.push({ date: d, ok: r.ok, ...data });
+        if (!r.ok) {
+          // Falha do 1o dia (hoje) = fatal (INLABS/DB fora). Dias anteriores = aviso.
+          if (i === 0) {
+            return res.status(502).json({ ok: false, triggered: "ingest-dou", results, error: data.error || `Falha ao ingerir ${d}.` });
+          }
+          warnings.push(`Falha ao ingerir ${d}: ${data.error || "erro"}`);
+          break; // nao insiste em dias ainda mais antigos apos uma falha
+        }
+      }
+      const inserted = results.reduce((s, x) => s + (x.inserted || 0), 0);
+      const doneDates = results.filter((x) => x.ok).map((x) => x.date);
+      return res.status(200).json({ ok: true, triggered: "ingest-dou", dates: doneDates, inserted, results, warnings });
     } catch (e) {
-      return res.status(502).json({ ok: false, error: e.message });
+      const okAny = results.some((x) => x.ok);
+      return res.status(okAny ? 200 : 502).json({ ok: okAny, triggered: "ingest-dou", results, warnings, error: e.message });
     }
   }
 
