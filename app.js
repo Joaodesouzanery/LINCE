@@ -508,6 +508,11 @@ async function runSearch(cnpjInput) {
     showInspectorMessage("CNPJ invalido", "Informe 14 digitos. Nenhuma consulta foi executada.");
     return;
   }
+  // Trava de reentrância: uma busca em andamento (botão desabilitado via setLoading)
+  // bloqueia disparos concorrentes (linha de "CNPJs de teste", atalhos). Sem isto,
+  // a resposta LENTA de um alvo A pode sobrescrever o dossiê/grafo de um alvo B
+  // aberto depois — má-atribuição entre empresas (achado da revisão E3).
+  if ($("#search-form button")?.disabled) return;
 
   setLoading(true);
   setView("investigate");

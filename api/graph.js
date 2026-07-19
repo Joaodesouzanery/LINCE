@@ -145,8 +145,8 @@ async function aggregateGraph(supabase) {
   const crossIds = [...compAgencies.keys()].filter((id) => compAgencies.get(id).size >= 2);
   const compById = new Map();
   // Chunka o .in(): crossIds pode ter centenas de fornecedores -> um unico .in()
-  // estoura o tamanho da URL do PostgREST e/ou trunca a resposta em 1000 linhas.
-  const CHUNK = 300;
+  // estoura o tamanho da URL do PostgREST (GET id=in.(...) -> risco de 414).
+  const CHUNK = 150;
   for (let i = 0; i < crossIds.length; i += CHUNK) {
     const rows = await safeRun(supabase.from("companies").select("id, cnpj, legal_name, registration_status").in("id", crossIds.slice(i, i + CHUNK)));
     for (const r of rows) compById.set(r.id, r);
