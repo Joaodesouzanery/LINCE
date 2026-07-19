@@ -7,6 +7,7 @@ const { analyzeAto } = require("../lib/anthropic");
 const { classifyThemes } = require("../lib/themes");
 const { processPeopleFromDoc, loadActiveMonitors, matchMonitorsForDoc, flushMonitorAlerts } = require("../lib/ingest");
 const { timingSafeEqualStr } = require("../lib/timing");
+const { sendAlertWebhook } = require("../lib/notify");
 
 const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
 
@@ -136,6 +137,11 @@ module.exports = async function handler(req, res) {
     }
     await flushMonitorAlerts(supabase, monitorAlerts, monitorHits);
 
+    // F2 — notificação externa (best-effort, gated por ALERT_WEBHOOK_URL): empurra
+    // os HITS DE MONITOR (watchlist do usuário = alto sinal) para o webhook. Não
+    // notifica os atos de pessoal genéricos (evita spam). Nunca lança.
+    const notified = await sendAlertWebhook(monitorAlerts, { label: "LINCE · Monitor DOU" });
+
     return res.status(200).json({
       ok: true,
       date,
@@ -144,7 +150,8 @@ module.exports = async function handler(req, res) {
       skipped,
       directors,
       alerts: alerts.length,
-      monitor_alerts: monitorAlerts.length
+      monitor_alerts: monitorAlerts.length,
+      notified: notified.ok ? notified.sent : (notified.skipped || notified.error || false)
     });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message, source: "DOU/INLABS" });

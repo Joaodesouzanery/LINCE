@@ -193,6 +193,7 @@ module.exports = async function handler(req, res) {
       inlabs_email: !!process.env.INLABS_EMAIL,
       inlabs_senha: !!process.env.INLABS_SENHA,
       anthropic_key: !!process.env.ANTHROPIC_API_KEY,
+      alert_webhook: !!process.env.ALERT_WEBHOOK_URL,
       node_version: process.version,
       env: process.env.NODE_ENV || "production"
     };

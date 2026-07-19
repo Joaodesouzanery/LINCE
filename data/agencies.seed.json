@@ -9,5 +9,12 @@
   { "name": "Agencia Nacional de Transportes Aquaviarios", "acronym": "ANTAQ", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/antaq", "collection_rules": { "cnpj": "04903587000108" } },
   { "name": "Agencia Nacional de Aviacao Civil", "acronym": "ANAC", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anac", "collection_rules": { "cnpj": "07947821000189" } },
   { "name": "Agencia Nacional do Cinema", "acronym": "ANCINE", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/ancine", "collection_rules": { "cnpj": "04884574000120" } },
-  { "name": "Agencia Nacional de Mineracao", "acronym": "ANM", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anm", "collection_rules": { "cnpj": "29406625000130" } }
+  { "name": "Agencia Nacional de Mineracao", "acronym": "ANM", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/anm", "collection_rules": { "cnpj": "29406625000130" } },
+
+  { "name": "Conselho Administrativo de Defesa Economica", "acronym": "CADE", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/cade", "collection_rules": {} },
+  { "name": "Comissao de Valores Mobiliarios", "acronym": "CVM", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/cvm", "collection_rules": {} },
+  { "name": "Banco Central do Brasil", "acronym": "BACEN", "sphere": "federal", "sector": "regulatory", "portal_url": "https://www.gov.br/banco-central", "collection_rules": {} },
+
+  { "name": "Agencia de Transporte do Estado de Sao Paulo", "acronym": "ARTESP", "sphere": "estadual", "sector": "regulatory", "portal_url": "https://www.artesp.sp.gov.br", "collection_rules": { "uf": "SP", "source": "diario_sp" } },
+  { "name": "Agencia Reguladora de Saneamento e Energia do Estado de Sao Paulo", "acronym": "ARSESP", "sphere": "estadual", "sector": "regulatory", "portal_url": "https://www.arsesp.sp.gov.br", "collection_rules": { "uf": "SP", "source": "diario_sp" } }
 ]
