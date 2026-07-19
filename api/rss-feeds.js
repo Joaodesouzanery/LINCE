@@ -72,6 +72,9 @@ module.exports = async function handler(req, res) {
         const supabase = getSupabase();
         const { data, error } = await supabase.from("proposicoes")
           .select("id, casa, tipo, numero, ano, ementa, titulo, autor, url, last_seen")
+          // Ordena pela DATA da proposicao (ano) e nao pela hora do scrape (last_seen,
+          // que so desempata dentro do ano). So ha 'ano' na tabela — sem data cheia.
+          .order("ano", { ascending: false, nullsFirst: false })
           .order("last_seen", { ascending: false }).limit(50);
         if (!error) {
           return res.status(200).json({ ok: true, type, source: "persistido", items: data || [], fetchedAt: new Date().toISOString() });
@@ -123,11 +126,11 @@ module.exports = async function handler(req, res) {
       const pautasOr = DOU_AGENDA.map((p) => `title.ilike.%${p}%`).join(",");
       const [agendaRes, consultasRes, pautasRes, temasRes] = await Promise.all([
         supabase.from("documents").select(cols).eq("source_name", "DOU")
-          .contains("themes", ["Agenda Regulatória"]).order("published_at", { ascending: false }).limit(80),
+          .contains("themes", ["Agenda Regulatória"]).order("published_at", { ascending: false }).order("collected_at", { ascending: false }).limit(80),
         supabase.from("documents").select(cols).eq("source_name", "DOU")
-          .or(consultasOr).order("published_at", { ascending: false }).limit(80),
+          .or(consultasOr).order("published_at", { ascending: false }).order("collected_at", { ascending: false }).limit(80),
         supabase.from("documents").select(cols).eq("source_name", "DOU")
-          .or(pautasOr).order("published_at", { ascending: false }).limit(80),
+          .or(pautasOr).order("published_at", { ascending: false }).order("collected_at", { ascending: false }).limit(80),
         supabase.from("regulatory_agenda")
           .select("biennium, theme_title, status, area, source_url, agencies(acronym, name)")
           .order("biennium", { ascending: false }).limit(500)
@@ -227,6 +230,7 @@ async function douFallback(supabase, type, acronymSet) {
     .eq("source_name", "DOU")
     .or(orExpr)
     .order("published_at", { ascending: false })
+    .order("collected_at", { ascending: false })
     .limit(60);
   const items = [];
   for (const d of data || []) {

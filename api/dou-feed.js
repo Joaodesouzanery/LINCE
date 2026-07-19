@@ -9,7 +9,10 @@ module.exports = async function handler(req, res) {
       .from("documents")
       .select("id, title, document_type, published_at, source_url, metadata, agencies(acronym, name)")
       .eq("source_name", "DOU")
+      // published_at e DATE (sem hora) -> empates intradia. Desempata por
+      // collected_at (timestamp de ingestao): mais recente primeiro, ordem estavel.
       .order("published_at", { ascending: false })
+      .order("collected_at", { ascending: false })
       .limit(100);
 
     if (req.query.date) query = query.eq("published_at", String(req.query.date));

@@ -409,7 +409,9 @@ module.exports = async function handler(req, res) {
         .from("documents")
         .select("id, title, document_type, published_at, source_url, metadata, agencies(acronym)")
         .eq("source_name", "DOU")
+        // Desempate intradia por collected_at (published_at e DATE, sem hora).
         .order("published_at", { ascending: false })
+        .order("collected_at", { ascending: false })
         .limit(limit);
       const items = (docs || []).map((d) => ({
         id: d.id,

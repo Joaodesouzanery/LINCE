@@ -140,12 +140,27 @@ async function aggregateGraph(supabase) {
     weight: contractCount[a.id] || 0
   }));
 
+  // Cadastro (CNPJ/situacao) dos fornecedores transversais: alimenta o cartao com
+  // badge de situacao E o helper "CNPJs de teste" do front (fornecedores reais na base).
+  const crossIds = [...compAgencies.keys()].filter((id) => compAgencies.get(id).size >= 2);
+  const compById = new Map();
+  // Chunka o .in(): crossIds pode ter centenas de fornecedores -> um unico .in()
+  // estoura o tamanho da URL do PostgREST e/ou trunca a resposta em 1000 linhas.
+  const CHUNK = 300;
+  for (let i = 0; i < crossIds.length; i += CHUNK) {
+    const rows = await safeRun(supabase.from("companies").select("id, cnpj, legal_name, registration_status").in("id", crossIds.slice(i, i + CHUNK)));
+    for (const r of rows) compById.set(r.id, r);
+  }
+
   const edges = [];
   const usedComp = [];
   for (const [compId, agSet] of compAgencies) {
     if (agSet.size < 2) continue; // so fornecedores transversais
     const cid = k("company", compId);
-    usedComp.push({ id: cid, type: "company", title: compName.get(compId) || "Empresa", subtitle: `${agSet.size} agências`, weight: agSet.size });
+    const comp = compById.get(compId);
+    usedComp.push({ id: cid, type: "company", title: comp?.legal_name || compName.get(compId) || "Empresa",
+      subtitle: `${agSet.size} agências`, weight: agSet.size,
+      cnpj: comp?.cnpj || null, meta: nodeMeta("company", comp || {}) });
     for (const agId of agSet) edges.push({ from: cid, to: k("agency", agId), relationship: "reported", weight: 1, meta: {} });
   }
 

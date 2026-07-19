@@ -67,6 +67,7 @@ const sourceStatus = [
 
 const dossierTabs = [
   ["basic", "Informacoes Basicas"],
+  ["ingested", "Base LINCE"],
   ["cnaes", "CNAEs"],
   ["partners", "Socios"],
   ["movements", "Movimentacoes"],
@@ -422,6 +423,15 @@ function text(value, fallback = "Sem dado encontrado") {
   return value === null || value === undefined || value === "" ? fallback : String(value);
 }
 
+// Data BR (DD/MM/AAAA) a partir de ISO/AAAA-MM-DD. Vazio -> "". Nao inventa
+// fuso: usa so a parte de data. Padroniza a exibicao em toda a plataforma (E4).
+function fmtDate(value) {
+  if (!value) return "";
+  const s = String(value).slice(0, 10);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : s;
+}
+
 function sourceClass(status) {
   return {
     connected: "status-ok",
@@ -562,6 +572,21 @@ async function runSearch(cnpjInput) {
   state.graphRootCompanyId = cnpjResult.value?.persisted?.company_id || null;
   if (state.graphRootCompanyId) {
     await mergeSocioNetwork(state.graphRootCompanyId).catch(() => {});
+  }
+  // E3 — mescla a inteligência INGERIDA (contratos/deliberações/sócios/sanções da
+  // base LINCE) ao dossiê ao vivo -> aba "Base LINCE". Best-effort; se a empresa
+  // não está na base ou não há dado, a aba mostra a dica de CNPJs de teste.
+  // Guarda contra corrida: só aplica se o alvo NÃO mudou durante o await (outra
+  // busca concorrente não deve ter seu ingerido sobrescrito por este, mais lento).
+  state.dossier.ingested = [];
+  const ingCompanyId = state.graphRootCompanyId;
+  if (ingCompanyId) {
+    try {
+      const ing = await requestJson(`/api/dossier-person?company=${encodeURIComponent(ingCompanyId)}`);
+      if (state.graphRootCompanyId === ingCompanyId && ing?.ok && ing.mode === "company") {
+        state.dossier.ingested = ingestedCompanyEntries(ing);
+      }
+    } catch { /* sem dado ingerido: aba usa o fallback */ }
   }
   renderAll();
   setLoading(false);
@@ -979,6 +1004,45 @@ function normalizeDomains(payload) {
   return domains;
 }
 
+// E3 — Converte o dossiê de empresa INGERIDO (api/dossier-person?company) em
+// entradas do dossiê (aba "Base LINCE"): contratos, sócios, deliberações, sanções.
+// Isto é o que faltava no "Investigar CNPJ" (item 5): o ao vivo (cnpj.ws) só traz
+// cadastro/QSA/contato; a base LINCE traz contrato público, deliberação e sanção.
+function ingestedCompanyEntries(ing) {
+  const out = [];
+  const cs = ing.contracts_summary || {};
+  if ((cs.count || 0) > 0) {
+    out.push({ source: "Base LINCE / PNCP", label: `Contratos públicos: ${cs.count}`,
+      value: `Total ${money(cs.total_value || 0)} · agências: ${(cs.agencies || []).join(", ") || "-"}` });
+    (ing.contracts || []).slice(0, 6).forEach((c) => {
+      out.push({ source: `PNCP · ${c.agencies?.acronym || "?"}`,
+        label: `${String(c.object || "Contrato").slice(0, 80)}`,
+        value: `${money(Number(c.value) || 0)}${c.signed_at ? " · assinado " + fmtDate(c.signed_at) : ""}${c.ends_at ? " · vence " + fmtDate(c.ends_at) : ""}` });
+    });
+  }
+  (ing.socios || []).slice(0, 12).forEach((s) => {
+    out.push({ source: "QSA / Receita", label: `Sócio: ${s.nome}`,
+      value: `${s.role || (s.kind === "company" ? "Sócia PJ" : "Sócio")}${s.cnpj ? " · " + formatCnpj(s.cnpj) : ""}` });
+  });
+  (ing.deliberations_afeta || []).slice(0, 8).forEach((d) => {
+    out.push({ source: "Deliberação regulatória", label: `${String(d.title || d.deliberation_number || "Deliberação").slice(0, 90)}`,
+      value: `${d.result || "—"}${d.data_reuniao ? " · " + fmtDate(d.data_reuniao) : ""}${d.theme ? " · " + d.theme : ""}` });
+  });
+  const sc = ing.screening || {};
+  if (sc.flags) {
+    const flags = [];
+    if (sc.flags.has_sanctions) flags.push("SANÇÕES");
+    if (sc.flags.is_pep) flags.push("PEP");
+    out.push({ source: "Screening PEP/sanções", label: flags.length ? `⚠ ${flags.join(" · ")}` : "Sem apontamentos de screening",
+      value: (sc.sources || []).join(", ") || "Portal da Transparência / CEIS / CNEP" });
+  }
+  if (!out.length) {
+    out.push({ source: "Base LINCE", label: "Sem inteligência ingerida para esta empresa",
+      value: "Ainda não há contratos/deliberações/sócios na base para este CNPJ. Empresas binacionais (ex.: Itaipu) ou fora do escopo ingerido trazem pouco. Use o botão “CNPJs de teste” para fornecedores reais com dado rico." });
+  }
+  return out;
+}
+
 function buildDossier(company, domains, news, processes, transparency) {
   const addressLine = [
     company.address.street,
@@ -1180,6 +1244,7 @@ function clearResult() {
   state.screening = null;
   state.holdings = [];
   state.selectedNodeId = null;
+  state.graphRootCompanyId = null; // não vazar o alvo anterior p/ a próxima busca (E3)
   renderAll();
 }
 
@@ -3128,6 +3193,40 @@ function showInspectorMessage(title, message) {
   $("#inspector-body").innerHTML = `<article class="detail-card"><p>${escapeHtml(message)}</p></article>`;
 }
 
+// E3 — "CNPJs de teste": fornecedores REAIS na base (contratam com >=2 agências
+// reguladoras => dado rico). Responde ao item 5 ("quais CNPJs posso testar?").
+// Itaipu nunca aparece (binacional, fora do escopo ingerido).
+async function showTestCnpjs() {
+  setView("investigate");
+  $("#inspector-title").textContent = "CNPJs de teste";
+  $("#inspector-body").innerHTML = `<article class="detail-card"><p>Carregando fornecedores reais da base…</p></article>`;
+  try {
+    const g = await requestJson("/api/graph?mode=aggregate");
+    const comps = (g?.nodes || [])
+      .filter((n) => n.type === "company" && onlyDigits(n.cnpj || "").length === 14)
+      .sort((a, b) => (b.weight || 0) - (a.weight || 0))
+      .slice(0, 15);
+    if (!comps.length) {
+      $("#inspector-body").innerHTML = `<article class="detail-card"><p>Nenhum fornecedor transversal com CNPJ na base ainda. Rode a ingestão do PNCP (<code>ingest:pncp</code>) para popular contratos.</p></article>`;
+      return;
+    }
+    const rows = comps.map((c) => {
+      const situ = String(c.meta?.situacao || "").trim();
+      const inactive = isInactiveStatus(situ);
+      return `<button type="button" class="test-cnpj-row" data-test-cnpj="${escapeHtml(onlyDigits(c.cnpj))}">
+        <strong>${escapeHtml(c.title || "Empresa")}</strong>
+        <span>${escapeHtml(formatCnpj(c.cnpj))} · ${escapeHtml(String(c.subtitle || ""))}${situ ? " · " + (inactive ? "⛔ " : "") + escapeHtml(situ) : ""}</span>
+      </button>`;
+    }).join("");
+    $("#inspector-body").innerHTML = `<article class="detail-card">
+      <p style="margin:0 0 8px">Fornecedores que contratam com ≥2 agências reguladoras (dado rico p/ testar). Clique para investigar. <em>Itaipu não aparece: é binacional e fora do escopo ingerido.</em></p>
+      <div class="test-cnpj-list">${rows}</div>
+    </article>`;
+  } catch (e) {
+    $("#inspector-body").innerHTML = `<article class="detail-card"><p>Falha ao carregar CNPJs de teste: ${escapeHtml(e.message)}</p></article>`;
+  }
+}
+
 function renderDossier() {
   renderDossierTabs();
   const title = state.target?.legalName || "Nenhum alvo consultado";
@@ -3359,7 +3458,16 @@ function wireEvents() {
   wireNatGraph();
 
   $("#open-dossier").addEventListener("click", () => setView("dossier"));
+  $("#test-cnpjs")?.addEventListener("click", showTestCnpjs);
   $("#center-graph").addEventListener("click", centerGraph);
+  // Clique num CNPJ de teste -> preenche a busca e investiga.
+  $("#inspector-body")?.addEventListener("click", (event) => {
+    const row = event.target.closest("[data-test-cnpj]");
+    if (!row) return;
+    const cnpj = row.dataset.testCnpj;
+    const input = $("#global-search"); if (input) input.value = formatCnpj(cnpj);
+    runSearch(cnpj);
+  });
   $("#reset-graph")?.addEventListener("click", () => state.graphView?.reset());
   $("#fit-graph")?.addEventListener("click", () => state.graphView?.fit());
   $("#zoom-in")?.addEventListener("click", () => state.graphView?.zoomBy(1.2));
