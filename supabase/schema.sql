@@ -576,3 +576,42 @@ create table if not exists proposicao_autores (
 create unique index if not exists proposicao_autores_uidx on proposicao_autores (proposicao_id, autor_nome);
 create index if not exists proposicao_autores_person_idx on proposicao_autores (person_id);
 alter table proposicao_autores enable row level security;
+
+-- ===== Fase M20.2: votacao legislativa nominal ("como vota") =====
+-- Paralela a deliberations/votes (regulatorio), mas SEM agency_id. O loader de
+-- dados (lib/vote-data.loadVotacoesLeg) mapeia p/ o shape IRIS e reusa as MESMAS
+-- funcoes puras de lib/vote-metrics.js — zero mudanca nas metricas.
+create table if not exists legislative_votacoes (
+  id text primary key,                    -- camara-vot:<id> / senado-vot:<cod>
+  proposicao_id text references proposicoes(id) on delete set null,
+  casa text,
+  descricao text,
+  data_votacao date,
+  resultado text,
+  sigla_orgao text,
+  url text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists legislative_votacoes_prop_idx on legislative_votacoes (proposicao_id);
+alter table legislative_votacoes enable row level security;
+
+create table if not exists legislative_votes (
+  id uuid primary key default gen_random_uuid(),
+  votacao_id text not null references legislative_votacoes(id) on delete cascade,
+  person_id uuid references people(id) on delete set null,
+  parlamentar_nome text,
+  external_person_id text,
+  voto text,                              -- CRU: Sim|Não|Abstenção|Obstrução|Art.17
+  orientacao text,                        -- orientacao do partido (p/ fidelidade)
+  partido text,
+  uf text,
+  created_at timestamptz not null default now()
+);
+-- Chave estavel por (votacao, id externo do parlamentar) — sempre presente (id da
+-- Camara / codigo do Senado). Indice PLANO (nao-expressao) p/ permitir upsert ATOMICO
+-- onConflict (evita delete-then-insert e sua janela de perda de votos).
+create unique index if not exists legislative_votes_uidx
+  on legislative_votes (votacao_id, external_person_id);
+create index if not exists legislative_votes_person_idx on legislative_votes (person_id);
+alter table legislative_votes enable row level security;

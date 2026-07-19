@@ -1463,6 +1463,7 @@ async function openDirectorDossier(id) {
       ${renderPoliticalRisk(pr)}
       ${renderColegiadoVotes(d)}
       ${renderPropositions(d)}
+      ${renderLegislativeVotes(d)}
       ${renderCorporateNetwork(d)}
       ${renderPersonPatrimony(d, socios)}`;
     $("#director-back")?.addEventListener("click", () => loadDirectors());
@@ -1518,6 +1519,25 @@ function renderPropositions(d) {
       <span class="source-meta">Legislativo — proposições de autoria</span>
       <strong>${props.length} proposição(ões) de autoria</strong>
       <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Proposição</th><th>Casa</th><th>Situação</th><th>Ementa</th></tr></thead><tbody>${rows}</tbody></table></div>
+    </article>`;
+}
+
+// M20.2: votação nominal legislativa no dossiê ("como vota" + fidelidade).
+function renderLegislativeVotes(d) {
+  const votes = d.legislative_votes || [];
+  if (!votes.length) return "";
+  const dissent = votes.filter((v) => v.divergente).length;
+  const rows = votes.slice(0, 30).map((v) => `<tr>
+    <td>${escapeHtml(String(v.data_votacao || "").slice(0, 10))}</td>
+    <td>${escapeHtml(v.voto || "—")}${v.divergente ? ' <span class="entity-pill score-high">infiel</span>' : ""}</td>
+    <td>${escapeHtml(v.orientacao || "—")}</td>
+    <td>${escapeHtml(String(v.proposicao_titulo || v.descricao || "").slice(0, 52))}</td>
+  </tr>`).join("");
+  return `
+    <article class="news-card">
+      <span class="source-meta">Congresso — votação nominal (como vota)</span>
+      <strong>${votes.length} voto(s)${dissent ? ` · ${dissent} contra a orientação do partido` : ""}</strong>
+      <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Voto</th><th>Orientação</th><th>Proposição</th></tr></thead><tbody>${rows}</tbody></table></div>
     </article>`;
 }
 
@@ -2169,6 +2189,16 @@ async function exportPersonPdf(d) {
         p.titulo || `${p.tipo || ""} ${p.numero || ""}/${p.ano || ""}`,
         [p.casa, p.situacao].filter(Boolean).join(" — ") || "—",
         "Câmara/Senado · Dados Abertos"
+      )))
+    });
+  }
+  if ((d.legislative_votes || []).length) {
+    sections.push({
+      heading: `Votação nominal — Congresso (${d.legislative_votes.length})`,
+      html: printItemsTable(d.legislative_votes.slice(0, 40).map((v) => item(
+        `${String(v.data_votacao || "").slice(0, 10)} · ${v.voto || "—"}${v.divergente ? " (infiel)" : ""}`,
+        String(v.proposicao_titulo || v.descricao || "—").slice(0, 100),
+        "Câmara · Dados Abertos"
       )))
     });
   }

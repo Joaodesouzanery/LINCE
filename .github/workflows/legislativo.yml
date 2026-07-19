@@ -23,7 +23,7 @@ concurrency:
 jobs:
   legislativo:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 50
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -40,3 +40,5 @@ jobs:
         run: node scripts/load-proposicoes.js
       - name: Detalhe (autores clicaveis + situacao + tema)
         run: node scripts/backfill-proposicao-detalhe.js
+      - name: Votacao nominal (como vota)
+        run: node scripts/load-votacoes-leg.js

@@ -19,6 +19,7 @@
     "load:proposicoes": "node scripts/load-proposicoes.js",
     "load:parlamentares": "node scripts/load-parlamentares.js",
     "backfill:proposicao-detalhe": "node scripts/backfill-proposicao-detalhe.js",
+    "load:votacoes-leg": "node scripts/load-votacoes-leg.js",
     "load:deliberacoes": "node scripts/load-deliberacoes.js",
     "load:tse-filiacao": "node scripts/load-tse-filiacao.js",
     "load:tse-bens": "node scripts/load-tse-bens.js",

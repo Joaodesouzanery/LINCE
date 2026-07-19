@@ -121,7 +121,7 @@ module.exports = async function handler(req, res) {
     }
     if (!person) return res.status(404).json({ ok: false, error: "Pessoa nao encontrada." });
 
-    const [mandates, parties, votes, relsFrom, relsTo, assetsRes, delibsRel, propositionsRes] = await Promise.all([
+    const [mandates, parties, votes, relsFrom, relsTo, assetsRes, delibsRel, propositionsRes, legVotesRes] = await Promise.all([
       supabase.from("mandates").select("*, agencies(acronym, name)").eq("person_id", person.id),
       supabase.from("party_links").select("*").eq("person_id", person.id),
       supabase.from("votes").select("*, deliberations(deliberation_number, title, theme, result, agency_id, data_reuniao)").eq("voter_person_id", person.id),
@@ -131,7 +131,9 @@ module.exports = async function handler(req, res) {
       // Deliberacoes RELATADAS por esta pessoa (rapporteur) — vinculo forte com o mérito.
       supabase.from("deliberations").select("id, deliberation_number, title, theme, result, agency_id, data_reuniao").eq("rapporteur_person_id", person.id),
       // M20: proposicoes de AUTORIA (parlamentar) — junta o legislativo ao dossie.
-      supabase.from("proposicao_autores").select("tipo, ordem, proposicoes(id, casa, tipo, numero, ano, titulo, ementa, situacao, themes, url)").eq("person_id", person.id)
+      supabase.from("proposicao_autores").select("tipo, ordem, proposicoes(id, casa, tipo, numero, ano, titulo, ementa, situacao, themes, url)").eq("person_id", person.id),
+      // M20.2: votos LEGISLATIVOS nominais ("como vota") + contexto da proposicao.
+      supabase.from("legislative_votes").select("voto, orientacao, partido, legislative_votacoes(id, descricao, data_votacao, resultado, casa, proposicao_id, proposicoes(titulo, url))").eq("person_id", person.id)
     ]);
 
     // Proposicoes de autoria: achata o join e ordena por ano desc.
@@ -139,6 +141,23 @@ module.exports = async function handler(req, res) {
       .map((r) => ({ ...(r.proposicoes || {}), autoria_tipo: r.tipo, ordem: r.ordem }))
       .filter((p) => p.id)
       .sort((a, b) => (Number(b.ano) || 0) - (Number(a.ano) || 0));
+
+    // Votos legislativos: achata + marca divergencia da orientacao do proprio partido.
+    // MESMA regra de lib/vote-data.mapVotoLeg (sim->F, nao->D, resto->Abstencao) p/ o
+    // "infiel" do dossie bater com as metricas agregadas (votos_leg_fidelidade).
+    const mapVoto = (raw) => { const v = String(raw || "").trim().toLowerCase(); return v === "sim" ? "F" : (v === "nao" || v === "não" ? "D" : "A"); };
+    const legislative_votes = (legVotesRes.data || [])
+      .map((r) => {
+        const vt = r.legislative_votacoes || {};
+        const liberado = !r.orientacao || /liber/i.test(r.orientacao);
+        return {
+          voto: r.voto, orientacao: r.orientacao, partido: r.partido,
+          divergente: !!(!liberado && r.orientacao && mapVoto(r.voto) !== mapVoto(r.orientacao)),
+          descricao: vt.descricao, data_votacao: vt.data_votacao, resultado: vt.resultado, casa: vt.casa,
+          proposicao_titulo: vt.proposicoes?.titulo || null, proposicao_url: vt.proposicoes?.url || null
+        };
+      })
+      .sort((a, b) => String(b.data_votacao || "").localeCompare(String(a.data_votacao || "")));
 
     // Patrimonio declarado (TSE): agregado por ano + ressalva de homonimo.
     const assetItems = assetsRes.data || [];
@@ -204,6 +223,7 @@ module.exports = async function handler(req, res) {
       relationships: [...(relsFrom.data || []), ...(relsTo.data || [])],
       corporate_network,
       propositions,
+      legislative_votes,
       assets,
       siape: siape.ok ? siape.items : [],
       screening: screening.ok
@@ -215,6 +235,8 @@ module.exports = async function handler(req, res) {
         votes_total: (votes.data || []).length,
         deliberations_relatadas: (delibsRel.data || []).length,
         propositions_count: propositions.length,
+        legislative_votes_count: legislative_votes.length,
+        legislative_dissent: legislative_votes.filter((v) => v.divergente).length,
         active_mandate: (mandates.data || []).some((m) => !m.ended_at),
         corporate_ties: corporate_network.count,
         corporate_inactive: corporate_network.inactive_count,

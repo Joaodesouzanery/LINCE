@@ -316,6 +316,15 @@ module.exports = async function handler(req, res) {
   try {
     const supabase = getSupabase();
 
+    // M20.2 — votacao LEGISLATIVA nominal ("como vota"). ANTES de "votos_" porque
+    // "votos_leg_*" tambem casa aquele prefixo; reusa as MESMAS funcoes de vote-metrics.
+    if (type.startsWith("votos_leg_")) {
+      res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=600");
+      const { serveLegVoteMetric } = require("../lib/vote-data");
+      const out = await serveLegVoteMetric(supabase, type, req.query);
+      return res.status(out.ok ? 200 : 400).json(out);
+    }
+
     // Modulo "Voto dos Diretores" (M19): metricas de votacao/colegiado. Uma unica
     // branch delega para lib/vote-data (busca+mapeia) + lib/vote-metrics (funcoes
     // puras portadas do IRIS) — nao incha o hub nem cria novo arquivo em api/.
