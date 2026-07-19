@@ -14,6 +14,14 @@ const KIND_TABLE = {
 const k = (kind, id) => `${kind}:${id}`;
 const safeRun = async (q) => { try { const { data } = await q; return data || []; } catch { return []; } };
 
+// Metadados extras p/ o cartao do grafo (estilo Sherlocker): situacao cadastral
+// e CNPJ da empresa. Alimenta o badge "Inativo" e o doc no cartao. Pessoa nao
+// expoe CPF (LGPD) — so o papel, que ja vai no subtitle.
+function nodeMeta(kind, row) {
+  if (kind === "company") return { situacao: row.registration_status || null, cnpj: row.cnpj || null };
+  return {};
+}
+
 // Expansao BFS de vinculo societario a partir de um no. Percorre relationships
 // 'socio'/'owns' (person->company e company->company) ate `depth` niveis, revelando
 // a rede indireta (holdings, socios de socios, "laranjas"). Retorna {nodes, edges}.
@@ -68,7 +76,7 @@ async function expandSocio(supabase, startKind, startId, depth, limit) {
     const rows = await safeRun(supabase.from(cfg.table).select("*").in("id", ids));
     for (const row of rows) {
       labels[k(kind, row.id)] = { id: k(kind, row.id), type: kind,
-        title: row[cfg.label] || kind, subtitle: row[cfg.sub] || "" };
+        title: row[cfg.label] || kind, subtitle: row[cfg.sub] || "", meta: nodeMeta(kind, row) };
     }
   }
   const nodes = [...visited].filter((id) => labels[id]).map((id) => labels[id]);
@@ -260,7 +268,7 @@ module.exports = async function handler(req, res) {
       for (const row of data) {
         labels[k(kind, row.id)] = {
           id: k(kind, row.id), type: kind,
-          title: row[cfg.label] || kind, subtitle: row[cfg.sub] || ""
+          title: row[cfg.label] || kind, subtitle: row[cfg.sub] || "", meta: nodeMeta(kind, row)
         };
       }
     }

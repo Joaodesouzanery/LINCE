@@ -175,22 +175,34 @@ let CY_LAYOUT = "cose";
 })();
 
 const CY_STYLE = [
+  // Cartao (estilo Sherlocker): fundo escuro + borda na cor do tipo (acento),
+  // rotulo multilinha dentro (nome + doc + situacao). A cor do tipo vira a borda.
   { selector: "node", style: {
-    "background-color": "data(color)", "label": "data(label)", "color": "#e8eaed",
+    "shape": "round-rectangle",
+    "background-color": "#1b2129", "background-opacity": 0.97,
+    "label": "data(label)", "color": "#e8eaed",
     "font-family": "IBM Plex Sans, Inter, sans-serif",
-    "font-size": 11, "font-weight": 600, "text-wrap": "ellipsis", "text-max-width": 140,
-    "text-valign": "center", "text-halign": "right", "text-margin-x": 6,
-    "width": "data(size)", "height": "data(size)", "border-width": 2, "border-color": "#10151a", "shape": "ellipse"
+    "font-size": 10, "font-weight": 600, "line-height": 1.25,
+    "text-wrap": "wrap", "text-max-width": 148,
+    "text-valign": "center", "text-halign": "center",
+    "width": "label", "height": "label", "padding": "9px",
+    "border-width": 2, "border-color": "data(color)"
   } },
-  { selector: "node.central", style: { "border-color": "#e8eaed", "border-width": 3, "font-size": 12, "font-weight": 800 } },
+  { selector: "node.central", style: { "border-color": "#e8eaed", "border-width": 3, "font-size": 11, "font-weight": 800 } },
   { selector: "node.alerted", style: { "border-color": "#d5605c", "border-width": 3 } },
+  // Situacao cadastral inativa (baixada/suspensa/inapta): borda vermelha tracejada.
+  { selector: "node.inactive", style: { "border-color": "#d5605c", "border-style": "dashed", "color": "#c7ccd1" } },
   { selector: "node:selected", style: { "border-color": "#b0b352", "border-width": 4 } },
   { selector: "node.dim", style: { "opacity": 0.12 } },
   { selector: "node.hidden", style: { "display": "none" } },
   { selector: "node.highlight", style: { "border-color": "#b0b352", "border-width": 4 } },
   { selector: "edge", style: {
     "width": "data(w)", "line-color": "data(lineColor)", "line-style": "data(lineStyle)", "opacity": "data(op)",
-    "curve-style": "bezier", "target-arrow-shape": "triangle", "target-arrow-color": "data(lineColor)", "arrow-scale": 0.7
+    "curve-style": "bezier", "target-arrow-shape": "triangle", "target-arrow-color": "data(lineColor)", "arrow-scale": 0.7,
+    // Rotulo na aresta (Sherlocker): Socio/Administrador/Direcao etc.
+    "label": "data(rel)", "font-size": 8, "font-weight": 600, "color": "#aeb6bf",
+    "text-background-color": "#0c1116", "text-background-opacity": 0.82, "text-background-padding": 2,
+    "text-rotation": "autorotate", "text-wrap": "ellipsis", "text-max-width": 92
   } },
   { selector: "edge.dim", style: { "opacity": 0.05 } },
   { selector: "edge.hidden", style: { "display": "none" } }
@@ -204,12 +216,32 @@ function graphTip() {
 }
 function hideGraphTip() { if (_graphTip) _graphTip.style.display = "none"; }
 
+// Situacao cadastral que indica empresa "morta" (badge vermelho no cartao).
+function isInactiveStatus(s) { return /baix|inap|inativ|suspens|nula|cancel/i.test(String(s || "")); }
+
+// Rotulo multilinha do cartao (estilo Sherlocker): nome + doc + situacao.
+// Empresa: nome / CNPJ formatado / situacao (com ⛔ se inativa). Pessoa: nome / papel.
+function nodeCardLabel(n) {
+  const meta = n.meta || {};
+  const lines = [n.title || n.id];
+  if (n.type === "company") {
+    const cnpj = meta.cnpj || (onlyDigits(n.subtitle || "").length >= 8 ? n.subtitle : "");
+    if (cnpj) lines.push(formatCnpj(cnpj));
+    const situ = String(meta.situacao || "").trim();
+    if (situ) lines.push(isInactiveStatus(situ) ? `⛔ ${situ}` : situ);
+  } else if (n.subtitle) {
+    lines.push(n.subtitle);
+  }
+  return lines.join("\n");
+}
+
 function cyElements(nodes, edges) {
   const ids = new Set(nodes.map((n) => n.id));
   const els = [];
   for (const n of nodes) {
-    const cls = [n.central ? "central" : "", n.alert ? "alerted" : ""].filter(Boolean).join(" ");
-    els.push({ data: { id: n.id, label: n.title || n.id, sub: n.subtitle || "", type: n.type, color: nodeColor(n.type), size: n.central ? 30 : 20 }, classes: cls });
+    const inactive = n.type === "company" && isInactiveStatus((n.meta || {}).situacao);
+    const cls = [n.central ? "central" : "", n.alert ? "alerted" : "", inactive ? "inactive" : ""].filter(Boolean).join(" ");
+    els.push({ data: { id: n.id, label: nodeCardLabel(n), sub: n.subtitle || "", type: n.type, color: nodeColor(n.type), size: n.central ? 30 : 20 }, classes: cls });
   }
   const seen = new Set();
   for (const e of edges) {
@@ -555,7 +587,7 @@ async function mergeSocioNetwork(companyId) {
       const dn = dbNodeById[endId];
       if (!dn) continue;
       state.graphNodes.push({ id: mid, type: dn.type === "company" ? "company" : "partner",
-        title: dn.title, subtitle: dn.subtitle || "", fields: [["Fonte", "Rede societária (Receita/QSA)"]] });
+        title: dn.title, subtitle: dn.subtitle || "", meta: dn.meta || {}, fields: [["Fonte", "Rede societária (Receita/QSA)"]] });
       existing.add(mid);
     }
     state.graphEdges.push([a, b, socioRoleBucket(e.meta?.role), e.weight ?? 0.9]);
@@ -578,7 +610,7 @@ async function expandCnpjNode(nodeId) {
         if (existing.has(mid) || !dbNodeById[endId]) continue;
         const dn = dbNodeById[endId];
         state.graphNodes.push({ id: mid, type: dn.type === "company" ? "company" : "partner",
-          title: dn.title, subtitle: dn.subtitle || "", fields: [["Fonte", "Rede societária (Receita/QSA)"]] });
+          title: dn.title, subtitle: dn.subtitle || "", meta: dn.meta || {}, fields: [["Fonte", "Rede societária (Receita/QSA)"]] });
         existing.add(mid);
       }
       state.graphEdges.push([remap(e.from), remap(e.to), socioRoleBucket(e.meta?.role), e.weight ?? 0.9]);
@@ -1074,6 +1106,7 @@ function buildGraph(company, domains, news, processes = [], transparency = []) {
     central: true,
     alert: companyInapta,
     status: company.status || "Conectado",
+    meta: { situacao: company.status || null, cnpj: company.cnpj || null },
     fields: [
       ["Fonte", "CNPJ.ws"],
       ["Situacao", company.status || "Sem dado"],
