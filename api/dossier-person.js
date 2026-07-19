@@ -136,6 +136,18 @@ module.exports = async function handler(req, res) {
       supabase.from("legislative_votes").select("voto, orientacao, partido, legislative_votacoes(id, descricao, data_votacao, resultado, casa, proposicao_id, proposicoes(titulo, url))").eq("person_id", person.id)
     ]);
 
+    // M20.3: doacoes de campanha PAGINADAS (recebedores grandes passam de 1000 —
+    // o PostgREST corta em 1000; sem paginar, o total "quem financia" fica subestimado).
+    const donations = [];
+    for (let from = 0; from < 20000; from += 1000) {
+      const { data, error } = await supabase.from("campaign_donations")
+        .select("donor_name, donor_document, donor_type, amount, reference_year")
+        .eq("recipient_person_id", person.id).range(from, from + 999);
+      if (error || !data) break; // tabela ausente (M20.3 nao aplicada) ou fim -> degrada
+      donations.push(...data);
+      if (data.length < 1000) break;
+    }
+
     // Proposicoes de autoria: achata o join e ordena por ano desc.
     const propositions = (propositionsRes.data || [])
       .map((r) => ({ ...(r.proposicoes || {}), autoria_tipo: r.tipo, ordem: r.ordem }))
@@ -158,6 +170,20 @@ module.exports = async function handler(req, res) {
         };
       })
       .sort((a, b) => String(b.data_votacao || "").localeCompare(String(a.data_votacao || "")));
+
+    // Financiadores de campanha: agrega por doador (top por valor) + total.
+    const donorMap = new Map();
+    for (const dn of donations) {
+      const k = dn.donor_document || dn.donor_name || "?";
+      const cur = donorMap.get(k) || { donor_name: dn.donor_name, donor_document: dn.donor_document, donor_type: dn.donor_type, total: 0, count: 0 };
+      cur.total += Number(dn.amount) || 0; cur.count++;
+      donorMap.set(k, cur);
+    }
+    const financiadores = {
+      total: donations.reduce((s, dn) => s + (Number(dn.amount) || 0), 0),
+      count: donations.length,
+      top: [...donorMap.values()].sort((a, b) => b.total - a.total).slice(0, 15)
+    };
 
     // Patrimonio declarado (TSE): agregado por ano + ressalva de homonimo.
     const assetItems = assetsRes.data || [];
@@ -224,6 +250,7 @@ module.exports = async function handler(req, res) {
       corporate_network,
       propositions,
       legislative_votes,
+      financiadores,
       assets,
       siape: siape.ok ? siape.items : [],
       screening: screening.ok
@@ -237,6 +264,8 @@ module.exports = async function handler(req, res) {
         propositions_count: propositions.length,
         legislative_votes_count: legislative_votes.length,
         legislative_dissent: legislative_votes.filter((v) => v.divergente).length,
+        financiadores_total: financiadores.total,
+        financiadores_count: financiadores.count,
         active_mandate: (mandates.data || []).some((m) => !m.ended_at),
         corporate_ties: corporate_network.count,
         corporate_inactive: corporate_network.inactive_count,

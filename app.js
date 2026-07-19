@@ -136,7 +136,8 @@ const NODE_TYPE_META = {
   party:        { color: "#d2699e", label: "Partido" },
   deliberation: { color: "#2ea89d", label: "Deliberação" },
   process:      { color: "#c78a3b", label: "Processo" },
-  contract:     { color: "#b0b352", label: "Contrato" }
+  contract:     { color: "#b0b352", label: "Contrato" },
+  donor:        { color: "#d2699e", label: "Doador" }
 };
 const nodeColor = (t) => (NODE_TYPE_META[t] || { color: "#6b757d" }).color;
 const nodeTypeLabel = (t) => (NODE_TYPE_META[t] || { label: t }).label;
@@ -1464,6 +1465,7 @@ async function openDirectorDossier(id) {
       ${renderColegiadoVotes(d)}
       ${renderPropositions(d)}
       ${renderLegislativeVotes(d)}
+      ${renderFinanciadores(d)}
       ${renderCorporateNetwork(d)}
       ${renderPersonPatrimony(d, socios)}`;
     $("#director-back")?.addEventListener("click", () => loadDirectors());
@@ -1538,6 +1540,24 @@ function renderLegislativeVotes(d) {
       <span class="source-meta">Congresso — votação nominal (como vota)</span>
       <strong>${votes.length} voto(s)${dissent ? ` · ${dissent} contra a orientação do partido` : ""}</strong>
       <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Voto</th><th>Orientação</th><th>Proposição</th></tr></thead><tbody>${rows}</tbody></table></div>
+    </article>`;
+}
+
+// M20.3: financiadores de campanha no dossiê ("quem financia").
+function renderFinanciadores(d) {
+  const f = d.financiadores || {};
+  if (!f.count) return "";
+  const rows = (f.top || []).map((x) => `<tr>
+    <td>${escapeHtml(x.donor_name || "—")}</td>
+    <td>${escapeHtml(x.donor_type || "—")}</td>
+    <td>${escapeHtml(x.donor_document || "—")}</td>
+    <td>${escapeHtml(money(x.total))}${x.count > 1 ? ` <span class="entity-pill">${x.count}×</span>` : ""}</td>
+  </tr>`).join("");
+  return `
+    <article class="news-card">
+      <span class="source-meta">Financiadores de campanha (TSE)</span>
+      <strong>${escapeHtml(money(f.total))} em ${f.count} doação(ões)</strong>
+      <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Doador</th><th>Tipo</th><th>Documento</th><th>Total</th></tr></thead><tbody>${rows}</tbody></table></div>
     </article>`;
 }
 
@@ -2199,6 +2219,16 @@ async function exportPersonPdf(d) {
         `${String(v.data_votacao || "").slice(0, 10)} · ${v.voto || "—"}${v.divergente ? " (infiel)" : ""}`,
         String(v.proposicao_titulo || v.descricao || "—").slice(0, 100),
         "Câmara · Dados Abertos"
+      )))
+    });
+  }
+  if ((d.financiadores?.count || 0)) {
+    sections.push({
+      heading: `Financiadores de campanha — ${money(d.financiadores.total)}`,
+      html: printItemsTable((d.financiadores.top || []).map((x) => item(
+        x.donor_name || "—",
+        `${money(x.total)}${x.donor_type ? " · " + x.donor_type : ""}${x.donor_document ? " · " + x.donor_document : ""}`,
+        "TSE · prestação de contas"
       )))
     });
   }

@@ -615,3 +615,31 @@ create unique index if not exists legislative_votes_uidx
   on legislative_votes (votacao_id, external_person_id);
 create index if not exists legislative_votes_person_idx on legislative_votes (person_id);
 alter table legislative_votes enable row level security;
+
+-- ===== Fase M20.3: doacoes de campanha ("quem financia") =====
+-- Prestacao de contas eleitoral do TSE (receitas). LGPD: CNPJ de doador PJ e
+-- publico; CPF de doador PF fica MASCARADO. O recebedor (candidato/parlamentar)
+-- casa por nome com `people` (homonimo-seguro, lib/tse-match). SEM IA.
+create table if not exists campaign_donations (
+  id uuid primary key default gen_random_uuid(),
+  recipient_person_id uuid references people(id) on delete cascade,
+  recipient_name text,
+  sq_candidato text,
+  tse_receita_id text,                    -- SQ_RECEITA do TSE (id do recibo) — chave
+  donor_name text,
+  donor_document text,                    -- CNPJ (PJ) inteiro; CPF (PF) mascarado
+  donor_type text,                        -- PF|PJ
+  amount numeric(16,2),
+  reference_year int,
+  source_name text not null default 'TSE',
+  match_method text not null default 'name',
+  created_at timestamptz not null default now()
+);
+create index if not exists campaign_donations_recipient_idx on campaign_donations (recipient_person_id);
+create index if not exists campaign_donations_donor_doc_idx on campaign_donations (donor_document);
+-- Chave por RECIBO (nao por valor): dois recibos legitimos de mesmo valor NAO
+-- colapsam. tse_receita_id e sempre preenchido pelo loader (SQ_RECEITA ou sequencia
+-- por candidato) -> sem NULL na chave (evita re-insercao a cada run).
+create unique index if not exists campaign_donations_uidx
+  on campaign_donations (sq_candidato, tse_receita_id);
+alter table campaign_donations enable row level security;

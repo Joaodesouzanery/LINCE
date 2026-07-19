@@ -12,6 +12,7 @@ const { getSupabase } = require("../lib/supabase");
 const { normalizeNameKey } = require("../lib/text");
 const { fetchAutores, fetchSituacaoCamara } = require("../lib/legislativo");
 const { classifyThemes } = require("../lib/themes");
+const { sendAlertWebhook } = require("../lib/notify");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PAGE = 1000;
@@ -33,7 +34,7 @@ async function main() {
   const dryRun = process.argv.includes("--dry-run");
   const supabase = getSupabase();
 
-  const props = await paginate(supabase, "proposicoes", "id, casa, titulo, ementa, autor", (q) => q.order("id"));
+  const props = await paginate(supabase, "proposicoes", "id, casa, titulo, ementa, autor, situacao, url", (q) => q.order("id"));
   console.log(`Proposicoes: ${props.length}`);
 
   // Indices de match, SO de parlamentares (upsertPerson usa strictExternal -> todo
@@ -55,6 +56,7 @@ async function main() {
   console.log(`Parlamentares: ${parls.length} | por id Camara: ${camaraMap.size} | nomes unicos: ${byNameKey.size}`);
 
   let autoresIns = 0, situUpd = 0, themesUpd = 0, failed = 0, apiFailed = 0;
+  const changed = []; // proposicoes que MUDARAM de situacao (p/ alerta — Fase 4)
 
   for (let i = 0; i < props.length; i++) {
     const p = props[i];
@@ -91,6 +93,12 @@ async function main() {
       continue;
     }
 
+    // Fase 4: situacao MUDOU (tinha valor e virou outro) -> proposicao "andou" -> alerta.
+    // Nao alerta na 1a ingestao (p.situacao null = populacao inicial, nao movimento).
+    if (situacao && p.situacao && situacao !== p.situacao) {
+      changed.push({ titulo: p.titulo || p.id, casa: p.casa, de: p.situacao, para: situacao, url: p.url });
+    }
+
     const upd = {};
     if (themes.length) upd.themes = themes;
     if (situacao) upd.situacao = situacao;
@@ -112,6 +120,19 @@ async function main() {
 
   console.log(`\n=== Backfill proposicao detalhe concluido ===`);
   console.log(`Autores gravados: ${autoresIns} | situacao: ${situUpd} | themes: ${themesUpd} | falhas DB: ${failed} | falhas API: ${apiFailed}`);
+  console.log(`Proposicoes que MUDARAM de situacao (andaram): ${changed.length}`);
+
+  // Fase 4 — alerta por proposicao acompanhada: empurra as que ANDARAM p/ o webhook
+  // (reusa o canal da F2; gated por ALERT_WEBHOOK_URL). Best-effort, nunca lança.
+  if (!dryRun && changed.length) {
+    const items = changed.slice(0, 40).map((c) => ({
+      title: `${c.titulo}${c.casa ? " (" + c.casa + ")" : ""}`,
+      description: `Andou: ${c.de} → ${c.para}`,
+      severity: "medium"
+    }));
+    const r = await sendAlertWebhook(items, { label: "LINCE · Legislativo (proposição andou)" });
+    console.log(`Alerta de tramitacao: ${r.ok ? r.sent + " enviado(s)" : (r.skipped || r.error || "—")}`);
+  }
   if (dryRun) console.log("(dry-run: nada gravado)");
 }
 

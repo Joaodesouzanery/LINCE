@@ -251,6 +251,29 @@ module.exports = async function handler(req, res) {
         weight: 0.95, meta: { reference_year: p.reference_year, amount: p.amount } });
     }
 
+    // 3b) Doacoes de campanha (M20.3) -> doador (no sintetico) --doacao--> pessoa.
+    // "Quem financia": agrega por doador p/ nao poluir com N arestas do mesmo doador.
+    const donationFilter = (q) => (nKind === "person" ? q.eq("recipient_person_id", nId) : q);
+    const donations = await safe(donationFilter(
+      supabase.from("campaign_donations").select("recipient_person_id, donor_name, donor_document, donor_type, amount").limit(limit)
+    ));
+    const donorAgg = new Map();
+    for (const dn of donations) {
+      if (!dn.recipient_person_id) continue;
+      const dkey = dn.donor_document || dn.donor_name;
+      if (!dkey) continue;
+      const aggKey = `${dn.recipient_person_id}|${dkey}`;
+      const cur = donorAgg.get(aggKey) || { recipient: dn.recipient_person_id, name: dn.donor_name, doc: dn.donor_document, type: dn.donor_type, total: 0 };
+      cur.total += Number(dn.amount) || 0;
+      donorAgg.set(aggKey, cur);
+    }
+    for (const dn of donorAgg.values()) {
+      const did = k("donor", String(dn.doc || dn.name).replace(/\W+/g, "").slice(0, 28) || "x");
+      synthetic[did] = { id: did, type: "donor", title: dn.name || dn.doc || "Doador", subtitle: dn.type === "PJ" ? "Doador (PJ)" : "Doador" };
+      noteNeed("person", dn.recipient);
+      edges.push({ from: did, to: k("person", dn.recipient), relationship: "doacao", weight: 0.9, meta: { amount: dn.total, doc: dn.doc } });
+    }
+
     // 4) Deliberacoes -> agencia--delibera-->deliberacao; relator--relatou-->deliberacao;
     //    deliberacao--afeta-->empresa.
     const delibs = await safe(agencyFilter(

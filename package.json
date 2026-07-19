@@ -23,6 +23,7 @@
     "load:deliberacoes": "node scripts/load-deliberacoes.js",
     "load:tse-filiacao": "node scripts/load-tse-filiacao.js",
     "load:tse-bens": "node scripts/load-tse-bens.js",
+    "load:tse-doacoes": "node scripts/load-tse-doacoes.js",
     "load:tse-partido": "node scripts/load-tse-partido.js",
     "clean:people": "node scripts/clean-people.js",
     "fix:agency": "node scripts/fix-agency-attribution.js",
