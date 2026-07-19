@@ -8,6 +8,51 @@
 const { getSupabase } = require("../lib/supabase");
 const { searchProposicoes } = require("../lib/legislativo");
 
+// M20: anexa autores CLICAVEIS + tema/situacao ingeridos a uma lista de proposicoes
+// (por id). Serve o histórico persistido E os resultados AO VIVO (que casam com o
+// acervo ingerido). Best-effort: degrada se as tabelas/colunas M20 ainda nao existem
+// (deploy do codigo antes de aplicar a migracao) — supabase-js retorna {error}, nao lanca.
+async function enrichProposicoes(supabase, items) {
+  if (!Array.isArray(items) || !items.length) return items;
+  const ids = items.map((p) => p && p.id).filter(Boolean);
+  if (!ids.length) return items;
+
+  const { data: autores, error: aErr } = await supabase
+    .from("proposicao_autores")
+    .select("proposicao_id, person_id, autor_nome, tipo, ordem")
+    .in("proposicao_id", ids);
+  if (!aErr && autores) {
+    const byProp = new Map();
+    for (const a of autores) {
+      if (!byProp.has(a.proposicao_id)) byProp.set(a.proposicao_id, []);
+      byProp.get(a.proposicao_id).push({ person_id: a.person_id, autor_nome: a.autor_nome, tipo: a.tipo, ordem: a.ordem });
+    }
+    for (const p of items) {
+      const list = (byProp.get(p.id) || []).sort((x, y) => (x.ordem || 99) - (y.ordem || 99));
+      if (list.length) p.autores = list;
+    }
+  }
+
+  // Tema/situacao ingeridos — so p/ itens que ainda nao os trazem (os ao vivo).
+  const need = items.filter((p) => p.themes === undefined || p.situacao === undefined);
+  if (need.length) {
+    const { data: rows, error } = await supabase
+      .from("proposicoes")
+      .select("id, themes, situacao")
+      .in("id", need.map((p) => p.id));
+    if (!error && rows) {
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      for (const p of need) {
+        const r = byId.get(p.id);
+        if (!r) continue;
+        if (p.themes === undefined) p.themes = r.themes || null;
+        if (p.situacao === undefined) p.situacao = r.situacao || null;
+      }
+    }
+  }
+  return items;
+}
+
 const CONSULTAS_KW = ["consulta publica", "audiencia publica", "tomada de subsidio", "air", "analise de impacto"];
 const AGENDA_KW    = ["reuniao", "pauta", "deliberacao", "diretoria colegiada", "sessao", "julgamento", "resolucao"];
 
@@ -70,6 +115,9 @@ module.exports = async function handler(req, res) {
       // Sem filtro -> HISTORICO persistido (M18/load:proposicoes).
       try {
         const supabase = getSupabase();
+        // NOTA: o select NAO pede as colunas M20 (themes/situacao) — elas vem via
+        // enrichProposicoes (best-effort), p/ o endpoint nao quebrar entre o deploy
+        // do codigo e a aplicacao da migracao M20.
         const { data, error } = await supabase.from("proposicoes")
           .select("id, casa, tipo, numero, ano, ementa, titulo, autor, url, last_seen")
           // Ordena pela DATA da proposicao (ano) e nao pela hora do scrape (last_seen,
@@ -77,7 +125,8 @@ module.exports = async function handler(req, res) {
           .order("ano", { ascending: false, nullsFirst: false })
           .order("last_seen", { ascending: false }).limit(50);
         if (!error) {
-          return res.status(200).json({ ok: true, type, source: "persistido", items: data || [], fetchedAt: new Date().toISOString() });
+          const items = await enrichProposicoes(supabase, data || []);
+          return res.status(200).json({ ok: true, type, source: "persistido", items, fetchedAt: new Date().toISOString() });
         }
         // supabase-js retorna {error} (nao lanca). NAO mascarar um erro real de
         // banco como "faltou ?q=" — logar sempre e distinguir tabela-ausente
@@ -99,6 +148,9 @@ module.exports = async function handler(req, res) {
       casa: req.query.casa ? String(req.query.casa) : "both",
       limit: Math.min(Number(req.query.limit) || 20, 100)
     });
+    // M20: enriquece os resultados AO VIVO com autor clicavel + tema/situacao do
+    // acervo ingerido (as proposicoes dos termos curados casam por id). Best-effort.
+    try { await enrichProposicoes(getSupabase(), result.items || []); } catch { /* sem enriquecimento */ }
     return res.status(200).json({ ...result, type, fetchedAt: new Date().toISOString() });
   }
 

@@ -17,6 +17,8 @@
     "backfill:themes": "node scripts/backfill-themes.js",
     "load:agenda": "node scripts/load-agenda.js",
     "load:proposicoes": "node scripts/load-proposicoes.js",
+    "load:parlamentares": "node scripts/load-parlamentares.js",
+    "backfill:proposicao-detalhe": "node scripts/backfill-proposicao-detalhe.js",
     "load:deliberacoes": "node scripts/load-deliberacoes.js",
     "load:tse-filiacao": "node scripts/load-tse-filiacao.js",
     "load:tse-bens": "node scripts/load-tse-bens.js",

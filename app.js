@@ -1374,7 +1374,13 @@ async function loadDouFeed() {
 }
 
 // Lista de diretores (busca incremental por ?q= ou lista completa por ?list=1).
+// Quando navegamos p/ a aba Diretores JA abrindo um dossiê específico, o autoload
+// da lista (setView -> loadDirectors) correria com o fetch do dossiê e poderia
+// sobrescrevê-lo. Este flag pula 1 autoload nesse caso (M20).
+let suppressDirectorsAutoload = false;
+
 async function loadDirectors() {
+  if (suppressDirectorsAutoload) { suppressDirectorsAutoload = false; return; }
   const list = $("#directors-list");
   if (!list) return;
   const name = $("#director-search")?.value?.trim();
@@ -1456,6 +1462,7 @@ async function openDirectorDossier(id) {
       </article>
       ${renderPoliticalRisk(pr)}
       ${renderColegiadoVotes(d)}
+      ${renderPropositions(d)}
       ${renderCorporateNetwork(d)}
       ${renderPersonPatrimony(d, socios)}`;
     $("#director-back")?.addEventListener("click", () => loadDirectors());
@@ -1488,6 +1495,29 @@ function renderColegiadoVotes(d) {
       <strong>${votes.length} voto(s)${votes.length ? ` · ${votes.filter((v) => v.is_dissent).length} divergente(s)` : ""} | ${relatadas.length} relatada(s)</strong>
       ${relRows ? `<div class="entity-row" style="margin:6px 0">Relatou: ${relRows}</div>` : ""}
       ${votes.length ? `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Delib.</th><th>Voto</th><th>Resultado</th><th>Assunto</th></tr></thead><tbody>${voteRows}</tbody></table></div>` : ""}
+    </article>`;
+}
+
+// M20: proposições de autoria no dossiê de parlamentar (o "quem propôs").
+function renderPropositions(d) {
+  const props = d.propositions || [];
+  if (!props.length) return "";
+  const rows = props.slice(0, 25).map((p) => {
+    const url = safeUrl(p.url);
+    const titulo = p.titulo || `${p.tipo || ""} ${p.numero || ""}/${p.ano || ""}`;
+    const themes = (Array.isArray(p.themes) ? p.themes : []).slice(0, 2).map((t) => `<span class="entity-pill">${escapeHtml(t)}</span>`).join("");
+    return `<tr>
+      <td>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(titulo)}</a>` : escapeHtml(titulo)}</td>
+      <td>${escapeHtml(p.casa || "—")}</td>
+      <td>${escapeHtml(p.situacao || "—")}</td>
+      <td>${escapeHtml((p.ementa || "").slice(0, 70))} ${themes}</td>
+    </tr>`;
+  }).join("");
+  return `
+    <article class="news-card">
+      <span class="source-meta">Legislativo — proposições de autoria</span>
+      <strong>${props.length} proposição(ões) de autoria</strong>
+      <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Proposição</th><th>Casa</th><th>Situação</th><th>Ementa</th></tr></thead><tbody>${rows}</tbody></table></div>
     </article>`;
 }
 
@@ -1638,6 +1668,16 @@ function renderLegislativo(items) {
   list.innerHTML = items
     .map((p) => {
       const url = safeUrl(p.url);
+      // Autor CLICAVEL quando resolvido a uma pessoa (data-person-id -> dossiê).
+      // Fallback: texto puro (autores[] ausente, ou autor institucional/sem match).
+      const autores = Array.isArray(p.autores) && p.autores.length
+        ? p.autores
+        : (p.autor ? [{ autor_nome: p.autor, person_id: null }] : []);
+      const autoresHtml = autores.slice(0, 3).map((a) =>
+        a.person_id
+          ? `<button type="button" class="link-author" data-person-id="${escapeHtml(a.person_id)}">${escapeHtml(a.autor_nome)}</button>`
+          : escapeHtml(a.autor_nome)
+      ).join(", ");
       return `
       <article class="news-card target-card">
         <div class="card-body">
@@ -1645,13 +1685,15 @@ function renderLegislativo(items) {
             ${TARGET_ICO}
             <div>
               <strong>${escapeHtml(p.titulo || `${p.tipo || ""} ${p.numero || ""}`)}</strong>
-              <span class="card-sub">${escapeHtml(p.casa || "")}${p.autor ? " · " + escapeHtml(p.autor) : ""}</span>
+              <span class="card-sub">${escapeHtml(p.casa || "")}${autoresHtml ? " · " + autoresHtml : ""}</span>
             </div>
           </div>
           <p>${escapeHtml((p.ementa || "Sem ementa.").slice(0, 300))}</p>
           <div class="entity-row">
             <span class="entity-pill">${escapeHtml(p.casa || "")}</span>
             ${p.tipo ? `<span class="entity-pill">${escapeHtml(p.tipo)}</span>` : ""}
+            ${p.situacao ? `<span class="entity-pill">${escapeHtml(p.situacao)}</span>` : ""}
+            ${(Array.isArray(p.themes) ? p.themes : []).slice(0, 2).map((t) => `<span class="entity-pill">${escapeHtml(t)}</span>`).join("")}
             ${url ? `<a class="entity-pill" href="${escapeHtml(url)}" target="_blank" rel="noopener">Abrir ↗</a>` : ""}
           </div>
         </div>
@@ -2118,6 +2160,16 @@ async function exportPersonPdf(d) {
     sections.push({
       heading: "Filiação partidária",
       html: printItemsTable(d.party_links.map((p) => item(p.party, p.joined_at ? `Filiado desde ${p.joined_at}` : "Filiação registrada", "TSE")))
+    });
+  }
+  if ((d.propositions || []).length) {
+    sections.push({
+      heading: `Proposições de autoria (${d.propositions.length})`,
+      html: printItemsTable(d.propositions.slice(0, 40).map((p) => item(
+        p.titulo || `${p.tipo || ""} ${p.numero || ""}/${p.ano || ""}`,
+        [p.casa, p.situacao].filter(Boolean).join(" — ") || "—",
+        "Câmara/Senado · Dados Abertos"
+      )))
     });
   }
   const assets = d.assets?.items || [];
@@ -3495,6 +3547,15 @@ function wireEvents() {
 
   $("#monitor-form")?.addEventListener("submit", saveMonitorFromForm);
   $("#leg-form")?.addEventListener("submit", (e) => { e.preventDefault(); loadLegislativo($("#leg-search")?.value); });
+  // M20: clique no AUTOR de uma proposição (parlamentar) abre o dossiê investigativo.
+  // Suprime o autoload da lista de diretores p/ não sobrescrever o dossiê (race).
+  $("#legislativo-list")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-person-id]");
+    if (!btn) return;
+    suppressDirectorsAutoload = true;
+    document.querySelector("[data-view='directors']")?.click();
+    openDirectorDossier(btn.dataset.personId);
+  });
   wireMonitorList();
   $("#export-dossier")?.addEventListener("click", () => {
     exportDossierPdf().catch((error) => alert(`Falha ao exportar: ${error.message}`));

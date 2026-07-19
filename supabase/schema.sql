@@ -544,3 +544,35 @@ create table if not exists upload_jobs (
 );
 create index if not exists upload_jobs_status_idx on upload_jobs (status);
 alter table upload_jobs enable row level security;
+
+-- ===== Fase M20: Diferencial Legislativo (parlamentar investigavel) =====
+-- Cruza o legislativo (proposicao/autor/voto/financiamento) com a camada
+-- investigativa (patrimonio/vinculos) que ja existe para diretores. O parlamentar
+-- e apenas uma `people` com role='deputado'/'senador' e agency_id NULO — nao ha
+-- pseudo-agencia (sector='regulatory' protege as queries regulatorias). SEM IA.
+
+-- Id externo estavel (Camara/Senado) p/ casar autor/voto SEM CPF (LGPD). + UF.
+alter table people add column if not exists external_ids jsonb not null default '{}'::jsonb;
+alter table people add column if not exists uf text;
+create index if not exists people_external_ids_gin on people using gin (external_ids);
+
+-- Proposicao: tema (classifyThemes, determinístico) + situacao de tramitacao.
+alter table proposicoes add column if not exists themes text[];
+alter table proposicoes add column if not exists situacao text;
+create index if not exists proposicoes_themes_gin on proposicoes using gin (themes);
+
+-- Autoria estruturada: clicavel quando person_id resolvido; institucional
+-- (comissao/executivo) fica com person_id NULO mas autor_nome preenchido.
+create table if not exists proposicao_autores (
+  id uuid primary key default gen_random_uuid(),
+  proposicao_id text not null references proposicoes(id) on delete cascade,
+  person_id uuid references people(id) on delete set null,
+  autor_nome text not null,
+  tipo text,                 -- deputado|senador|comissao|executivo|outro
+  ordem int,
+  external_author_id text,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists proposicao_autores_uidx on proposicao_autores (proposicao_id, autor_nome);
+create index if not exists proposicao_autores_person_idx on proposicao_autores (person_id);
+alter table proposicao_autores enable row level security;

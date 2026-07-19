@@ -87,6 +87,14 @@ a {
   transition: grid-template-columns 0.16s ease;
 }
 
+/* Autor de proposição clicável -> dossiê (M20) */
+.link-author {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--blue-bright); font: inherit; text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-author:hover { color: var(--text); }
+
 /* Lista "CNPJs de teste" (E3) */
 .test-cnpj-list { display: flex; flex-direction: column; gap: 6px; }
 .test-cnpj-row {

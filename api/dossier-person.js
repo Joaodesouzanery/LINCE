@@ -121,7 +121,7 @@ module.exports = async function handler(req, res) {
     }
     if (!person) return res.status(404).json({ ok: false, error: "Pessoa nao encontrada." });
 
-    const [mandates, parties, votes, relsFrom, relsTo, assetsRes, delibsRel] = await Promise.all([
+    const [mandates, parties, votes, relsFrom, relsTo, assetsRes, delibsRel, propositionsRes] = await Promise.all([
       supabase.from("mandates").select("*, agencies(acronym, name)").eq("person_id", person.id),
       supabase.from("party_links").select("*").eq("person_id", person.id),
       supabase.from("votes").select("*, deliberations(deliberation_number, title, theme, result, agency_id, data_reuniao)").eq("voter_person_id", person.id),
@@ -129,8 +129,16 @@ module.exports = async function handler(req, res) {
       supabase.from("relationships").select("*").eq("to_id", person.id).eq("to_kind", "person"),
       supabase.from("assets").select("*").eq("person_id", person.id).order("reference_year", { ascending: false }),
       // Deliberacoes RELATADAS por esta pessoa (rapporteur) — vinculo forte com o mérito.
-      supabase.from("deliberations").select("id, deliberation_number, title, theme, result, agency_id, data_reuniao").eq("rapporteur_person_id", person.id)
+      supabase.from("deliberations").select("id, deliberation_number, title, theme, result, agency_id, data_reuniao").eq("rapporteur_person_id", person.id),
+      // M20: proposicoes de AUTORIA (parlamentar) — junta o legislativo ao dossie.
+      supabase.from("proposicao_autores").select("tipo, ordem, proposicoes(id, casa, tipo, numero, ano, titulo, ementa, situacao, themes, url)").eq("person_id", person.id)
     ]);
+
+    // Proposicoes de autoria: achata o join e ordena por ano desc.
+    const propositions = (propositionsRes.data || [])
+      .map((r) => ({ ...(r.proposicoes || {}), autoria_tipo: r.tipo, ordem: r.ordem }))
+      .filter((p) => p.id)
+      .sort((a, b) => (Number(b.ano) || 0) - (Number(a.ano) || 0));
 
     // Patrimonio declarado (TSE): agregado por ano + ressalva de homonimo.
     const assetItems = assetsRes.data || [];
@@ -195,6 +203,7 @@ module.exports = async function handler(req, res) {
       deliberations_relatadas: delibsRel.data || [],
       relationships: [...(relsFrom.data || []), ...(relsTo.data || [])],
       corporate_network,
+      propositions,
       assets,
       siape: siape.ok ? siape.items : [],
       screening: screening.ok
@@ -205,6 +214,7 @@ module.exports = async function handler(req, res) {
         dissent_votes: dissent,
         votes_total: (votes.data || []).length,
         deliberations_relatadas: (delibsRel.data || []).length,
+        propositions_count: propositions.length,
         active_mandate: (mandates.data || []).some((m) => !m.ended_at),
         corporate_ties: corporate_network.count,
         corporate_inactive: corporate_network.inactive_count,

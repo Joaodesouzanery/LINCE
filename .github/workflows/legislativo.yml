@@ -1,0 +1,42 @@
+# Ingestao do modulo Legislativo (M20 — diferencial parlamentar investigavel).
+# Roda AQUI (GitHub Actions), nao no Vercel: os 2 crons e as 12 funcoes do Hobby
+# ja estao no limite. Encadeia, semanalmente:
+#   1) parlamentares em exercicio (deputados + senadores) -> people
+#   2) proposicoes (17 termos regulatorios curados) — ja existente
+#   3) detalhe: autores (clicaveis) + situacao + tema (classifyThemes, sem IA)
+# Tudo de API publica gratuita (Dados Abertos Camara/Senado). Sem chave de API.
+#
+# PRE-REQUISITOS (uma vez): Settings > Secrets and variables > Actions:
+#   SUPABASE_URL  /  SUPABASE_SERVICE_KEY  (mesmos dos outros workflows)
+# A migracao M20 (supabase/schema.sql) precisa estar aplicada.
+name: legislativo
+
+on:
+  schedule:
+    - cron: "27 10 * * 1" # toda segunda ~10:27 UTC (~07:27 BRT)
+  workflow_dispatch: {}
+
+concurrency:
+  group: legislativo
+  cancel-in-progress: false
+
+jobs:
+  legislativo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Instalar deps do projeto
+        run: npm ci --no-audit --no-fund
+      - name: Parlamentares (deputados + senadores em exercicio)
+        run: node scripts/load-parlamentares.js
+      - name: Proposicoes (17 termos regulatorios curados)
+        run: node scripts/load-proposicoes.js
+      - name: Detalhe (autores clicaveis + situacao + tema)
+        run: node scripts/backfill-proposicao-detalhe.js
