@@ -1,0 +1,38 @@
+# Digest diario dos paineis curados (NOMOS F3 — alertas/relatorio).
+# Roda AQUI (GitHub Actions), nao no Vercel: os 2 crons do Hobby ja estao no limite.
+# Para cada painel ativo (frequencia tempo_real/diario), envia as NOVAS votacoes
+# desde o ultimo envio por webhook (webhook_url do painel) e e-mail (owner_email).
+#
+# PRE-REQUISITOS (Settings > Secrets and variables > Actions):
+#   SUPABASE_URL  /  SUPABASE_SERVICE_KEY   (mesmos dos outros workflows)
+#   RESEND_API_KEY / RESEND_FROM  (OPCIONAIS — sem eles, o e-mail so degrada; webhook segue)
+# A migracao M21 + M21.1 (supabase/schema.sql) precisa estar aplicada.
+name: paineis
+
+on:
+  schedule:
+    - cron: "0 11 * * *" # todo dia ~11:00 UTC (~08:00 BRT)
+  workflow_dispatch: {}
+
+concurrency:
+  group: paineis
+  cancel-in-progress: false
+
+jobs:
+  paineis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      RESEND_FROM: ${{ secrets.RESEND_FROM }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Instalar deps do projeto
+        run: npm ci --no-audit --no-fund
+      - name: Enviar digest dos paineis
+        run: node scripts/send-painel-reports.js

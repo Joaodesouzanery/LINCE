@@ -928,6 +928,38 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, added, failed });
     }
 
+    // F3: relatorio do painel (JSON + markdown p/ handoff ao Claude Design).
+    if (type === "painel_report") {
+      res.setHeader("Cache-Control", "no-store");
+      const id = String(req.query.id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const { buildPainelDigest, toMarkdown } = require("../lib/painel-report");
+      const since = req.query.since ? String(req.query.since) : undefined;
+      const digest = await buildPainelDigest(supabase, id, { since });
+      if (!digest) return res.status(404).json({ ok: false, error: "Painel nao encontrado." });
+      return res.status(200).json({ ok: true, digest, markdown: toMarkdown(digest) });
+    }
+
+    // F3: envia o relatorio AGORA (webhook do painel + e-mail gated). Testa a entrega.
+    if (type === "painel_send_report") {
+      res.setHeader("Cache-Control", "no-store");
+      const id = String(params(req).id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const { buildPainelDigest, toText, toEmailHtml } = require("../lib/painel-report");
+      const { postWebhook } = require("../lib/notify");
+      const { sendEmail } = require("../lib/mailer");
+      const digest = await buildPainelDigest(supabase, id);
+      if (!digest) return res.status(404).json({ ok: false, error: "Painel nao encontrado." });
+      const painel = digest.painel;
+      const [webhook, email] = await Promise.all([
+        painel.webhook_url ? postWebhook(painel.webhook_url, { text: toText(digest), label: painel.nome }) : Promise.resolve({ ok: false, skipped: "no_webhook_url" }),
+        painel.owner_email ? sendEmail({ to: painel.owner_email, subject: `LINCE · Painel ${painel.nome}`, html: toEmailHtml(digest), text: toText(digest) }) : Promise.resolve({ ok: false, skipped: "no_owner_email" })
+      ]);
+      // "Enviar agora" e um snapshot manual/teste: NAO move o cursor do digest agendado
+      // (last_report_at, baseado em ingestao). So o scripts/send-painel-reports o avanca.
+      return res.status(200).json({ ok: true, delivered: { webhook, email }, counts: digest.counts });
+    }
+
     // Participacoes societarias locais de uma empresa (base receita_socio).
     if (type === "holdings") {
       const cnpj = onlyDigits(req.query.cnpj);

@@ -704,3 +704,8 @@ create table if not exists body_memberships (
 create unique index if not exists body_memberships_uidx on body_memberships (person_id, external_org_id, cargo);
 create index if not exists body_memberships_person_idx on body_memberships (person_id);
 alter table body_memberships enable row level security;
+
+-- ===== Fase M21.1: cursor do digest por painel (NOMOS F3 — alertas/relatorio) =====
+-- Marca do ultimo envio de relatorio; o send-painel-reports usa como `since` p/
+-- computar "novas votacoes" desde entao. Ausente -> o script degrada (since=now-7d).
+alter table paineis add column if not exists last_report_at timestamptz;

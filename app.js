@@ -1854,7 +1854,10 @@ function renderPainelDetail(d) {
   const tabs = [["dados", "Dados Gerais"], ["proposicoes", `Proposições (${d.counts?.proposicoes || 0})`], ["stakeholders", `Stakeholders (${d.counts?.stakeholders || 0})`], ["orgaos", `Órgãos (${d.counts?.orgaos || 0})`]];
   detail.innerHTML = `
     <article class="news-card">
-      <button type="button" class="entity-pill" data-painel-back>&larr; Painéis</button>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <button type="button" class="entity-pill" data-painel-back>&larr; Painéis</button>
+        <button type="button" class="alert-btn primary" data-painel-report="${escapeHtml(p.id)}">Exportar relatório (.md)</button>
+      </div>
       <span class="source-meta">${escapeHtml(p.cliente || "Painel")}</span>
       <strong>${escapeHtml(p.nome)}</strong>
       ${p.descricao ? `<p>${escapeHtml(p.descricao)}</p>` : ""}
@@ -1871,7 +1874,9 @@ function renderPainelTab(d, tab) {
 }
 
 function renderPainelDados(d) {
+  const p = d.painel || {};
   const tram = (d.proposicoes || []).filter((x) => x.data && x.data.situacao).slice(0, 12);
+  const freq = p.frequencia || "diario";
   return `<article class="news-card">
     <span class="source-meta">Dados Gerais</span>
     <div class="entity-row">
@@ -1882,6 +1887,17 @@ function renderPainelDados(d) {
     ${tram.length ? `<strong style="margin-top:10px;display:block">Últimas tramitações</strong>
       <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Proposição</th><th>Situação</th></tr></thead><tbody>${tram.map((x) => `<tr><td>${escapeHtml(x.data.titulo || x.ref_id)}</td><td>${escapeHtml(x.data.situacao || "—")}</td></tr>`).join("")}</tbody></table></div>`
       : `<p>Sem tramitações. Importe proposições na aba Proposições.</p>`}
+    <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
+      <strong style="display:block;margin-bottom:6px">Alertas &amp; relatório</strong>
+      <div class="entity-row" style="flex-wrap:wrap;gap:6px">
+        <input id="painel-owner-email" class="dou-date" type="email" placeholder="e-mail do responsável" value="${escapeHtml(p.owner_email || "")}" style="min-width:180px">
+        <input id="painel-webhook" class="dou-date" type="url" placeholder="webhook (Slack/Teams)" value="${escapeHtml(p.webhook_url || "")}" style="min-width:180px">
+        <select id="painel-frequencia" class="dou-date">${["diario", "tempo_real", "off"].map((f) => `<option value="${f}" ${freq === f ? "selected" : ""}>${f}</option>`).join("")}</select>
+        <button type="button" class="alert-btn primary" data-painel-config-save="${escapeHtml(p.id || "")}">Salvar</button>
+        <button type="button" class="entity-pill" data-painel-send="${escapeHtml(p.id || "")}">Enviar agora</button>
+      </div>
+      <span id="painel-config-status" style="font-size:.75rem;opacity:.6"></span>
+    </div>
   </article>`;
 }
 
@@ -1979,6 +1995,58 @@ async function painelUpdateItem(selectEl, itemId, campo, valor) {
   }
 }
 
+// F3: baixa um arquivo de texto (o relatório .md p/ levar ao Claude Design).
+function downloadText(filename, content) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// F3: exporta o relatório do painel (Markdown) — arte final vai ao Claude Design.
+async function exportPainelReport(id) {
+  try {
+    const r = await requestJson(`/api/intelligence?type=painel_report&id=${encodeURIComponent(id)}`);
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    const slug = String(r.digest?.painel?.nome || "painel").normalize("NFD").replace(/[^\w]+/g, "-").toLowerCase().slice(0, 40);
+    downloadText(`relatorio-${slug || "painel"}.md`, r.markdown || "");
+  } catch (e) { alert(`Falha ao exportar: ${e.message}`); }
+}
+
+// F3: salva config de alerta (owner_email/webhook/frequencia). Reenvia nome/cliente/
+// descricao p/ não zerar (painel_save grava a linha inteira no update).
+async function painelConfigSave(id) {
+  const p = state.painelData?.painel || {};
+  const status = $("#painel-config-status");
+  const body = {
+    id, nome: p.nome, cliente: p.cliente, descricao: p.descricao, tema: p.tema,
+    owner_email: ($("#painel-owner-email")?.value || "").trim() || null,
+    webhook_url: ($("#painel-webhook")?.value || "").trim() || null,
+    frequencia: $("#painel-frequencia")?.value || "diario"
+  };
+  if (status) status.textContent = "Salvando…";
+  try {
+    const r = await postJson("/api/intelligence?type=painel_save", body);
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (state.painelData) state.painelData.painel = r.painel; // sincroniza o state
+    if (status) status.textContent = "Configuração salva.";
+  } catch (e) { if (status) status.textContent = `Falha: ${e.message}`; }
+}
+
+// F3: dispara o envio do relatório AGORA (testa webhook + e-mail).
+async function painelSendReport(id) {
+  const status = $("#painel-config-status");
+  if (status) status.textContent = "Enviando…";
+  try {
+    const r = await postJson("/api/intelligence?type=painel_send_report", { id });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    const fmt = (x) => (x?.ok ? "ok" : (x?.skipped || x?.error || "falha"));
+    if (status) status.textContent = `Enviado — webhook: ${fmt(r.delivered?.webhook)} · e-mail: ${fmt(r.delivered?.email)}`;
+  } catch (e) { if (status) status.textContent = `Falha: ${e.message}`; }
+}
+
 function wirePaineis() {
   if (painelWired) return; painelWired = true;
   const view = $("#view-paineis");
@@ -1997,6 +2065,12 @@ function wirePaineis() {
     if (rem) { await postJson("/api/intelligence?type=painel_item_remove", { id: rem.dataset.itemRemove }).catch(() => {}); openPainel(state.currentPainelId); return; }
     const person = e.target.closest("[data-person-id]");
     if (person) { suppressDirectorsAutoload = true; document.querySelector("[data-view='directors']")?.click(); openDirectorDossier(person.dataset.personId); return; }
+    const report = e.target.closest("[data-painel-report]");
+    if (report) { exportPainelReport(report.dataset.painelReport); return; }
+    const cfg = e.target.closest("[data-painel-config-save]");
+    if (cfg) { painelConfigSave(cfg.dataset.painelConfigSave); return; }
+    const send = e.target.closest("[data-painel-send]");
+    if (send) { painelSendReport(send.dataset.painelSend); return; }
     if (e.target.closest("#painel-import-btn")) { const box = $("#painel-import-box"); if (box) box.hidden = !box.hidden; return; }
     if (e.target.closest("#painel-import-resolve")) { painelImportResolve(); return; }
     if (e.target.closest("[data-import-confirm]")) { painelImportConfirm(); return; }
