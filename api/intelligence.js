@@ -969,6 +969,54 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, delivered: { webhook, email }, counts: digest.counts });
     }
 
+    // F5: gera/rotaciona o link read-only do cliente (operador — atras do middleware).
+    if (type === "painel_share") {
+      res.setHeader("Cache-Control", "no-store");
+      const id = String(params(req).id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const token = require("crypto").randomBytes(24).toString("hex"); // 48 hex = 192 bits
+      const { data, error } = await supabase.from("paineis").update({ share_token: token, updated_at: new Date().toISOString() }).eq("id", id).select("id").maybeSingle();
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      if (!data) return res.status(404).json({ ok: false, error: "Painel nao encontrado." });
+      return res.status(200).json({ ok: true, token });
+    }
+
+    // F5: revoga o link do cliente (operador).
+    if (type === "painel_unshare") {
+      res.setHeader("Cache-Control", "no-store");
+      const id = String(params(req).id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const { error } = await supabase.from("paineis").update({ share_token: null, updated_at: new Date().toISOString() }).eq("id", id);
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true });
+    }
+
+    // F5: painel PUBLICO (link do cliente, sem login — bypass no middleware). Devolve SO
+    // dados sanitizados: nunca owner_email/webhook_url/share_token/metadata/nota nem outro painel.
+    if (type === "painel_public") {
+      res.setHeader("Cache-Control", "no-store");
+      const token = String(req.query.token || "").trim();
+      if (token.length < 24) return res.status(400).json({ ok: false, error: "token invalido" });
+      const { data: pRow } = await supabase.from("paineis").select("id").eq("share_token", token).maybeSingle();
+      if (!pRow) return res.status(404).json({ ok: false, error: "Painel nao encontrado." });
+      const { buildPainelDigest } = require("../lib/painel-report");
+      const digest = await buildPainelDigest(supabase, pRow.id);
+      if (!digest) return res.status(404).json({ ok: false, error: "Painel nao encontrado." });
+      // Sanitiza: painel = so branding; itens = sem item_id/nota (notas do operador sao internas).
+      const pub = { nome: digest.painel.nome, cliente: digest.painel.cliente, descricao: digest.painel.descricao };
+      const sProp = (it) => ({ ref_id: it.ref_id, prioridade: it.prioridade, posicionamento: it.posicionamento, tags: it.tags, data: it.data });
+      const sEnt = (it) => ({ ref_id: it.ref_id, data: it.data });
+      return res.status(200).json({
+        ok: true, painel: pub,
+        proposicoes: (digest.proposicoes || []).map(sProp),
+        agenda: digest.na_pauta || [],
+        votacoes: digest.novas_votacoes || [],
+        stakeholders: (digest.stakeholders || []).map(sEnt),
+        orgaos: (digest.orgaos || []).map(sEnt),
+        counts: digest.counts
+      });
+    }
+
     // Participacoes societarias locais de uma empresa (base receita_socio).
     if (type === "holdings") {
       const cnpj = onlyDigits(req.query.cnpj);

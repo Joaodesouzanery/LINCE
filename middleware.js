@@ -42,6 +42,9 @@ export default async function middleware(request) {
   if (pathname.startsWith("/api/ingest")) return;
   // Config publica de auth (a tela de login precisa dela antes de existir sessao).
   if (pathname.startsWith("/api/intelligence") && url.searchParams.get("type") === "auth_config") return;
+  // F5 white-label: painel publico (link read-only do cliente) — gate por token no
+  // query, sem sessao. SO este type; devolve dados sanitizados do painel (nunca o motor).
+  if (pathname.startsWith("/api/intelligence") && url.searchParams.get("type") === "painel_public") return;
 
   // Fail-CLOSED em produção E PREVIEW: URLs de preview da Vercel sao publicas e
   // exporiam os dados sem token. So o dev LOCAL (VERCEL_ENV 'development' ou

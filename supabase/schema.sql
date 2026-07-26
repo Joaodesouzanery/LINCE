@@ -749,3 +749,9 @@ create table if not exists evento_pauta (
 create unique index if not exists evento_pauta_uidx on evento_pauta (evento_id, proposicao_id);
 create index if not exists evento_pauta_prop_idx on evento_pauta (proposicao_id);
 alter table evento_pauta enable row level security;
+
+-- ===== Fase M23: White-label (NOMOS F5 — link read-only por painel) =====
+-- Token secreto do link do cliente: nulo = nao compartilhado; presente = link ativo;
+-- rotacionar = novo valor (link antigo morre); revogar = volta a nulo. Unique (indexado).
+-- O endpoint publico painel_public valida por este token e devolve SO dados sanitizados.
+alter table paineis add column if not exists share_token text unique;

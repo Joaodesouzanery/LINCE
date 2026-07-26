@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Painel de acompanhamento</title>
+  <style>
+    /* F5 white-label — portal read-only do cliente. Self-contained (independe do app). */
+    :root{
+      --bg:#f6f7f9; --card:#ffffff; --ink:#14181f; --muted:#5b6472; --line:#e6e9ee;
+      --accent:#1f3a5f; --accent-soft:#eaf0f7; --good:#1a7f4b; --warn:#9a6a00; --bad:#a23b3b;
+    }
+    @media (prefers-color-scheme: dark){
+      :root{ --bg:#0e1116; --card:#161b22; --ink:#e8ebf0; --muted:#9aa4b2; --line:#252b34;
+        --accent:#7aa2d8; --accent-soft:#1b2331; --good:#4cc38a; --warn:#d6a000; --bad:#e06c6c; }
+    }
+    *{ box-sizing:border-box; }
+    body{ margin:0; background:var(--bg); color:var(--ink);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      line-height:1.5; -webkit-font-smoothing:antialiased; }
+    .wrap{ max-width:980px; margin:0 auto; padding:28px 18px 72px; }
+    header.hd{ border-bottom:1px solid var(--line); padding-bottom:18px; margin-bottom:22px; }
+    .brand{ font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); font-weight:700; }
+    h1{ font-size:1.7rem; margin:.3rem 0 .2rem; line-height:1.15; }
+    .sub{ color:var(--muted); font-size:.95rem; margin:0; }
+    .meta{ color:var(--muted); font-size:.8rem; margin-top:.5rem; }
+    .pills{ display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 0; }
+    .pill{ background:var(--accent-soft); color:var(--accent); border-radius:999px; padding:4px 12px; font-size:.8rem; font-weight:600; }
+    section{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 18px 6px; margin:16px 0; }
+    section > h2{ font-size:1.02rem; margin:0 0 4px; }
+    section > .cap{ color:var(--muted); font-size:.78rem; margin:0 0 12px; }
+    .scroll{ overflow-x:auto; }
+    table{ width:100%; border-collapse:collapse; font-size:.86rem; }
+    th{ text-align:left; color:var(--muted); font-weight:600; font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
+      padding:6px 10px; border-bottom:2px solid var(--line); white-space:nowrap; }
+    td{ padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+    tr:last-child td{ border-bottom:none; }
+    a{ color:var(--accent); text-decoration:none; }
+    a:hover{ text-decoration:underline; }
+    .tag{ display:inline-block; font-size:.7rem; font-weight:600; padding:1px 8px; border-radius:6px; background:var(--accent-soft); color:var(--accent); }
+    .pos-favoravel{ color:var(--good); } .pos-contrario{ color:var(--bad); } .pos-neutro{ color:var(--muted); }
+    .empty{ color:var(--muted); font-size:.9rem; padding:6px 0 14px; }
+    ul.clean{ list-style:none; padding:0; margin:0 0 12px; display:flex; flex-direction:column; gap:8px; }
+    ul.clean li{ font-size:.9rem; }
+    .foot{ color:var(--muted); font-size:.76rem; text-align:center; margin-top:34px; padding-top:16px; border-top:1px solid var(--line); }
+    .state{ text-align:center; padding:80px 20px; color:var(--muted); }
+    .state strong{ color:var(--ink); display:block; font-size:1.1rem; margin-bottom:6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap" id="root"><div class="state">Carregando…</div></div>
+  <script>
+    (function () {
+      "use strict";
+      var root = document.getElementById("root");
+      function esc(v){ return String(v == null ? "" : v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+      function safeUrl(u){ return /^https?:\/\//.test(String(u || "")) ? String(u) : ""; }
+      function dt(s){ return esc(String(s || "").slice(0, 10)); }
+      function dtm(s){ return esc(String(s || "").slice(0, 16).replace("T", " ")); }
+      function link(u, label){ var s = safeUrl(u); return s ? '<a href="' + esc(s) + '" target="_blank" rel="noopener">' + esc(label) + '</a>' : esc(label); }
+      function state(title, msg){ root.innerHTML = '<div class="state"><strong>' + esc(title) + '</strong>' + esc(msg || "") + '</div>'; }
+
+      function table(headers, rows){
+        if (!rows.length) return "";
+        return '<div class="scroll"><table><thead><tr>' + headers.map(function(h){ return "<th>" + esc(h) + "</th>"; }).join("") +
+          '</tr></thead><tbody>' + rows.map(function(cells){ return "<tr>" + cells.map(function(c){ return "<td>" + c + "</td>"; }).join("") + "</tr>"; }).join("") +
+          "</tbody></table></div>";
+      }
+
+      function render(d){
+        var p = d.painel || {};
+        var props = d.proposicoes || [], ag = d.agenda || [], vot = d.votacoes || [], stk = d.stakeholders || [], org = d.orgaos || [];
+        document.title = (p.cliente || p.nome || "Painel") + " — acompanhamento";
+        var html = "";
+
+        html += '<header class="hd">' +
+          '<div class="brand">Painel de acompanhamento</div>' +
+          "<h1>" + esc(p.cliente || p.nome || "Painel") + "</h1>" +
+          (p.cliente && p.nome ? '<p class="sub">' + esc(p.nome) + "</p>" : "") +
+          (p.descricao ? '<p class="sub">' + esc(p.descricao) + "</p>" : "") +
+          '<div class="pills">' +
+            '<span class="pill">' + (props.length) + " proposições</span>" +
+            '<span class="pill">' + (ag.length) + " na pauta</span>" +
+            '<span class="pill">' + (vot.length) + " votações recentes</span>" +
+          "</div></header>";
+
+        // Agenda
+        html += "<section><h2>Na pauta</h2><p class=\"cap\">Suas proposições em eventos futuros da Câmara.</p>";
+        if (ag.length) {
+          html += table(["Data", "Proposição", "Órgão", "Evento"], ag.map(function(r){
+            var ev = r.evento || {};
+            return [dtm(ev.data_inicio), link(ev.url, r.titulo || r.proposicao_id), esc(ev.orgao_sigla || "—"), esc(ev.tipo || "—")];
+          }));
+        } else { html += '<p class="empty">Nenhuma proposição na pauta de eventos futuros.</p>'; }
+        html += "</section>";
+
+        // Proposições
+        html += "<section><h2>Proposições monitoradas</h2><p class=\"cap\">Situação de tramitação e posicionamento.</p>";
+        if (props.length) {
+          html += table(["Proposição", "Situação", "Posição", "Prioridade", "Tema"], props.map(function(it){
+            var dd = it.data || {};
+            var tema = Array.isArray(dd.themes) ? dd.themes.join(", ") : "";
+            // Classe derivada de whitelist FIXA (nunca do valor cru do banco) — sem sink de atributo.
+            var pos = String(it.posicionamento || "neutro");
+            var posClass = (pos === "favoravel" || pos === "contrario" || pos === "neutro") ? "pos-" + pos : "pos-neutro";
+            return [
+              link(dd.url, dd.titulo || it.ref_id),
+              esc(dd.situacao || "—"),
+              '<span class="' + posClass + '">' + esc(it.posicionamento || "—") + "</span>",
+              esc(it.prioridade || "—"),
+              esc(tema)
+            ];
+          }));
+        } else { html += '<p class="empty">Nenhuma proposição no painel.</p>'; }
+        html += "</section>";
+
+        // Votações recentes
+        html += "<section><h2>Votações recentes</h2><p class=\"cap\">Deliberações das proposições monitoradas.</p>";
+        if (vot.length) {
+          html += table(["Data", "Proposição", "Resultado", "Casa"], vot.map(function(v){
+            return [dt(v.data_votacao), esc(v.titulo || v.proposicao_id), esc(v.resultado || "—"), esc(v.casa || "—")];
+          }));
+        } else { html += '<p class="empty">Sem votações recentes.</p>'; }
+        html += "</section>";
+
+        // Stakeholders + Órgãos
+        if (stk.length) {
+          html += "<section><h2>Stakeholders</h2><ul class=\"clean\">" + stk.map(function(it){
+            var s = it.data || {};
+            return "<li><strong>" + esc(s.full_name || it.ref_id) + "</strong>" + (s.role ? " — " + esc(s.role) : "") + (s.uf ? " (" + esc(s.uf) + ")" : "") + "</li>";
+          }).join("") + "</ul></section>";
+        }
+        if (org.length) {
+          html += '<section><h2>Órgãos</h2><div class="pills">' + org.map(function(it){
+            var o = it.data || {};
+            return '<span class="pill">' + esc(o.acronym || it.ref_id) + (o.name ? " · " + esc(o.name) : "") + "</span>";
+          }).join("") + "</div></section>";
+        }
+
+        html += '<div class="foot">Acompanhamento gerado pela LINCE · dados públicos (Câmara e Senado — Dados Abertos, TSE).</div>';
+        root.innerHTML = html;
+      }
+
+      var token = new URLSearchParams(location.search).get("p") || "";
+      if (!token) { state("Link inválido", "Este link de acompanhamento não é válido."); return; }
+      fetch("/api/intelligence?type=painel_public&token=" + encodeURIComponent(token), { headers: { accept: "application/json" } })
+        .then(function(r){ return r.ok ? r.json() : r.json().catch(function(){ return { ok: false }; }).then(function(b){ throw new Error(b && b.error ? b.error : "indisponivel"); }); })
+        .then(function(d){ if (!d || !d.ok) throw new Error("indisponivel"); render(d); })
+        .catch(function(){ state("Link inválido ou expirado", "Solicite um novo link de acompanhamento ao seu contato na LINCE."); });
+    })();
+  </script>
+</body>
+</html>

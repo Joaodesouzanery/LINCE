@@ -1923,6 +1923,15 @@ function renderPainelDados(d) {
       </div>
       <span id="painel-config-status" style="font-size:.75rem;opacity:.6"></span>
     </div>
+    <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
+      <strong style="display:block;margin-bottom:6px">Link do cliente (white-label, read-only)</strong>
+      <div class="entity-row" style="flex-wrap:wrap;gap:6px">
+        <button type="button" class="alert-btn primary" data-painel-share="${escapeHtml(p.id || "")}">${p.share_token ? "Rotacionar link" : "Gerar link do cliente"}</button>
+        ${p.share_token ? `<button type="button" class="entity-pill" data-painel-unshare="${escapeHtml(p.id || "")}">Revogar</button>` : ""}
+      </div>
+      ${p.share_token ? `<div style="margin-top:6px"><input class="dou-date" style="width:100%" readonly onclick="this.select()" value="${escapeHtml(location.origin + "/cliente?p=" + p.share_token)}"></div>` : ""}
+      <span id="painel-share-status" style="font-size:.75rem;opacity:.6"></span>
+    </div>
   </article>`;
 }
 
@@ -2060,6 +2069,29 @@ async function painelConfigSave(id) {
   } catch (e) { if (status) status.textContent = `Falha: ${e.message}`; }
 }
 
+// F5: gera/rotaciona o link read-only do cliente (white-label).
+async function painelShare(id) {
+  const status = $("#painel-share-status");
+  if (status) status.textContent = "Gerando…";
+  try {
+    const r = await postJson("/api/intelligence?type=painel_share", { id });
+    if (!r?.ok || !r.token) throw new Error(r?.error || "erro");
+    if (state.painelData?.painel) state.painelData.painel.share_token = r.token;
+    renderPainelDetail(state.painelData);
+  } catch (e) { if (status) status.textContent = `Falha: ${e.message}`; }
+}
+
+// F5: revoga o link do cliente.
+async function painelUnshare(id) {
+  if (!confirm("Revogar o link do cliente? O link atual deixará de funcionar.")) return;
+  try {
+    const r = await postJson("/api/intelligence?type=painel_unshare", { id });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (state.painelData?.painel) state.painelData.painel.share_token = null;
+    renderPainelDetail(state.painelData);
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+
 // F3: dispara o envio do relatório AGORA (testa webhook + e-mail).
 async function painelSendReport(id) {
   const status = $("#painel-config-status");
@@ -2096,6 +2128,10 @@ function wirePaineis() {
     if (cfg) { painelConfigSave(cfg.dataset.painelConfigSave); return; }
     const send = e.target.closest("[data-painel-send]");
     if (send) { painelSendReport(send.dataset.painelSend); return; }
+    const share = e.target.closest("[data-painel-share]");
+    if (share) { painelShare(share.dataset.painelShare); return; }
+    const unshare = e.target.closest("[data-painel-unshare]");
+    if (unshare) { painelUnshare(unshare.dataset.painelUnshare); return; }
     if (e.target.closest("#painel-import-btn")) { const box = $("#painel-import-box"); if (box) box.hidden = !box.hidden; return; }
     if (e.target.closest("#painel-import-resolve")) { painelImportResolve(); return; }
     if (e.target.closest("[data-import-confirm]")) { painelImportConfirm(); return; }
