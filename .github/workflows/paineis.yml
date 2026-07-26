@@ -34,5 +34,7 @@ jobs:
           node-version: "20"
       - name: Instalar deps do projeto
         run: npm ci --no-audit --no-fund
+      - name: Agenda da Camara (eventos + pauta) — antes do digest p/ "na pauta" fresco
+        run: node scripts/load-eventos.js
       - name: Enviar digest dos paineis
         run: node scripts/send-painel-reports.js

@@ -795,10 +795,12 @@ module.exports = async function handler(req, res) {
       const items = rows || [];
       const refsOf = (kind) => items.filter((r) => r.item_kind === kind).map((r) => r.ref_id);
       const propRefs = refsOf("proposicao"), stakeRefs = refsOf("stakeholder"), orgaoRefs = refsOf("orgao");
-      const [propsRes, stakeRes, orgaoRes] = await Promise.allSettled([
+      const [propsRes, stakeRes, orgaoRes, agendaRes] = await Promise.allSettled([
         propRefs.length ? supabase.from("proposicoes").select("id, casa, tipo, numero, ano, titulo, ementa, situacao, themes, url").in("id", propRefs) : Promise.resolve({ data: [] }),
         stakeRefs.length ? supabase.from("people").select("id, full_name, role, uf, external_ids").in("id", stakeRefs) : Promise.resolve({ data: [] }),
-        orgaoRefs.length ? supabase.from("agencies").select("id, acronym, name").in("id", orgaoRefs) : Promise.resolve({ data: [] })
+        orgaoRefs.length ? supabase.from("agencies").select("id, acronym, name").in("id", orgaoRefs) : Promise.resolve({ data: [] }),
+        // F4: proposicoes do painel que estao NA PAUTA de eventos (join embutido; [] se M22 ausente).
+        propRefs.length ? supabase.from("evento_pauta").select("proposicao_id, ordem, topico, titulo, situacao_item, regime, legislative_eventos(id, data_inicio, data_fim, situacao, tipo, orgao_sigla, orgao_nome, local, url)").in("proposicao_id", propRefs) : Promise.resolve({ data: [] })
       ]);
       const mapOf = (r) => new Map(((r.status === "fulfilled" ? r.value.data : null) || []).map((x) => [String(x.id), x]));
       const propMap = mapOf(propsRes), stakeMap = mapOf(stakeRes), orgaoMap = mapOf(orgaoRes);
@@ -806,7 +808,14 @@ module.exports = async function handler(req, res) {
       const proposicoes = items.filter((r) => r.item_kind === "proposicao").map((r) => hydrate(r, propMap));
       const stakeholders = items.filter((r) => r.item_kind === "stakeholder").map((r) => hydrate(r, stakeMap));
       const orgaos = items.filter((r) => r.item_kind === "orgao").map((r) => hydrate(r, orgaoMap));
-      return res.status(200).json({ ok: true, painel, proposicoes, stakeholders, orgaos, counts: { proposicoes: proposicoes.length, stakeholders: stakeholders.length, orgaos: orgaos.length } });
+      // Agenda: itens de pauta cujo evento e FUTURO (grace de 6h), ordenados por data.
+      const agFloor = Date.now() - 6 * 3600 * 1000;
+      const agenda = ((agendaRes.status === "fulfilled" ? agendaRes.value.data : null) || [])
+        .map((r) => ({ proposicao_id: r.proposicao_id, prop_titulo: (propMap.get(String(r.proposicao_id)) || {}).titulo || r.titulo || r.proposicao_id, ordem: r.ordem, topico: r.topico, situacao_item: r.situacao_item, regime: r.regime, evento: r.legislative_eventos || null }))
+        .filter((r) => r.evento && r.evento.data_inicio && new Date(r.evento.data_inicio).getTime() >= agFloor)
+        .sort((a, b) => String(a.evento.data_inicio).localeCompare(String(b.evento.data_inicio)))
+        .slice(0, 60);
+      return res.status(200).json({ ok: true, painel, proposicoes, stakeholders, orgaos, agenda, counts: { proposicoes: proposicoes.length, stakeholders: stakeholders.length, orgaos: orgaos.length, agenda: agenda.length } });
     }
 
     if (type === "painel_save") {

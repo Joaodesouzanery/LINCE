@@ -709,3 +709,43 @@ alter table body_memberships enable row level security;
 -- Marca do ultimo envio de relatorio; o send-painel-reports usa como `since` p/
 -- computar "novas votacoes" desde entao. Ausente -> o script degrada (since=now-7d).
 alter table paineis add column if not exists last_report_at timestamptz;
+
+-- ===== Fase M22: Agenda do Congresso (NOMOS F4 — "na pauta") =====
+-- Eventos da Camara (/eventos) + itens de PAUTA que referenciam proposicao. O cruzamento
+-- proposicao_id (= proposicoes.id 'camara:<id>') x painel_items(proposicao) responde
+-- "quais das minhas proposicoes monitoradas estao na pauta". Sem IA, fonte gratis.
+create table if not exists legislative_eventos (
+  id text primary key,                 -- 'camara-ev:<id>'
+  casa text,
+  data_inicio timestamptz,
+  data_fim timestamptz,
+  situacao text,
+  tipo text,
+  descricao text,
+  orgao_sigla text,
+  orgao_nome text,
+  local text,
+  url text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists legislative_eventos_data_idx on legislative_eventos (data_inicio);
+alter table legislative_eventos enable row level security;
+
+-- Item de pauta que referencia uma proposicao. created_at = cursor "entrou na pauta"
+-- (mesmo padrao do F3: novidade por ingestao). Re-sync por evento no load-eventos via
+-- UPSERT + delete-stale (PRESERVA created_at; delete+insert resetaria e spammaria o digest).
+create table if not exists evento_pauta (
+  id uuid primary key default gen_random_uuid(),
+  evento_id text references legislative_eventos(id) on delete cascade,
+  proposicao_id text,                  -- 'camara:<id>' — liga ao painel
+  ordem int,
+  topico text,
+  titulo text,
+  situacao_item text,
+  regime text,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists evento_pauta_uidx on evento_pauta (evento_id, proposicao_id);
+create index if not exists evento_pauta_prop_idx on evento_pauta (proposicao_id);
+alter table evento_pauta enable row level security;

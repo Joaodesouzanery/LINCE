@@ -1851,7 +1851,7 @@ function renderPainelDetail(d) {
   if (!detail || !d) return;
   const p = d.painel;
   const tab = state.painelTab || "dados";
-  const tabs = [["dados", "Dados Gerais"], ["proposicoes", `Proposições (${d.counts?.proposicoes || 0})`], ["stakeholders", `Stakeholders (${d.counts?.stakeholders || 0})`], ["orgaos", `Órgãos (${d.counts?.orgaos || 0})`]];
+  const tabs = [["dados", "Dados Gerais"], ["proposicoes", `Proposições (${d.counts?.proposicoes || 0})`], ["agenda", `Agenda (${d.counts?.agenda || 0})`], ["stakeholders", `Stakeholders (${d.counts?.stakeholders || 0})`], ["orgaos", `Órgãos (${d.counts?.orgaos || 0})`]];
   detail.innerHTML = `
     <article class="news-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
@@ -1868,9 +1868,34 @@ function renderPainelDetail(d) {
 
 function renderPainelTab(d, tab) {
   if (tab === "proposicoes") return renderPainelProposicoes(d);
+  if (tab === "agenda") return renderPainelAgenda(d);
   if (tab === "stakeholders") return renderPainelStakeholders(d);
   if (tab === "orgaos") return renderPainelOrgaos(d);
   return renderPainelDados(d);
+}
+
+// F4: aba Agenda — proposições do painel na pauta de eventos futuros da Câmara.
+function renderPainelAgenda(d) {
+  const ag = d.agenda || [];
+  if (!ag.length) return `<article class="news-card"><span class="source-meta">Agenda — na pauta</span><p>Nenhuma proposição do painel na pauta de eventos futuros. (Atualizada diariamente.)</p></article>`;
+  const rows = ag.map((r) => {
+    const ev = r.evento || {};
+    const url = safeUrl(ev.url);
+    const data = escapeHtml(String(ev.data_inicio || "").slice(0, 16).replace("T", " "));
+    const titulo = escapeHtml(String(r.prop_titulo || r.proposicao_id));
+    return `<tr>
+      <td>${data}</td>
+      <td>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${titulo}</a>` : titulo}</td>
+      <td>${escapeHtml(ev.orgao_sigla || "—")}</td>
+      <td>${escapeHtml(ev.tipo || "—")}</td>
+      <td>${escapeHtml(String(r.situacao_item || r.topico || "—").slice(0, 40))}</td>
+    </tr>`;
+  }).join("");
+  return `<article class="news-card">
+    <span class="source-meta">Agenda — suas proposições na pauta (Câmara)</span>
+    <strong>${ag.length} item(ns) na pauta de eventos futuros</strong>
+    <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Proposição</th><th>Órgão</th><th>Evento</th><th>Situação</th></tr></thead><tbody>${rows}</tbody></table></div>
+  </article>`;
 }
 
 function renderPainelDados(d) {

@@ -21,6 +21,7 @@
     "backfill:proposicao-detalhe": "node scripts/backfill-proposicao-detalhe.js",
     "load:votacoes-leg": "node scripts/load-votacoes-leg.js",
     "load:comissoes": "node scripts/load-comissoes.js",
+    "load:eventos": "node scripts/load-eventos.js",
     "send:paineis": "node scripts/send-painel-reports.js",
     "load:deliberacoes": "node scripts/load-deliberacoes.js",
     "load:tse-filiacao": "node scripts/load-tse-filiacao.js",
