@@ -69,7 +69,7 @@
 
       function render(d){
         var p = d.painel || {};
-        var props = d.proposicoes || [], ag = d.agenda || [], vot = d.votacoes || [], stk = d.stakeholders || [], org = d.orgaos || [];
+        var props = d.proposicoes || [], ag = d.agenda || [], vot = d.votacoes || [], stk = d.stakeholders || [], org = d.orgaos || [], nws = d.noticias || [];
         document.title = (p.cliente || p.nome || "Painel") + " — acompanhamento";
         var html = "";
 
@@ -82,7 +82,22 @@
             '<span class="pill">' + (props.length) + " proposições</span>" +
             '<span class="pill">' + (ag.length) + " na pauta</span>" +
             '<span class="pill">' + (vot.length) + " votações recentes</span>" +
+            (nws.length ? '<span class="pill">' + (nws.length) + " notícias</span>" : "") +
           "</div></header>";
+
+        // Notícias (landscape curado)
+        html += "<section><h2>Notícias</h2><p class=\"cap\">Seleção curada de notícias relevantes ao painel.</p>";
+        if (nws.length) {
+          html += '<ul class="clean">' + nws.map(function(n){
+            var u = safeUrl(n.url), t = esc(n.titulo || n.url || "—");
+            return "<li>" + (u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener">' + t + "</a>" : t) +
+              (n.fonte ? ' <span style="color:var(--muted)">— ' + esc(n.fonte) + "</span>" : "") +
+              (n.published_at ? ' <span style="color:var(--muted)">(' + esc(String(n.published_at).slice(0, 10)) + ")</span>" : "") +
+              (n.resumo ? '<br><span style="color:var(--muted);font-size:.9em">' + esc(String(n.resumo).slice(0, 220)) + "</span>" : "") +
+              "</li>";
+          }).join("") + "</ul>";
+        } else { html += '<p class="empty">Nenhuma notícia no momento.</p>'; }
+        html += "</section>";
 
         // Agenda
         html += "<section><h2>Na pauta</h2><p class=\"cap\">Suas proposições em eventos futuros da Câmara.</p>";

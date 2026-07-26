@@ -755,3 +755,21 @@ alter table evento_pauta enable row level security;
 -- rotacionar = novo valor (link antigo morre); revogar = volta a nulo. Unique (indexado).
 -- O endpoint publico painel_public valida por este token e devolve SO dados sanitizados.
 alter table paineis add column if not exists share_token text unique;
+
+-- ===== Fase M24: Noticias curadas por painel (NOMOS F7) =====
+-- O staff FIXA noticias no painel (busca via Google News ou cola URL); o cliente ve a
+-- selecao (read-only) e ela entra no digest. created_at = cursor "noticia nova" do digest.
+create table if not exists painel_noticias (
+  id uuid primary key default gen_random_uuid(),
+  painel_id uuid not null references paineis(id) on delete cascade,
+  url text not null,
+  titulo text,
+  fonte text,
+  published_at timestamptz,
+  resumo text,
+  added_by text,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists painel_noticias_uidx on painel_noticias (painel_id, url);
+create index if not exists painel_noticias_painel_idx on painel_noticias (painel_id);
+alter table painel_noticias enable row level security;

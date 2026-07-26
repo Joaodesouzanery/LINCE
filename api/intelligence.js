@@ -795,12 +795,14 @@ module.exports = async function handler(req, res) {
       const items = rows || [];
       const refsOf = (kind) => items.filter((r) => r.item_kind === kind).map((r) => r.ref_id);
       const propRefs = refsOf("proposicao"), stakeRefs = refsOf("stakeholder"), orgaoRefs = refsOf("orgao");
-      const [propsRes, stakeRes, orgaoRes, agendaRes] = await Promise.allSettled([
+      const [propsRes, stakeRes, orgaoRes, agendaRes, noticiasRes] = await Promise.allSettled([
         propRefs.length ? supabase.from("proposicoes").select("id, casa, tipo, numero, ano, titulo, ementa, situacao, themes, url").in("id", propRefs) : Promise.resolve({ data: [] }),
         stakeRefs.length ? supabase.from("people").select("id, full_name, role, uf, external_ids").in("id", stakeRefs) : Promise.resolve({ data: [] }),
         orgaoRefs.length ? supabase.from("agencies").select("id, acronym, name").in("id", orgaoRefs) : Promise.resolve({ data: [] }),
         // F4: proposicoes do painel que estao NA PAUTA de eventos (join embutido; [] se M22 ausente).
-        propRefs.length ? supabase.from("evento_pauta").select("proposicao_id, ordem, topico, titulo, situacao_item, regime, legislative_eventos(id, data_inicio, data_fim, situacao, tipo, orgao_sigla, orgao_nome, local, url)").in("proposicao_id", propRefs) : Promise.resolve({ data: [] })
+        propRefs.length ? supabase.from("evento_pauta").select("proposicao_id, ordem, topico, titulo, situacao_item, regime, legislative_eventos(id, data_inicio, data_fim, situacao, tipo, orgao_sigla, orgao_nome, local, url)").in("proposicao_id", propRefs) : Promise.resolve({ data: [] }),
+        // F7: noticias curadas do painel ([] se M24 ausente).
+        supabase.from("painel_noticias").select("id, url, titulo, fonte, published_at, resumo, added_by, created_at").eq("painel_id", id).order("created_at", { ascending: false }).limit(50)
       ]);
       const mapOf = (r) => new Map(((r.status === "fulfilled" ? r.value.data : null) || []).map((x) => [String(x.id), x]));
       const propMap = mapOf(propsRes), stakeMap = mapOf(stakeRes), orgaoMap = mapOf(orgaoRes);
@@ -815,7 +817,8 @@ module.exports = async function handler(req, res) {
         .filter((r) => r.evento && r.evento.data_inicio && new Date(r.evento.data_inicio).getTime() >= agFloor)
         .sort((a, b) => String(a.evento.data_inicio).localeCompare(String(b.evento.data_inicio)))
         .slice(0, 60);
-      return res.status(200).json({ ok: true, painel, proposicoes, stakeholders, orgaos, agenda, counts: { proposicoes: proposicoes.length, stakeholders: stakeholders.length, orgaos: orgaos.length, agenda: agenda.length } });
+      const noticias = ((noticiasRes.status === "fulfilled" ? noticiasRes.value.data : null) || []);
+      return res.status(200).json({ ok: true, painel, proposicoes, stakeholders, orgaos, agenda, noticias, counts: { proposicoes: proposicoes.length, stakeholders: stakeholders.length, orgaos: orgaos.length, agenda: agenda.length, noticias: noticias.length } });
     }
 
     if (type === "painel_save") {
@@ -1006,8 +1009,11 @@ module.exports = async function handler(req, res) {
       const pub = { nome: digest.painel.nome, cliente: digest.painel.cliente, descricao: digest.painel.descricao };
       const sProp = (it) => ({ ref_id: it.ref_id, prioridade: it.prioridade, posicionamento: it.posicionamento, tags: it.tags, data: it.data });
       const sEnt = (it) => ({ ref_id: it.ref_id, data: it.data });
+      // F7: reusa digest.noticias (ja sanitizado: url/titulo/fonte/published_at/resumo,
+      // sem id/added_by) — evita 2a leitura de painel_noticias neste endpoint publico.
       return res.status(200).json({
         ok: true, painel: pub,
+        noticias: digest.noticias || [],
         proposicoes: (digest.proposicoes || []).map(sProp),
         agenda: digest.na_pauta || [],
         votacoes: digest.novas_votacoes || [],
@@ -1015,6 +1021,40 @@ module.exports = async function handler(req, res) {
         orgaos: (digest.orgaos || []).map(sEnt),
         counts: digest.counts
       });
+    }
+
+    // F7: fixa uma noticia curada no painel (operador). Sem SSRF: o servidor NAO busca a
+    // URL — so persiste os campos recebidos (da busca Google News ou colados).
+    if (type === "painel_noticia_add") {
+      res.setHeader("Cache-Control", "no-store");
+      const p = params(req);
+      const painel_id = String(p.painel_id || "").trim();
+      const url = String(p.url || "").trim();
+      if (!painel_id || !url) return res.status(400).json({ ok: false, error: "Informe painel_id e url" });
+      if (!/^https?:\/\//i.test(url)) return res.status(400).json({ ok: false, error: "url invalida (http/https)" });
+      let published_at = null;
+      if (p.published_at) { const d = new Date(p.published_at); if (!Number.isNaN(d.getTime())) published_at = d.toISOString(); }
+      const row = {
+        painel_id, url: url.slice(0, 1000),
+        titulo: p.titulo ? String(p.titulo).slice(0, 400) : null,
+        fonte: p.fonte ? String(p.fonte).slice(0, 200) : null,
+        published_at,
+        resumo: p.resumo ? String(p.resumo).slice(0, 1000) : null,
+        added_by: p.added_by ? String(p.added_by).slice(0, 200) : null
+      };
+      const { data, error } = await supabase.from("painel_noticias").upsert(row, { onConflict: "painel_id,url" }).select().maybeSingle();
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, noticia: data });
+    }
+
+    // F7: remove uma noticia curada (operador).
+    if (type === "painel_noticia_remove") {
+      res.setHeader("Cache-Control", "no-store");
+      const id = String(params(req).id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const { error } = await supabase.from("painel_noticias").delete().eq("id", id);
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true });
     }
 
     // Participacoes societarias locais de uma empresa (base receita_socio).

@@ -1851,7 +1851,7 @@ function renderPainelDetail(d) {
   if (!detail || !d) return;
   const p = d.painel;
   const tab = state.painelTab || "dados";
-  const tabs = [["dados", "Dados Gerais"], ["proposicoes", `Proposições (${d.counts?.proposicoes || 0})`], ["agenda", `Agenda (${d.counts?.agenda || 0})`], ["stakeholders", `Stakeholders (${d.counts?.stakeholders || 0})`], ["orgaos", `Órgãos (${d.counts?.orgaos || 0})`]];
+  const tabs = [["dados", "Dados Gerais"], ["proposicoes", `Proposições (${d.counts?.proposicoes || 0})`], ["agenda", `Agenda (${d.counts?.agenda || 0})`], ["noticias", `Notícias (${d.counts?.noticias || 0})`], ["stakeholders", `Stakeholders (${d.counts?.stakeholders || 0})`], ["orgaos", `Órgãos (${d.counts?.orgaos || 0})`]];
   detail.innerHTML = `
     <article class="news-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
@@ -1869,9 +1869,77 @@ function renderPainelDetail(d) {
 function renderPainelTab(d, tab) {
   if (tab === "proposicoes") return renderPainelProposicoes(d);
   if (tab === "agenda") return renderPainelAgenda(d);
+  if (tab === "noticias") return renderPainelNoticias(d);
   if (tab === "stakeholders") return renderPainelStakeholders(d);
   if (tab === "orgaos") return renderPainelOrgaos(d);
   return renderPainelDados(d);
+}
+
+// F7: aba Notícias — lista curada + curadoria (busca Google News → Fixar; ou colar URL).
+function renderPainelNoticias(d) {
+  const ns = d.noticias || [], p = d.painel || {};
+  const rows = ns.map((n) => {
+    const url = safeUrl(n.url);
+    const t = escapeHtml(String(n.titulo || n.url || "—").slice(0, 100));
+    return `<tr>
+      <td>${escapeHtml(String(n.published_at || "").slice(0, 10) || "—")}</td>
+      <td>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${t}</a>` : t}</td>
+      <td>${escapeHtml(String(n.fonte || "—").slice(0, 40))}</td>
+      <td><button type="button" class="entity-pill" data-noticia-remove="${escapeHtml(n.id)}">×</button></td>
+    </tr>`;
+  }).join("");
+  return `<article class="news-card">
+    <span class="source-meta">Notícias curadas</span>
+    <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin:6px 0">
+      <input id="painel-news-q" class="dou-date" style="min-width:220px;flex:1" placeholder="Buscar notícias (Google News)" value="${escapeHtml(p.cliente || p.nome || "")}">
+      <button type="button" class="alert-btn primary" id="painel-news-search">Buscar</button>
+    </div>
+    <div id="painel-news-results"></div>
+    <details style="margin:6px 0"><summary style="cursor:pointer;font-size:.78rem;opacity:.7">Adicionar por URL</summary>
+      <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin-top:6px">
+        <input id="painel-news-url" class="dou-date" style="min-width:200px;flex:1" placeholder="https://...">
+        <input id="painel-news-title" class="dou-date" style="min-width:140px" placeholder="Título (opcional)">
+        <input id="painel-news-src" class="dou-date" style="min-width:110px" placeholder="Fonte (opcional)">
+        <button type="button" class="entity-pill" id="painel-news-manual">Adicionar</button>
+      </div>
+    </details>
+    ${ns.length ? `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Notícia</th><th>Fonte</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<p>Nenhuma notícia curada. Busque acima e clique em “Fixar”.</p>`}
+  </article>`;
+}
+
+async function painelNewsSearch() {
+  const q = ($("#painel-news-q")?.value || "").trim();
+  const box = $("#painel-news-results");
+  if (!q) return;
+  if (box) box.innerHTML = `<p style="font-size:.8rem;opacity:.6">Buscando…</p>`;
+  try {
+    const r = await requestJson(`/api/news?q=${encodeURIComponent(q)}`);
+    const items = r?.items || [];
+    state.painelNews = items;
+    if (box) box.innerHTML = items.length
+      ? `<div class="news-list">${items.map((it, i) => `<div class="director-row"><div style="flex:1"><strong>${escapeHtml(String(it.title || "").slice(0, 110))}</strong> <span class="card-sub">${escapeHtml(String(it.source || "").slice(0, 40))}${it.date ? " · " + escapeHtml(String(it.date).slice(0, 16)) : ""}</span></div><button type="button" class="entity-pill" data-news-add="${i}">Fixar</button></div>`).join("")}</div>`
+      : `<p style="font-size:.8rem;opacity:.6">Nada encontrado.</p>`;
+  } catch (e) { if (box) box.innerHTML = `<p style="font-size:.8rem;opacity:.6">Falha: ${escapeHtml(e.message)}</p>`; }
+}
+
+async function painelNewsAdd(index) {
+  const it = (state.painelNews || [])[Number(index)];
+  if (!it || !state.currentPainelId) return;
+  try {
+    const r = await postJson("/api/intelligence?type=painel_noticia_add", { painel_id: state.currentPainelId, url: it.link, titulo: it.title, fonte: it.source, published_at: it.date, resumo: it.summary });
+    if (r?.ok) openPainel(state.currentPainelId); else alert(r?.error || "erro");
+  } catch (e) { alert(`Falha ao fixar: ${e.message}`); }
+}
+
+async function painelNewsManual() {
+  const url = ($("#painel-news-url")?.value || "").trim();
+  const titulo = ($("#painel-news-title")?.value || "").trim();
+  const fonte = ($("#painel-news-src")?.value || "").trim();
+  if (!url || !state.currentPainelId) return;
+  try {
+    const r = await postJson("/api/intelligence?type=painel_noticia_add", { painel_id: state.currentPainelId, url, titulo: titulo || null, fonte: fonte || null });
+    if (r?.ok) openPainel(state.currentPainelId); else alert(r?.error || "erro");
+  } catch (e) { alert(`Falha: ${e.message}`); }
 }
 
 // F4: aba Agenda — proposições do painel na pauta de eventos futuros da Câmara.
@@ -2132,6 +2200,12 @@ function wirePaineis() {
     if (share) { painelShare(share.dataset.painelShare); return; }
     const unshare = e.target.closest("[data-painel-unshare]");
     if (unshare) { painelUnshare(unshare.dataset.painelUnshare); return; }
+    if (e.target.closest("#painel-news-search")) { painelNewsSearch(); return; }
+    if (e.target.closest("#painel-news-manual")) { painelNewsManual(); return; }
+    const newsAdd = e.target.closest("[data-news-add]");
+    if (newsAdd) { painelNewsAdd(newsAdd.dataset.newsAdd); return; }
+    const noticiaRem = e.target.closest("[data-noticia-remove]");
+    if (noticiaRem) { postJson("/api/intelligence?type=painel_noticia_remove", { id: noticiaRem.dataset.noticiaRemove }).then(() => openPainel(state.currentPainelId)).catch(() => {}); return; }
     if (e.target.closest("#painel-import-btn")) { const box = $("#painel-import-box"); if (box) box.hidden = !box.hidden; return; }
     if (e.target.closest("#painel-import-resolve")) { painelImportResolve(); return; }
     if (e.target.closest("[data-import-confirm]")) { painelImportConfirm(); return; }
