@@ -3,6 +3,7 @@
   "trailingSlash": false,
   "functions": {
     "api/intelligence.js": { "maxDuration": 60 },
+    "api/dossier-person.js": { "maxDuration": 30 },
     "api/ingest-dou.js": { "maxDuration": 60 },
     "api/ingest-people-dou.js": { "maxDuration": 60 },
     "api/ingest-pncp.js": { "maxDuration": 60 }

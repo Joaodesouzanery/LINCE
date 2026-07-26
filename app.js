@@ -1467,6 +1467,8 @@ async function openDirectorDossier(id) {
       ${renderColegiadoVotes(d)}
       ${renderPropositions(d)}
       ${renderLegislativeVotes(d)}
+      ${renderComissoes(d)}
+      ${renderDiscursos(d)}
       ${renderFinanciadores(d)}
       ${renderCorporateNetwork(d)}
       ${renderPersonPatrimony(d, socios)}`;
@@ -1530,18 +1532,63 @@ function renderPropositions(d) {
 function renderLegislativeVotes(d) {
   const votes = d.legislative_votes || [];
   if (!votes.length) return "";
-  const dissent = votes.filter((v) => v.divergente).length;
+  const intel = d.intelligence || {};
+  const orientadas = intel.legislative_orientadas ?? votes.filter((v) => v.orientavel).length;
+  const dissent = intel.legislative_dissent ?? votes.filter((v) => v.divergente).length;
+  const fidelidade = intel.legislative_fidelidade ?? (orientadas > 0 ? Math.round(((orientadas - dissent) / orientadas) * 100) : null);
+  const cobertura = intel.legislative_cobertura ?? (votes.length ? Math.round((orientadas / votes.length) * 100) : 0);
+  // Resumo HONESTO: fidelidade computada só sobre votos com orientação conhecida,
+  // com a cobertura exposta (não infla fidelidade tratando o desconhecido como fiel).
+  const resumo = orientadas > 0
+    ? `Fiel em <strong>${fidelidade}%</strong> das ${orientadas} votação(ões) com orientação de bancada conhecida${dissent ? ` · ${dissent} infiel(is)` : ""} <span style="opacity:.6">· cobertura ${cobertura}% de ${votes.length} voto(s)</span>`
+    : `${votes.length} voto(s) · <span style="opacity:.6">sem orientação de bancada resolvível — fidelidade indisponível</span>`;
   const rows = votes.slice(0, 30).map((v) => `<tr>
     <td>${escapeHtml(String(v.data_votacao || "").slice(0, 10))}</td>
     <td>${escapeHtml(v.voto || "—")}${v.divergente ? ' <span class="entity-pill score-high">infiel</span>' : ""}</td>
-    <td>${escapeHtml(v.orientacao || "—")}</td>
+    <td>${escapeHtml(v.orientacao || "—")}${!v.orientavel ? ' <span style="opacity:.4">(s/ orient.)</span>' : ""}</td>
     <td>${escapeHtml(String(v.proposicao_titulo || v.descricao || "").slice(0, 52))}</td>
   </tr>`).join("");
   return `
     <article class="news-card">
       <span class="source-meta">Congresso — votação nominal (como vota)</span>
-      <strong>${votes.length} voto(s)${dissent ? ` · ${dissent} contra a orientação do partido` : ""}</strong>
+      <strong>${resumo}</strong>
       <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Voto</th><th>Orientação</th><th>Proposição</th></tr></thead><tbody>${rows}</tbody></table></div>
+    </article>`;
+}
+
+// M21: comissões/órgãos do parlamentar (aba "Comissões" do stakeholder — NOMOS).
+function renderComissoes(d) {
+  const cs = d.comissoes || [];
+  if (!cs.length) return "";
+  const rows = cs.map((c) => `<tr>
+    <td>${escapeHtml(c.sigla || "—")}</td>
+    <td>${escapeHtml(String(c.nome || "").slice(0, 60))}</td>
+    <td>${escapeHtml(c.cargo || "—")}</td>
+  </tr>`).join("");
+  return `
+    <article class="news-card">
+      <span class="source-meta">Comissões e órgãos</span>
+      <strong>${cs.length} vínculo(s) — Câmara</strong>
+      <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Sigla</th><th>Órgão</th><th>Cargo</th></tr></thead><tbody>${rows}</tbody></table></div>
+    </article>`;
+}
+
+// M21: últimos discursos (on-the-fly, best-effort — some se a API não retornar).
+function renderDiscursos(d) {
+  const ds = d.discursos || [];
+  if (!ds.length) return "";
+  const rows = ds.slice(0, 8).map((s) => {
+    const url = safeUrl(s.url);
+    const resumo = escapeHtml(String(s.sumario || "").slice(0, 180)) || "—";
+    return `<li>
+      <span style="opacity:.6">${escapeHtml(String(s.data || "").slice(0, 10))}${s.tipo ? " · " + escapeHtml(s.tipo) : ""}</span><br>
+      ${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${resumo}</a>` : resumo}
+    </li>`;
+  }).join("");
+  return `
+    <article class="news-card">
+      <span class="source-meta">Discursos recentes — Câmara</span>
+      <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px">${rows}</ul>
     </article>`;
 }
 
@@ -2438,6 +2485,14 @@ async function exportPersonPdf(d) {
         `${String(v.data_votacao || "").slice(0, 10)} · ${v.voto || "—"}${v.divergente ? " (infiel)" : ""}`,
         String(v.proposicao_titulo || v.descricao || "—").slice(0, 100),
         "Câmara · Dados Abertos"
+      )))
+    });
+  }
+  if ((d.comissoes || []).length) {
+    sections.push({
+      heading: `Comissões e órgãos (${d.comissoes.length})`,
+      html: printItemsTable(d.comissoes.map((c) => item(
+        c.sigla || "—", String(c.nome || "").slice(0, 100), c.cargo || "membro"
       )))
     });
   }

@@ -42,3 +42,5 @@ jobs:
         run: node scripts/backfill-proposicao-detalhe.js
       - name: Votacao nominal (como vota)
         run: node scripts/load-votacoes-leg.js
+      - name: Comissoes/orgaos (aba Comissoes do stakeholder)
+        run: node scripts/load-comissoes.js

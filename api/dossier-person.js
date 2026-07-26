@@ -121,7 +121,7 @@ module.exports = async function handler(req, res) {
     }
     if (!person) return res.status(404).json({ ok: false, error: "Pessoa nao encontrada." });
 
-    const [mandates, parties, votes, relsFrom, relsTo, assetsRes, delibsRel, propositionsRes, legVotesRes] = await Promise.all([
+    const [mandates, parties, votes, relsFrom, relsTo, assetsRes, delibsRel, propositionsRes, legVotesRes, bodyMembershipsRes] = await Promise.all([
       supabase.from("mandates").select("*, agencies(acronym, name)").eq("person_id", person.id),
       supabase.from("party_links").select("*").eq("person_id", person.id),
       supabase.from("votes").select("*, deliberations(deliberation_number, title, theme, result, agency_id, data_reuniao)").eq("voter_person_id", person.id),
@@ -133,7 +133,9 @@ module.exports = async function handler(req, res) {
       // M20: proposicoes de AUTORIA (parlamentar) — junta o legislativo ao dossie.
       supabase.from("proposicao_autores").select("tipo, ordem, proposicoes(id, casa, tipo, numero, ano, titulo, ementa, situacao, themes, url)").eq("person_id", person.id),
       // M20.2: votos LEGISLATIVOS nominais ("como vota") + contexto da proposicao.
-      supabase.from("legislative_votes").select("voto, orientacao, partido, legislative_votacoes(id, descricao, data_votacao, resultado, casa, proposicao_id, proposicoes(titulo, url))").eq("person_id", person.id)
+      supabase.from("legislative_votes").select("voto, orientacao, partido, legislative_votacoes(id, descricao, data_votacao, resultado, casa, proposicao_id, proposicoes(titulo, url))").eq("person_id", person.id),
+      // M21: comissoes/orgaos (aba "Comissoes" do stakeholder). Degrada p/ [] se M21 nao aplicada.
+      supabase.from("body_memberships").select("casa, orgao_sigla, orgao_nome, cargo").eq("person_id", person.id)
     ]);
 
     // M20.3: doacoes de campanha PAGINADAS (recebedores grandes passam de 1000 —
@@ -161,15 +163,41 @@ module.exports = async function handler(req, res) {
     const legislative_votes = (legVotesRes.data || [])
       .map((r) => {
         const vt = r.legislative_votacoes || {};
-        const liberado = !r.orientacao || /liber/i.test(r.orientacao);
+        // orientavel = orientacao do PROPRIO partido resolvida (nao-nula, nao "Liberado").
+        const orientavel = !!(r.orientacao && !/liber/i.test(r.orientacao));
         return {
-          voto: r.voto, orientacao: r.orientacao, partido: r.partido,
-          divergente: !!(!liberado && r.orientacao && mapVoto(r.voto) !== mapVoto(r.orientacao)),
+          voto: r.voto, orientacao: r.orientacao, partido: r.partido, orientavel,
+          divergente: !!(orientavel && mapVoto(r.voto) !== mapVoto(r.orientacao)),
           descricao: vt.descricao, data_votacao: vt.data_votacao, resultado: vt.resultado, casa: vt.casa,
           proposicao_titulo: vt.proposicoes?.titulo || null, proposicao_url: vt.proposicoes?.url || null
         };
       })
       .sort((a, b) => String(b.data_votacao || "").localeCompare(String(a.data_votacao || "")));
+
+    // Fidelidade HONESTA: denominador = votos com orientacao conhecida (orientavel).
+    // Nao infla contando votos sem orientacao como "fieis"; expoe a COBERTURA.
+    const leg_orientadas = legislative_votes.filter((v) => v.orientavel).length;
+    const leg_divergentes = legislative_votes.filter((v) => v.divergente).length;
+    const leg_fidelidade = leg_orientadas > 0 ? Math.round(((leg_orientadas - leg_divergentes) / leg_orientadas) * 100) : null;
+    const leg_cobertura = legislative_votes.length > 0 ? Math.round((leg_orientadas / legislative_votes.length) * 100) : 0;
+
+    // M21: comissoes/orgaos (aba "Comissoes" do stakeholder). Presidente/relator antes.
+    const cargoPeso = (c) => /presi/i.test(c || "") ? 0 : /relat|vice/i.test(c || "") ? 1 : /titular/i.test(c || "") ? 2 : 3;
+    const comissoes = (bodyMembershipsRes.data || [])
+      .map((m) => ({ casa: m.casa, sigla: m.orgao_sigla, nome: m.orgao_nome, cargo: m.cargo }))
+      .sort((a, b) => cargoPeso(a.cargo) - cargoPeso(b.cargo));
+
+    // M21: discursos on-the-fly (best-effort, display-only, SEM tabela). So p/ deputado
+    // com id Camara; degrada em silencio se a API falhar ou nao houver id.
+    let discursos = [];
+    const camaraId = person.external_ids && person.external_ids.camara;
+    if (camaraId) {
+      try {
+        const { fetchDiscursos } = require("../lib/legislativo");
+        const dr = await fetchDiscursos(camaraId, { itens: 8 });
+        if (dr.ok) discursos = dr.items;
+      } catch (_) { /* display-only: ignora */ }
+    }
 
     // Financiadores de campanha: agrega por doador (top por valor) + total.
     const donorMap = new Map();
@@ -250,6 +278,8 @@ module.exports = async function handler(req, res) {
       corporate_network,
       propositions,
       legislative_votes,
+      comissoes,
+      discursos,
       financiadores,
       assets,
       siape: siape.ok ? siape.items : [],
@@ -263,7 +293,12 @@ module.exports = async function handler(req, res) {
         deliberations_relatadas: (delibsRel.data || []).length,
         propositions_count: propositions.length,
         legislative_votes_count: legislative_votes.length,
-        legislative_dissent: legislative_votes.filter((v) => v.divergente).length,
+        legislative_orientadas: leg_orientadas,       // votos com orientacao conhecida (denominador)
+        legislative_dissent: leg_divergentes,         // infieis (subconjunto dos orientaveis)
+        legislative_fidelidade: leg_fidelidade,       // % fiel sobre orientadas (null se 0)
+        legislative_cobertura: leg_cobertura,         // % dos votos com orientacao conhecida
+        comissoes_count: comissoes.length,
+        discursos_count: discursos.length,
         financiadores_total: financiadores.total,
         financiadores_count: financiadores.count,
         active_mandate: (mandates.data || []).some((m) => !m.ended_at),

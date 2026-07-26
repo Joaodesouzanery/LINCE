@@ -698,6 +698,9 @@ create table if not exists body_memberships (
   external_org_id text,
   created_at timestamptz not null default now()
 );
-create unique index if not exists body_memberships_uidx on body_memberships (person_id, orgao_sigla, cargo);
+-- Unique por external_org_id (sempre presente do coletor Camara) + cargo. A
+-- idempotencia real vem do load-comissoes (delete-by-person + insert = re-sync
+-- limpo, remove vinculo encerrado); este indice e so rede de seguranca.
+create unique index if not exists body_memberships_uidx on body_memberships (person_id, external_org_id, cargo);
 create index if not exists body_memberships_person_idx on body_memberships (person_id);
 alter table body_memberships enable row level security;
