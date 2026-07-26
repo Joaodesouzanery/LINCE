@@ -476,6 +476,7 @@ function setView(view) {
     "agenda-reg": ["Pipeline regulatorio (M8+)", "Agenda Regulatoria"],
     monitors: ["Vigilancia continua (M10)", "Central de Monitoramento"],
     legislativo: ["Radar legislativo (M12)", "Legislativo"],
+    paineis: ["Monitoramento por painel (M21)", "Painéis"],
     radar: ["Risco & Oportunidade (M13)", "Radar"],
     gerador: ["Composição comercial (M14)", "Gerador de Dossiê"],
     person: ["Screening de pessoa", "Consulta Pessoa"]
@@ -491,6 +492,7 @@ function setView(view) {
   if (view === "agenda-reg") loadAgendaRegulatoria();
   if (view === "monitors") loadMonitors();
   if (view === "legislativo") loadLegislativo();
+  if (view === "paineis") loadPaineis();
   if (view === "radar") loadRadar();
   if (view === "gerador") loadGerador();
   $("#view-kicker").textContent = kicker;
@@ -1741,6 +1743,223 @@ function renderLegislativo(items) {
       </article>`;
     })
     .join("");
+}
+
+// ══════════════════ Painéis curados (M21 — NOMOS F1) ══════════════════════
+// Módulo único "Painéis": o time cura painéis (proposições/stakeholders/órgãos)
+// com prioridade/posicionamento/tags. Multiplexa em /api/intelligence?type=painel_*.
+let painelWired = false;
+
+async function loadPaineis() {
+  const grid = $("#paineis-grid"), detail = $("#painel-detail");
+  if (!grid) return;
+  wirePaineis();
+  state.currentPainelId = null;
+  if (detail) { detail.hidden = true; detail.innerHTML = ""; }
+  grid.hidden = false;
+  grid.innerHTML = emptyCard("Painéis", "Carregando…");
+  try {
+    const r = await requestJson("/api/intelligence?type=painel_list");
+    const items = r?.items || [];
+    if (!items.length) { grid.innerHTML = emptyCard("Painéis", "Nenhum painel ainda. Clique em “+ Criar painel”."); return; }
+    grid.innerHTML = items.map((p) => {
+      const c = p.counts || {};
+      return `<article class="news-card target-card selectable" data-open-painel="${escapeHtml(p.id)}">
+        <div class="card-body">
+          <div class="card-head"><div>
+            <strong>${escapeHtml(p.nome)}</strong>
+            <span class="card-sub">${p.cliente ? escapeHtml(p.cliente) + " · " : ""}${escapeHtml((p.descricao || "").slice(0, 80))}</span>
+          </div></div>
+          <div class="entity-row">
+            <span class="entity-pill">${c.proposicao || 0} proposições</span>
+            <span class="entity-pill">${c.stakeholder || 0} stakeholders</span>
+            <span class="entity-pill">${c.orgao || 0} órgãos</span>
+            <button type="button" class="entity-pill" data-painel-del="${escapeHtml(p.id)}">Excluir</button>
+          </div>
+        </div>
+        ${cardFoot("var(--blue)", p.cliente || "Painel", "LINCE//PAINEL")}
+      </article>`;
+    }).join("");
+  } catch (e) { grid.innerHTML = emptyCard("Painéis", `Falha: ${e.message}`); }
+}
+
+async function openPainel(id) {
+  const grid = $("#paineis-grid"), detail = $("#painel-detail");
+  if (!detail) return;
+  state.currentPainelId = id;
+  state.painelTab = state.painelTab || "dados";
+  if (grid) grid.hidden = true;
+  detail.hidden = false;
+  detail.innerHTML = emptyCard("Painel", "Abrindo…");
+  try {
+    const d = await requestJson(`/api/intelligence?type=painel_get&id=${encodeURIComponent(id)}`);
+    if (!d?.ok) throw new Error(d?.error || "erro");
+    state.painelData = d;
+    renderPainelDetail(d);
+  } catch (e) { detail.innerHTML = emptyCard("Painel", `Falha: ${e.message}`); }
+}
+
+function renderPainelDetail(d) {
+  const detail = $("#painel-detail");
+  if (!detail || !d) return;
+  const p = d.painel;
+  const tab = state.painelTab || "dados";
+  const tabs = [["dados", "Dados Gerais"], ["proposicoes", `Proposições (${d.counts?.proposicoes || 0})`], ["stakeholders", `Stakeholders (${d.counts?.stakeholders || 0})`], ["orgaos", `Órgãos (${d.counts?.orgaos || 0})`]];
+  detail.innerHTML = `
+    <article class="news-card">
+      <button type="button" class="entity-pill" data-painel-back>&larr; Painéis</button>
+      <span class="source-meta">${escapeHtml(p.cliente || "Painel")}</span>
+      <strong>${escapeHtml(p.nome)}</strong>
+      ${p.descricao ? `<p>${escapeHtml(p.descricao)}</p>` : ""}
+      <div class="dossier-tabs">${tabs.map(([id2, lbl]) => `<button type="button" class="dossier-tab ${tab === id2 ? "active" : ""}" data-painel-tab="${id2}">${lbl}</button>`).join("")}</div>
+    </article>
+    <div id="painel-tab-content">${renderPainelTab(d, tab)}</div>`;
+}
+
+function renderPainelTab(d, tab) {
+  if (tab === "proposicoes") return renderPainelProposicoes(d);
+  if (tab === "stakeholders") return renderPainelStakeholders(d);
+  if (tab === "orgaos") return renderPainelOrgaos(d);
+  return renderPainelDados(d);
+}
+
+function renderPainelDados(d) {
+  const tram = (d.proposicoes || []).filter((x) => x.data && x.data.situacao).slice(0, 12);
+  return `<article class="news-card">
+    <span class="source-meta">Dados Gerais</span>
+    <div class="entity-row">
+      <span class="entity-pill">${d.counts?.proposicoes || 0} proposições</span>
+      <span class="entity-pill">${d.counts?.stakeholders || 0} stakeholders</span>
+      <span class="entity-pill">${d.counts?.orgaos || 0} órgãos</span>
+    </div>
+    ${tram.length ? `<strong style="margin-top:10px;display:block">Últimas tramitações</strong>
+      <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Proposição</th><th>Situação</th></tr></thead><tbody>${tram.map((x) => `<tr><td>${escapeHtml(x.data.titulo || x.ref_id)}</td><td>${escapeHtml(x.data.situacao || "—")}</td></tr>`).join("")}</tbody></table></div>`
+      : `<p>Sem tramitações. Importe proposições na aba Proposições.</p>`}
+  </article>`;
+}
+
+function renderPainelProposicoes(d) {
+  const props = d.proposicoes || [];
+  const PRIO = ["alta", "media", "baixa"], POS = ["favoravel", "neutro", "contrario"];
+  const sel = (val, opts, attr, itemId) => `<select data-${attr}="${escapeHtml(itemId)}" class="dou-date">${opts.map((o) => `<option value="${o}" ${val === o ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  const rows = props.map((x) => {
+    const pr = x.data || {}; const url = safeUrl(pr.url);
+    return `<tr>
+      <td>${sel(x.prioridade, PRIO, "item-prio", x.item_id)}</td>
+      <td>${sel(x.posicionamento, POS, "item-pos", x.item_id)}</td>
+      <td>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(pr.titulo || x.ref_id)}</a>` : escapeHtml(pr.titulo || x.ref_id)}</td>
+      <td>${escapeHtml(pr.situacao || "—")}</td>
+      <td><button type="button" class="entity-pill" data-item-remove="${escapeHtml(x.item_id)}">×</button></td>
+    </tr>`;
+  }).join("");
+  return `<article class="news-card">
+    <div class="entity-row" style="justify-content:space-between">
+      <span class="source-meta">Proposições monitoradas</span>
+      <button type="button" class="alert-btn primary" id="painel-import-btn">Importar proposições</button>
+    </div>
+    <div id="painel-import-box" hidden style="margin:8px 0">
+      <textarea id="painel-import-text" class="dou-date" style="width:100%;min-height:70px" placeholder="Cole a lista: PEC 42/2024, PL 11/2025"></textarea>
+      <div class="entity-row"><button type="button" class="alert-btn primary" id="painel-import-resolve">Analisar</button><span id="painel-import-status" style="font-size:.75rem;opacity:.6"></span></div>
+      <div id="painel-import-results"></div>
+    </div>
+    ${props.length ? `<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Prioridade</th><th>Posição</th><th>Proposição</th><th>Situação</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : `<p>Nenhuma proposição. Clique em “Importar proposições”.</p>`}
+  </article>`;
+}
+
+function renderPainelStakeholders(d) {
+  const st = d.stakeholders || [];
+  if (!st.length) return `<article class="news-card"><span class="source-meta">Stakeholders</span><p>Nenhum stakeholder no painel.</p></article>`;
+  return `<article class="news-card"><span class="source-meta">Stakeholders</span>
+    <div class="news-list">${st.map((x) => { const s = x.data || {}; return `<div class="director-row selectable" data-person-id="${escapeHtml(x.ref_id)}"><strong>${escapeHtml(s.full_name || x.ref_id)}</strong> <span class="card-sub">${escapeHtml(s.role || "")}${s.uf ? " · " + escapeHtml(s.uf) : ""}</span></div>`; }).join("")}</div>
+  </article>`;
+}
+
+function renderPainelOrgaos(d) {
+  const og = d.orgaos || [];
+  if (!og.length) return `<article class="news-card"><span class="source-meta">Órgãos</span><p>Nenhum órgão no painel.</p></article>`;
+  return `<article class="news-card"><span class="source-meta">Órgãos</span>
+    <div class="entity-row">${og.map((x) => { const o = x.data || {}; return `<span class="entity-pill">${escapeHtml(o.acronym || x.ref_id)}${o.name ? " · " + escapeHtml(o.name) : ""}</span>`; }).join("")}</div>
+  </article>`;
+}
+
+async function painelCreate() {
+  const nome = window.prompt("Nome do painel (ex.: Energia, Segurança):");
+  if (!nome || !nome.trim()) return;
+  const cliente = window.prompt("Cliente (opcional):") || "";
+  try {
+    const r = await postJson("/api/intelligence?type=painel_save", { nome: nome.trim(), cliente: cliente.trim() });
+    if (r?.ok && r.painel) { await loadPaineis(); openPainel(r.painel.id); }
+  } catch (e) { alert(`Falha ao criar: ${e.message}`); }
+}
+
+async function painelImportResolve() {
+  const text = $("#painel-import-text")?.value || "";
+  const status = $("#painel-import-status"), results = $("#painel-import-results");
+  if (status) status.textContent = "Analisando…";
+  try {
+    const r = await postJson("/api/intelligence?type=painel_import_resolve", { texto: text });
+    const found = (r?.resolved || []).flatMap((x) => x.matched || []);
+    state.painelImportFound = found;
+    if (status) status.textContent = `${found.length} proposição(ões) encontrada(s).`;
+    if (results) results.innerHTML = found.length
+      ? `<div class="entity-row" style="flex-wrap:wrap;margin:6px 0">${found.map((f) => `<span class="entity-pill">${escapeHtml(f.titulo)} · ${escapeHtml(f.casa)}</span>`).join("")}</div><button type="button" class="alert-btn primary" data-import-confirm>Confirmar importação (${found.length})</button>`
+      : `<p style="font-size:.78rem;opacity:.6">Nenhuma proposição reconhecida (use “PL 1234/2025”).</p>`;
+  } catch (e) { if (status) status.textContent = `Falha: ${e.message}`; }
+}
+
+async function painelImportConfirm() {
+  const found = state.painelImportFound || [];
+  if (!found.length || !state.currentPainelId) return;
+  try {
+    const r = await postJson("/api/intelligence?type=painel_import_confirm", { painel_id: state.currentPainelId, items: found });
+    if (r?.ok) { state.painelTab = "proposicoes"; openPainel(state.currentPainelId); }
+  } catch (e) { alert(`Falha ao importar: ${e.message}`); }
+}
+
+// Curadoria inline: grava prioridade/posicionamento, SINCRONIZA o state (p/ a aba
+// não reverter o select ao re-renderizar) e REVERTE + avisa se o POST falhar.
+async function painelUpdateItem(selectEl, itemId, campo, valor) {
+  const item = (state.painelData?.proposicoes || []).find((x) => String(x.item_id) === String(itemId));
+  const prev = item ? item[campo] : undefined;
+  try {
+    const r = await postJson("/api/intelligence?type=painel_item_update", { id: itemId, [campo]: valor });
+    if (!r?.ok) throw new Error(r?.error || "erro ao salvar");
+    if (item) item[campo] = valor; // mantém state == banco
+  } catch (err) {
+    if (selectEl && prev !== undefined) selectEl.value = prev; // reverte o controle
+    alert(`Não foi possível salvar: ${err.message}`);
+  }
+}
+
+function wirePaineis() {
+  if (painelWired) return; painelWired = true;
+  const view = $("#view-paineis");
+  if (!view) return;
+  $("#painel-create")?.addEventListener("click", painelCreate);
+  view.addEventListener("click", async (e) => {
+    const del = e.target.closest("[data-painel-del]");
+    if (del) { e.stopPropagation(); if (confirm("Excluir este painel?")) { await postJson("/api/intelligence?type=painel_delete", { id: del.dataset.painelDel }).catch(() => {}); loadPaineis(); } return; }
+    const open = e.target.closest("[data-open-painel]");
+    if (open) { openPainel(open.dataset.openPainel); return; }
+    const back = e.target.closest("[data-painel-back]");
+    if (back) { loadPaineis(); return; }
+    const tab = e.target.closest("[data-painel-tab]");
+    if (tab) { state.painelTab = tab.dataset.painelTab; renderPainelDetail(state.painelData); return; }
+    const rem = e.target.closest("[data-item-remove]");
+    if (rem) { await postJson("/api/intelligence?type=painel_item_remove", { id: rem.dataset.itemRemove }).catch(() => {}); openPainel(state.currentPainelId); return; }
+    const person = e.target.closest("[data-person-id]");
+    if (person) { suppressDirectorsAutoload = true; document.querySelector("[data-view='directors']")?.click(); openDirectorDossier(person.dataset.personId); return; }
+    if (e.target.closest("#painel-import-btn")) { const box = $("#painel-import-box"); if (box) box.hidden = !box.hidden; return; }
+    if (e.target.closest("#painel-import-resolve")) { painelImportResolve(); return; }
+    if (e.target.closest("[data-import-confirm]")) { painelImportConfirm(); return; }
+  });
+  view.addEventListener("change", (e) => {
+    const prio = e.target.closest("[data-item-prio]");
+    if (prio) { painelUpdateItem(prio, prio.dataset.itemPrio, "prioridade", prio.value); return; }
+    const pos = e.target.closest("[data-item-pos]");
+    if (pos) { painelUpdateItem(pos, pos.dataset.itemPos, "posicionamento", pos.value); }
+  });
 }
 
 // Radar de Risco & Oportunidade (M13): sintetiza captura/porta-giratória,

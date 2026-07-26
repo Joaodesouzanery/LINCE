@@ -643,3 +643,61 @@ create index if not exists campaign_donations_donor_doc_idx on campaign_donation
 create unique index if not exists campaign_donations_uidx
   on campaign_donations (sq_candidato, tse_receita_id);
 alter table campaign_donations enable row level security;
+
+-- ===== Fase M21: Paineis curados (NOMOS F1) + comissoes =====
+-- Painel = objeto de curadoria (por tema/cliente) que AGREGA proposicoes +
+-- stakeholders + orgaos + eventos, com prioridade/posicionamento/tags por item.
+-- Espelha o CRUD de monitors. webhook_url/frequencia/owner_email sao scaffolding
+-- p/ alertas (F3) e white-label (F5) — aditivos e inofensivos ate la.
+create table if not exists paineis (
+  id uuid primary key default gen_random_uuid(),
+  slug text unique,
+  nome text not null,
+  cliente text,
+  descricao text,
+  tema text[],
+  active boolean not null default true,
+  webhook_url text,
+  frequencia text default 'diario' check (frequencia in ('tempo_real', 'diario', 'off')),
+  owner_email text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists paineis_active_idx on paineis (active);
+alter table paineis enable row level security;
+
+-- Itens do painel. ref_id e TEXT polimorfico (uuid de people OU 'camara:123' de
+-- proposicoes) — sem FK dura (o item_kind diz o namespace).
+create table if not exists painel_items (
+  id uuid primary key default gen_random_uuid(),
+  painel_id uuid not null references paineis(id) on delete cascade,
+  item_kind text not null check (item_kind in ('proposicao', 'stakeholder', 'orgao', 'evento', 'monitor')),
+  ref_id text not null,
+  prioridade text default 'media',
+  posicionamento text default 'neutro',
+  tags text[],
+  nota text,
+  ordem int,
+  added_by text,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists painel_items_uidx on painel_items (painel_id, item_kind, ref_id);
+create index if not exists painel_items_painel_idx on painel_items (painel_id);
+create index if not exists painel_items_tags_gin on painel_items using gin (tags);
+alter table painel_items enable row level security;
+
+-- Comissoes/orgaos por parlamentar (aba "Orgaos" do perfil de stakeholder — NOMOS).
+create table if not exists body_memberships (
+  id uuid primary key default gen_random_uuid(),
+  person_id uuid not null references people(id) on delete cascade,
+  casa text,
+  orgao_sigla text,
+  orgao_nome text,
+  cargo text,
+  external_org_id text,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists body_memberships_uidx on body_memberships (person_id, orgao_sigla, cargo);
+create index if not exists body_memberships_person_idx on body_memberships (person_id);
+alter table body_memberships enable row level security;

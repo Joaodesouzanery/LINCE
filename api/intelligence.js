@@ -763,6 +763,171 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, items: data || [] });
     }
 
+    // ── M21: Paineis curados (NOMOS F1). CRUD multiplexado, molde monitor_*. ──
+    if (type === "painel_list") {
+      res.setHeader("Cache-Control", "no-store");
+      const { data: paineis, error } = await supabase.from("paineis").select("*").order("created_at", { ascending: false });
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      // Contadores por painel: pagina painel_items p/ nao estourar o teto do PostgREST (1000).
+      const counts = new Map();
+      const zero = () => ({ proposicao: 0, stakeholder: 0, orgao: 0, evento: 0, monitor: 0, total: 0 });
+      const PAGE = 1000;
+      for (let from = 0; ; from += PAGE) {
+        const { data: items, error: itemsErr } = await supabase.from("painel_items").select("painel_id, item_kind").range(from, from + PAGE - 1);
+        if (itemsErr) return res.status(500).json({ ok: false, error: itemsErr.message });
+        for (const it of items || []) {
+          const c = counts.get(it.painel_id) || zero();
+          if (c[it.item_kind] !== undefined) c[it.item_kind]++;
+          c.total++; counts.set(it.painel_id, c);
+        }
+        if (!items || items.length < PAGE) break;
+      }
+      return res.status(200).json({ ok: true, items: (paineis || []).map((p) => ({ ...p, counts: counts.get(p.id) || zero() })) });
+    }
+
+    if (type === "painel_get") {
+      res.setHeader("Cache-Control", "no-store");
+      const id = String(req.query.id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const { data: painel } = await supabase.from("paineis").select("*").eq("id", id).maybeSingle();
+      if (!painel) return res.status(404).json({ ok: false, error: "Painel nao encontrado." });
+      const { data: rows } = await supabase.from("painel_items").select("*").eq("painel_id", id).order("created_at", { ascending: true });
+      const items = rows || [];
+      const refsOf = (kind) => items.filter((r) => r.item_kind === kind).map((r) => r.ref_id);
+      const propRefs = refsOf("proposicao"), stakeRefs = refsOf("stakeholder"), orgaoRefs = refsOf("orgao");
+      const [propsRes, stakeRes, orgaoRes] = await Promise.allSettled([
+        propRefs.length ? supabase.from("proposicoes").select("id, casa, tipo, numero, ano, titulo, ementa, situacao, themes, url").in("id", propRefs) : Promise.resolve({ data: [] }),
+        stakeRefs.length ? supabase.from("people").select("id, full_name, role, uf, external_ids").in("id", stakeRefs) : Promise.resolve({ data: [] }),
+        orgaoRefs.length ? supabase.from("agencies").select("id, acronym, name").in("id", orgaoRefs) : Promise.resolve({ data: [] })
+      ]);
+      const mapOf = (r) => new Map(((r.status === "fulfilled" ? r.value.data : null) || []).map((x) => [String(x.id), x]));
+      const propMap = mapOf(propsRes), stakeMap = mapOf(stakeRes), orgaoMap = mapOf(orgaoRes);
+      const hydrate = (r, m) => ({ item_id: r.id, item_kind: r.item_kind, ref_id: r.ref_id, prioridade: r.prioridade, posicionamento: r.posicionamento, tags: r.tags, nota: r.nota, data: m.get(String(r.ref_id)) || null });
+      const proposicoes = items.filter((r) => r.item_kind === "proposicao").map((r) => hydrate(r, propMap));
+      const stakeholders = items.filter((r) => r.item_kind === "stakeholder").map((r) => hydrate(r, stakeMap));
+      const orgaos = items.filter((r) => r.item_kind === "orgao").map((r) => hydrate(r, orgaoMap));
+      return res.status(200).json({ ok: true, painel, proposicoes, stakeholders, orgaos, counts: { proposicoes: proposicoes.length, stakeholders: stakeholders.length, orgaos: orgaos.length } });
+    }
+
+    if (type === "painel_save") {
+      res.setHeader("Cache-Control", "no-store");
+      const p = params(req);
+      const nome = String(p.nome || "").trim();
+      if (nome.length < 2) return res.status(400).json({ ok: false, error: "Informe o nome do painel." });
+      const row = {
+        nome, cliente: p.cliente ? String(p.cliente).slice(0, 200) : null,
+        descricao: p.descricao ? String(p.descricao).slice(0, 1000) : null,
+        tema: Array.isArray(p.tema) ? p.tema : null,
+        webhook_url: p.webhook_url ? String(p.webhook_url).slice(0, 500) : null,
+        frequencia: ["tempo_real", "diario", "off"].includes(p.frequencia) ? p.frequencia : "diario",
+        owner_email: p.owner_email ? String(p.owner_email).slice(0, 200) : null,
+        updated_at: new Date().toISOString()
+      };
+      const result = p.id
+        ? await supabase.from("paineis").update(row).eq("id", p.id).select().maybeSingle()
+        : await supabase.from("paineis").insert(row).select().maybeSingle();
+      if (result.error) return res.status(500).json({ ok: false, error: result.error.message });
+      if (!result.data) return res.status(404).json({ ok: false, error: "Painel nao encontrado." });
+      return res.status(200).json({ ok: true, painel: result.data });
+    }
+
+    if (type === "painel_delete") {
+      res.setHeader("Cache-Control", "no-store");
+      const id = String(params(req).id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const { error } = await supabase.from("paineis").delete().eq("id", id);
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true });
+    }
+
+    if (type === "painel_item_add") {
+      res.setHeader("Cache-Control", "no-store");
+      const p = params(req);
+      const painel_id = String(p.painel_id || "").trim();
+      const item_kind = String(p.item_kind || "").trim();
+      const ref_id = String(p.ref_id || "").trim();
+      if (!painel_id || !ref_id) return res.status(400).json({ ok: false, error: "Informe painel_id e ref_id" });
+      if (!["proposicao", "stakeholder", "orgao", "evento", "monitor"].includes(item_kind)) return res.status(400).json({ ok: false, error: "item_kind invalido" });
+      // Valida existencia do ref (evita item orfao) p/ os kinds com tabela.
+      const tbl = { proposicao: "proposicoes", stakeholder: "people", orgao: "agencies" }[item_kind];
+      if (tbl) {
+        const { data: exists } = await supabase.from(tbl).select("id").eq("id", ref_id).maybeSingle();
+        if (!exists) return res.status(400).json({ ok: false, error: `Referência ${item_kind} não encontrada na base.` });
+      }
+      const row = {
+        painel_id, item_kind, ref_id,
+        prioridade: ["alta", "media", "baixa"].includes(p.prioridade) ? p.prioridade : "media",
+        posicionamento: ["favoravel", "contrario", "neutro"].includes(p.posicionamento) ? p.posicionamento : "neutro",
+        tags: Array.isArray(p.tags) ? p.tags : null,
+        nota: p.nota ? String(p.nota).slice(0, 1000) : null,
+        added_by: p.added_by ? String(p.added_by).slice(0, 200) : null
+      };
+      const { data, error } = await supabase.from("painel_items").upsert(row, { onConflict: "painel_id,item_kind,ref_id" }).select().maybeSingle();
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, item: data });
+    }
+
+    if (type === "painel_item_update") {
+      res.setHeader("Cache-Control", "no-store");
+      const p = params(req);
+      const id = String(p.id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const patch = {};
+      if (["alta", "media", "baixa"].includes(p.prioridade)) patch.prioridade = p.prioridade;
+      if (["favoravel", "contrario", "neutro"].includes(p.posicionamento)) patch.posicionamento = p.posicionamento;
+      if (Array.isArray(p.tags)) patch.tags = p.tags;
+      if (p.nota !== undefined) patch.nota = p.nota ? String(p.nota).slice(0, 1000) : null;
+      if (!Object.keys(patch).length) return res.status(400).json({ ok: false, error: "Nada a atualizar" });
+      const { data, error } = await supabase.from("painel_items").update(patch).eq("id", id).select().maybeSingle();
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      if (!data) return res.status(404).json({ ok: false, error: "Item nao encontrado." });
+      return res.status(200).json({ ok: true, item: data });
+    }
+
+    if (type === "painel_item_remove") {
+      res.setHeader("Cache-Control", "no-store");
+      const id = String(params(req).id || "").trim();
+      if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+      const { error } = await supabase.from("painel_items").delete().eq("id", id);
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true });
+    }
+
+    if (type === "painel_import_resolve") {
+      res.setHeader("Cache-Control", "no-store");
+      const { parseProposicaoRefs, resolveProposicaoRef } = require("../lib/legislativo");
+      const refs = parseProposicaoRefs(String(params(req).texto || ""));
+      if (!refs.length) return res.status(200).json({ ok: true, resolved: [], note: "Nenhuma referência reconhecida (ex.: 'PL 1234/2025')." });
+      const settled = await Promise.allSettled(refs.slice(0, 50).map(async (ref) => ({ ref, matched: await resolveProposicaoRef(ref) })));
+      return res.status(200).json({ ok: true, resolved: settled.map((s) => (s.status === "fulfilled" ? s.value : { ref: null, matched: [] })) });
+    }
+
+    if (type === "painel_import_confirm") {
+      res.setHeader("Cache-Control", "no-store");
+      const p = params(req);
+      const painel_id = String(p.painel_id || "").trim();
+      const list = Array.isArray(p.items) ? p.items : [];
+      if (!painel_id || !list.length) return res.status(400).json({ ok: false, error: "Informe painel_id e items" });
+      let added = 0, failed = 0;
+      for (const it of list.slice(0, 200)) {
+        if (!it || !it.id) { failed++; continue; }
+        const propRow = {
+          id: String(it.id), casa: it.casa || null, tipo: it.tipo || null,
+          numero: it.numero != null ? String(it.numero) : null, ano: it.ano ? Number(it.ano) : null,
+          ementa: it.ementa || null, titulo: it.titulo || null, url: it.url || null, last_seen: new Date().toISOString()
+        };
+        const up = await supabase.from("proposicoes").upsert(propRow, { onConflict: "id" });
+        if (up.error) { failed++; continue; }
+        const ins = await supabase.from("painel_items").upsert(
+          { painel_id, item_kind: "proposicao", ref_id: String(it.id), prioridade: "media", posicionamento: "neutro" },
+          { onConflict: "painel_id,item_kind,ref_id" }
+        );
+        if (ins.error) { failed++; continue; }
+        added++;
+      }
+      return res.status(200).json({ ok: true, added, failed });
+    }
+
     // Participacoes societarias locais de uma empresa (base receita_socio).
     if (type === "holdings") {
       const cnpj = onlyDigits(req.query.cnpj);
