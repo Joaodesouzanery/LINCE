@@ -477,6 +477,7 @@ function setView(view) {
     monitors: ["Vigilancia continua (M10)", "Central de Monitoramento"],
     legislativo: ["Radar legislativo (M12)", "Legislativo"],
     paineis: ["Monitoramento por painel (M21)", "Painéis"],
+    evento: ["Gestão de eventos (M25)", "Eventos"],
     radar: ["Risco & Oportunidade (M13)", "Radar"],
     gerador: ["Composição comercial (M14)", "Gerador de Dossiê"],
     person: ["Screening de pessoa", "Consulta Pessoa"]
@@ -493,6 +494,7 @@ function setView(view) {
   if (view === "monitors") loadMonitors();
   if (view === "legislativo") loadLegislativo();
   if (view === "paineis") loadPaineis();
+  if (view === "evento") loadEventos();
   if (view === "radar") loadRadar();
   if (view === "gerador") loadGerador();
   $("#view-kicker").textContent = kicker;
@@ -1790,6 +1792,290 @@ function renderLegislativo(items) {
       </article>`;
     })
     .join("");
+}
+
+// ══════════════════ Eventos (M25 — gestão de seminários IRIS) ══════════════════
+// Checklist interativo multi-evento: colunas DINÂMICAS (planilha) + visão por
+// categoria, sobre o mesmo dado. Molde do módulo Painéis. Multiplexa em ?type=evt_*.
+// (Nada a ver com legislative_eventos/agenda da Câmara.)
+let eventoWired = false;
+const EVT_TYPES = ["text", "date", "select", "check", "url", "num"];
+
+async function loadEventos() {
+  const grid = $("#eventos-grid"), detail = $("#evento-detail");
+  if (!grid) return;
+  wireEvento();
+  state.currentEventoId = null;
+  if (detail) { detail.hidden = true; detail.innerHTML = ""; }
+  grid.hidden = false;
+  grid.innerHTML = emptyCard("Eventos", "Carregando…");
+  try {
+    const r = await requestJson("/api/intelligence?type=evt_list");
+    const items = r?.items || [];
+    if (!items.length) { grid.innerHTML = emptyCard("Eventos", "Nenhum evento ainda. Clique em “+ Novo evento”."); return; }
+    grid.innerHTML = items.map((e) => `<article class="news-card target-card selectable" data-open-evento="${escapeHtml(e.id)}">
+      <div class="card-body">
+        <div class="card-head"><div>
+          <strong>${escapeHtml(e.nome)}</strong>
+          <span class="card-sub">${e.data_evento ? escapeHtml(String(e.data_evento).slice(0, 10)) + " · " : ""}${escapeHtml(e.local || "")}</span>
+        </div></div>
+        <div class="entity-row">
+          <span class="entity-pill">${e.itens || 0} itens</span>
+          <span class="entity-pill">${escapeHtml(e.status || "")}</span>
+          <button type="button" class="entity-pill" data-evento-del="${escapeHtml(e.id)}">Excluir</button>
+        </div>
+      </div>
+      ${cardFoot("var(--blue)", e.status || "Evento", "LINCE//EVENTO")}
+    </article>`).join("");
+  } catch (e) { grid.innerHTML = emptyCard("Eventos", `Falha: ${e.message}`); }
+}
+
+async function openEvento(id) {
+  const grid = $("#eventos-grid"), detail = $("#evento-detail");
+  if (!detail) return;
+  state.currentEventoId = id;
+  state.eventoTab = state.eventoTab || "checklist";
+  state.eventoView = state.eventoView || "planilha";
+  if (grid) grid.hidden = true;
+  detail.hidden = false;
+  detail.innerHTML = emptyCard("Evento", "Abrindo…");
+  try {
+    const d = await requestJson(`/api/intelligence?type=evt_get&id=${encodeURIComponent(id)}`);
+    if (!d?.ok) throw new Error(d?.error || "erro");
+    state.eventoData = d;
+    renderEventoDetail(d);
+  } catch (e) { detail.innerHTML = emptyCard("Evento", `Falha: ${e.message}`); }
+}
+
+function renderEventoDetail(d) {
+  const detail = $("#evento-detail");
+  if (!detail || !d) return;
+  const ev = d.evento || {};
+  const tab = state.eventoTab || "checklist";
+  const tabs = [["checklist", `Checklist (${(d.itens || []).length})`], ["dados", "Dados do evento"]];
+  detail.innerHTML = `
+    <article class="news-card">
+      <button type="button" class="entity-pill" data-evento-back>&larr; Eventos</button>
+      <strong>${escapeHtml(ev.nome || "Evento")}</strong>
+      <span class="card-sub">${ev.data_evento ? escapeHtml(String(ev.data_evento).slice(0, 10)) : "sem data"}${ev.local ? " · " + escapeHtml(ev.local) : ""} · ${escapeHtml(ev.status || "")}</span>
+      <div class="dossier-tabs">${tabs.map(([id2, lbl]) => `<button type="button" class="dossier-tab ${tab === id2 ? "active" : ""}" data-evento-tab="${id2}">${lbl}</button>`).join("")}</div>
+    </article>
+    <div id="evento-tab-content">${tab === "dados" ? renderEventoDados(d) : renderEventoChecklist(d)}</div>`;
+}
+
+function renderEventoDados(d) {
+  const ev = d.evento || {};
+  const STATUS = ["planejamento", "confirmado", "realizado", "cancelado"];
+  return `<article class="news-card">
+    <span class="source-meta">Dados do evento</span>
+    <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin-top:8px">
+      <input id="ev-nome" class="dou-date" style="min-width:220px;flex:1" placeholder="Nome" value="${escapeHtml(ev.nome || "")}">
+      <input id="ev-data" type="date" class="dou-date" value="${escapeHtml(String(ev.data_evento || "").slice(0, 10))}">
+      <input id="ev-horario" class="dou-date" style="width:130px" placeholder="Horário" value="${escapeHtml(ev.horario || "")}">
+    </div>
+    <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin-top:6px">
+      <input id="ev-local" class="dou-date" style="min-width:220px;flex:1" placeholder="Local" value="${escapeHtml(ev.local || "")}">
+      <select id="ev-status" class="dou-date">${STATUS.map((s) => `<option value="${s}" ${ev.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+    </div>
+    <textarea id="ev-desc" class="dou-date" style="width:100%;min-height:60px;margin-top:6px" placeholder="Descrição">${escapeHtml(ev.descricao || "")}</textarea>
+    <div class="entity-row" style="margin-top:6px"><button type="button" class="alert-btn primary" id="ev-save">Salvar</button><span id="ev-save-status" style="font-size:.75rem;opacity:.6"></span></div>
+  </article>`;
+}
+
+// Destaque de cronograma: prazo vencido/próximo (7d) em item não-concluído.
+function evtRowStyle(it) {
+  const v = it.valores || {};
+  if (!v.prazo || v.status === "feito") return "";
+  const due = new Date(String(v.prazo).slice(0, 10)).getTime();
+  if (Number.isNaN(due)) return "";
+  if (due <= Date.now()) return "background:rgba(220,80,80,.14)";
+  if (due <= Date.now() + 7 * 864e5) return "background:rgba(220,180,0,.12)";
+  return "";
+}
+
+function evtCell(it, c) {
+  const v = (it.valores || {})[c.key];
+  const a = `data-evt-id="${escapeHtml(it.id)}" data-evt-key="${escapeHtml(c.key)}"`;
+  if (c.type === "check") return `<input type="checkbox" ${a} ${v ? "checked" : ""}>`;
+  if (c.type === "date") return `<input type="date" class="dou-date" style="min-width:130px" ${a} value="${escapeHtml(String(v || "").slice(0, 10))}">`;
+  if (c.type === "num") return `<input type="number" class="dou-date" style="width:90px" ${a} value="${escapeHtml(v == null ? "" : String(v))}">`;
+  if (c.type === "select") {
+    const opts = ["", ...(Array.isArray(c.options) ? c.options : [])];
+    return `<select class="dou-date" ${a}>${opts.map((o) => `<option value="${escapeHtml(o)}" ${String(v || "") === o ? "selected" : ""}>${escapeHtml(o || "—")}</option>`).join("")}</select>`;
+  }
+  if (c.type === "url") {
+    const u = safeUrl(v);
+    return `<input class="dou-date" style="min-width:150px" ${a} value="${escapeHtml(v == null ? "" : String(v))}" placeholder="https://...">${u ? ` <a href="${escapeHtml(u)}" target="_blank" rel="noopener">↗</a>` : ""}`;
+  }
+  return `<input class="dou-date" style="min-width:140px" ${a} value="${escapeHtml(v == null ? "" : String(v))}">`;
+}
+
+function renderChecklistPlanilha(cols, itens) {
+  const cbtn = "background:none;border:none;cursor:pointer;opacity:.55;padding:0 1px;font-size:.85em";
+  const th = cols.map((c) => `<th style="white-space:nowrap">${escapeHtml(c.label)} <button type="button" data-evento-col-ren="${escapeHtml(c.key)}" title="Renomear" style="${cbtn}">✎</button><button type="button" data-evento-col-del="${escapeHtml(c.key)}" title="Remover coluna" style="${cbtn}">×</button></th>`).join("");
+  const rows = itens.map((it) => `<tr data-evt-row="${escapeHtml(it.id)}" style="${evtRowStyle(it)}">${cols.map((c) => `<td>${evtCell(it, c)}</td>`).join("")}<td><button type="button" class="entity-pill" data-evento-item-del="${escapeHtml(it.id)}">×</button></td></tr>`).join("");
+  return `<div style="overflow-x:auto;margin-top:8px"><table class="data-table"><thead><tr>${th}<th><button type="button" class="entity-pill" id="evento-col-add">+ coluna</button></th></tr></thead><tbody>${rows || `<tr><td colspan="${cols.length + 1}">Sem itens.</td></tr>`}</tbody></table></div>
+    <button type="button" class="alert-btn primary" id="evento-item-add" style="margin-top:8px">+ linha</button>`;
+}
+
+function renderChecklistCategoria(cols, itens) {
+  const groups = new Map();
+  for (const it of itens) {
+    const cat = (it.valores || {}).categoria || "Sem categoria";
+    if (!groups.has(cat)) groups.set(cat, []);
+    groups.get(cat).push(it);
+  }
+  if (!groups.size) return `<p style="margin-top:8px">Sem itens. Use a visão Planilha para adicionar.</p>`;
+  return [...groups.entries()].map(([cat, list]) => {
+    const rows = list.map((it) => {
+      const v = it.valores || {}, done = v.status === "feito";
+      return `<div class="director-row" style="${evtRowStyle(it)}">
+        <input type="checkbox" data-evt-check-status="${escapeHtml(it.id)}" ${done ? "checked" : ""}>
+        <div style="flex:1"><strong style="${done ? "text-decoration:line-through;opacity:.6" : ""}">${escapeHtml(v.item || "(sem título)")}</strong>
+          <span class="card-sub">${v.responsavel ? escapeHtml(v.responsavel) + " · " : ""}${v.prazo ? "prazo " + escapeHtml(String(v.prazo).slice(0, 10)) : ""}</span></div>
+        ${safeUrl(v.link) ? `<a href="${escapeHtml(safeUrl(v.link))}" target="_blank" rel="noopener" class="entity-pill">arte ↗</a>` : ""}
+      </div>`;
+    }).join("");
+    return `<div style="margin-top:12px"><strong>${escapeHtml(cat)} (${list.length})</strong>${rows}</div>`;
+  }).join("");
+}
+
+function renderEventoChecklist(d) {
+  const cols = d.colunas || [], itens = d.itens || [];
+  const vm = state.eventoView || "planilha";
+  const pill = (m, lbl) => `<button type="button" class="entity-pill ${vm === m ? "score-high" : ""}" data-evento-view="${m}">${lbl}</button>`;
+  const toolbar = `<div class="entity-row" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
+    <span class="source-meta">Checklist — ${itens.length} item(ns)</span>
+    <div class="entity-row" style="gap:6px">${pill("planilha", "Planilha")}${pill("categoria", "Por categoria")}</div>
+  </div>`;
+  return `<article class="news-card">${toolbar}${vm === "categoria" ? renderChecklistCategoria(cols, itens) : renderChecklistPlanilha(cols, itens)}</article>`;
+}
+
+// Mantém o state local em sincronia (p/ re-render sem refetch em edições de célula).
+function evtLocalSet(id, patch) {
+  const it = (state.eventoData?.itens || []).find((x) => String(x.id) === String(id));
+  if (it) it.valores = { ...(it.valores || {}), ...patch };
+}
+
+async function evtCellUpdate(el) {
+  const id = el.dataset.evtId, key = el.dataset.evtKey;
+  if (!id || !key) return;
+  const val = el.type === "checkbox" ? el.checked : el.value;
+  evtLocalSet(id, { [key]: val });
+  try {
+    const r = await postJson("/api/intelligence?type=evt_item_update", { id, valores: { [key]: val } });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+  } catch (e) { alert(`Falha ao salvar: ${e.message}`); openEvento(state.currentEventoId); }
+}
+
+async function eventoCreate() {
+  const nome = window.prompt("Nome do evento:");
+  if (!nome || !nome.trim()) return;
+  try {
+    const r = await postJson("/api/intelligence?type=evt_save", { nome: nome.trim() });
+    if (r?.ok && r.evento) { await loadEventos(); openEvento(r.evento.id); } else alert(r?.error || "erro");
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+
+async function eventoSaveDados() {
+  const status = $("#ev-save-status");
+  if (status) status.textContent = "Salvando…";
+  try {
+    const r = await postJson("/api/intelligence?type=evt_save", {
+      id: state.currentEventoId, nome: $("#ev-nome")?.value || "", data_evento: $("#ev-data")?.value || null,
+      horario: $("#ev-horario")?.value || "", local: $("#ev-local")?.value || "", descricao: $("#ev-desc")?.value || "", status: $("#ev-status")?.value
+    });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (state.eventoData) state.eventoData.evento = r.evento;
+    if (status) status.textContent = "Salvo.";
+  } catch (e) { if (status) status.textContent = `Falha: ${e.message}`; }
+}
+
+async function eventoAddRow() {
+  try {
+    const r = await postJson("/api/intelligence?type=evt_item_add", { evento_id: state.currentEventoId, valores: {} });
+    if (r?.ok) openEvento(state.currentEventoId);
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+
+function eventoUniqueColKey(label, cols) {
+  const base = String(label).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 30) || "col";
+  const keys = new Set((cols || []).map((c) => c.key));
+  let key = base, i = 2;
+  while (keys.has(key)) key = `${base}_${i++}`;
+  return key;
+}
+
+async function eventoSaveCols(colunas) {
+  try {
+    const r = await postJson("/api/intelligence?type=evt_cols_save", { id: state.currentEventoId, colunas });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    openEvento(state.currentEventoId);
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+
+async function eventoAddColumn() {
+  const d = state.eventoData; if (!d) return;
+  const label = window.prompt("Nome da nova coluna:");
+  if (!label || !label.trim()) return;
+  const type = (window.prompt("Tipo (text, date, select, check, url, num):", "text") || "text").trim().toLowerCase();
+  const col = { key: eventoUniqueColKey(label, d.colunas), label: label.trim(), type: EVT_TYPES.includes(type) ? type : "text" };
+  if (col.type === "select") { const o = window.prompt("Opções separadas por vírgula:", "") || ""; col.options = o.split(",").map((s) => s.trim()).filter(Boolean); }
+  await eventoSaveCols([...(d.colunas || []), col]);
+}
+
+async function eventoRenameColumn(key) {
+  const d = state.eventoData; if (!d) return;
+  const col = (d.colunas || []).find((c) => c.key === key); if (!col) return;
+  const label = window.prompt("Novo nome da coluna:", col.label);
+  if (!label || !label.trim()) return;
+  await eventoSaveCols((d.colunas || []).map((c) => c.key === key ? { ...c, label: label.trim() } : c));
+}
+
+async function eventoDeleteColumn(key) {
+  const d = state.eventoData; if (!d) return;
+  if (!confirm("Remover esta coluna? Os valores dela ficam ocultos (não apagados).")) return;
+  await eventoSaveCols((d.colunas || []).filter((c) => c.key !== key));
+}
+
+function wireEvento() {
+  if (eventoWired) return; eventoWired = true;
+  const view = $("#view-evento");
+  if (!view) return;
+  $("#evento-create")?.addEventListener("click", eventoCreate);
+  view.addEventListener("click", async (e) => {
+    const del = e.target.closest("[data-evento-del]");
+    if (del) { e.stopPropagation(); if (confirm("Excluir este evento e todo o checklist?")) { await postJson("/api/intelligence?type=evt_delete", { id: del.dataset.eventoDel }).catch(() => {}); loadEventos(); } return; }
+    const open = e.target.closest("[data-open-evento]");
+    if (open) { openEvento(open.dataset.openEvento); return; }
+    if (e.target.closest("[data-evento-back]")) { loadEventos(); return; }
+    const tab = e.target.closest("[data-evento-tab]");
+    if (tab) { state.eventoTab = tab.dataset.eventoTab; renderEventoDetail(state.eventoData); return; }
+    const vw = e.target.closest("[data-evento-view]");
+    if (vw) { state.eventoView = vw.dataset.eventoView; renderEventoDetail(state.eventoData); return; }
+    if (e.target.closest("#evento-item-add")) { eventoAddRow(); return; }
+    const itDel = e.target.closest("[data-evento-item-del]");
+    if (itDel) { await postJson("/api/intelligence?type=evt_item_remove", { id: itDel.dataset.eventoItemDel }).catch(() => {}); openEvento(state.currentEventoId); return; }
+    if (e.target.closest("#evento-col-add")) { eventoAddColumn(); return; }
+    const cr = e.target.closest("[data-evento-col-ren]");
+    if (cr) { eventoRenameColumn(cr.dataset.eventoColRen); return; }
+    const cd = e.target.closest("[data-evento-col-del]");
+    if (cd) { eventoDeleteColumn(cd.dataset.eventoColDel); return; }
+    if (e.target.closest("#ev-save")) { eventoSaveDados(); return; }
+  });
+  view.addEventListener("change", (e) => {
+    const chk = e.target.closest("[data-evt-check-status]");
+    if (chk) {
+      const id = chk.dataset.evtCheckStatus, val = chk.checked ? "feito" : "pendente";
+      evtLocalSet(id, { status: val });
+      postJson("/api/intelligence?type=evt_item_update", { id, valores: { status: val } })
+        .then((r) => { if (r?.ok) renderEventoDetail(state.eventoData); else openEvento(state.currentEventoId); })
+        .catch(() => openEvento(state.currentEventoId));
+      return;
+    }
+    const cell = e.target.closest("[data-evt-id][data-evt-key]");
+    if (cell) { evtCellUpdate(cell); }
+  });
 }
 
 // ══════════════════ Painéis curados (M21 — NOMOS F1) ══════════════════════

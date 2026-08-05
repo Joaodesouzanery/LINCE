@@ -1057,6 +1057,149 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
+    // ===== M25: Modulo "Eventos" (gestao de seminarios IRIS) — types evt_* =====
+    if (type.startsWith("evt_")) {
+      res.setHeader("Cache-Control", "no-store");
+      const EVT_COL_TYPES = ["text", "date", "select", "check", "url", "num"];
+      const EVT_STATUS = ["planejamento", "confirmado", "realizado", "cancelado"];
+      const EVT_DEFAULT_COLS = [
+        { key: "item", label: "Item", type: "text" },
+        { key: "categoria", label: "Categoria", type: "select", options: ["Operacional", "Marketing", "Comunicacao", "Paineis", "Patrocinio", "Financeiro"] },
+        { key: "responsavel", label: "Responsavel", type: "text" },
+        { key: "prazo", label: "Prazo", type: "date" },
+        { key: "status", label: "Status", type: "select", options: ["pendente", "andamento", "feito"] },
+        { key: "link", label: "Link", type: "url" },
+        { key: "obs", label: "Obs", type: "text" }
+      ];
+      const EVT_SEED = [
+        ["Gerador", "Operacional"], ["Hotel", "Operacional"], ["Passagens", "Operacional"],
+        ["Financeiro", "Financeiro"], ["Credenciamento", "Operacional"], ["Coffee / welcome coffee", "Operacional"],
+        ["Backdrop", "Marketing"], ["Save the date", "Marketing"], ["Post Instagram", "Marketing"],
+        ["Post LinkedIn", "Marketing"], ["Stories", "Marketing"], ["Release / imprensa", "Marketing"],
+        ["Carta-convite (painelistas)", "Comunicacao"], ["Pedido de minibio + foto", "Comunicacao"],
+        ["Autorizacao de uso de imagem", "Comunicacao"], ["Abrir RSVP (formulario)", "Comunicacao"], ["Lembrete de RSVP", "Comunicacao"],
+        ["Fechar painelistas/moderadores", "Paineis"], ["Coletar minibios", "Paineis"], ["Programacao preliminar", "Paineis"]
+      ];
+      const nowIso = new Date().toISOString();
+
+      if (type === "evt_list") {
+        const { data: eventos, error } = await supabase.from("evt_eventos").select("id, nome, data_evento, local, status, created_at").order("data_evento", { ascending: false, nullsFirst: false });
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        const counts = new Map();
+        for (let from = 0; ; from += 1000) {
+          const { data: rows, error: e2 } = await supabase.from("evt_checklist_itens").select("evento_id").range(from, from + 999);
+          if (e2) return res.status(500).json({ ok: false, error: e2.message });
+          for (const r of rows || []) counts.set(r.evento_id, (counts.get(r.evento_id) || 0) + 1);
+          if (!rows || rows.length < 1000) break;
+        }
+        return res.status(200).json({ ok: true, items: (eventos || []).map((e) => ({ ...e, itens: counts.get(e.id) || 0 })) });
+      }
+
+      if (type === "evt_get") {
+        const id = String(req.query.id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { data: evento, error: gErr } = await supabase.from("evt_eventos").select("*").eq("id", id).maybeSingle();
+        if (gErr) return res.status(500).json({ ok: false, error: gErr.message });
+        if (!evento) return res.status(404).json({ ok: false, error: "Evento nao encontrado." });
+        const { data: itens } = await supabase.from("evt_checklist_itens").select("id, valores, ordem").eq("evento_id", id).order("ordem", { ascending: true }).order("created_at", { ascending: true });
+        return res.status(200).json({ ok: true, evento, colunas: evento.checklist_colunas || [], itens: itens || [] });
+      }
+
+      if (type === "evt_save") {
+        const p = params(req);
+        const nome = String(p.nome || "").trim();
+        const patch = {
+          ...(nome ? { nome: nome.slice(0, 300) } : {}),
+          ...(p.data_evento !== undefined ? { data_evento: p.data_evento || null } : {}),
+          ...(p.horario !== undefined ? { horario: p.horario ? String(p.horario).slice(0, 100) : null } : {}),
+          ...(p.local !== undefined ? { local: p.local ? String(p.local).slice(0, 300) : null } : {}),
+          ...(p.descricao !== undefined ? { descricao: p.descricao ? String(p.descricao).slice(0, 2000) : null } : {}),
+          ...(p.status && EVT_STATUS.includes(p.status) ? { status: p.status } : {}),
+          updated_at: nowIso
+        };
+        if (p.id) {
+          const { data, error } = await supabase.from("evt_eventos").update(patch).eq("id", String(p.id)).select().maybeSingle();
+          if (error) return res.status(500).json({ ok: false, error: error.message });
+          if (!data) return res.status(404).json({ ok: false, error: "Evento nao encontrado." });
+          return res.status(200).json({ ok: true, evento: data });
+        }
+        if (!nome) return res.status(400).json({ ok: false, error: "Informe o nome do evento." });
+        const { data: created, error } = await supabase.from("evt_eventos").insert({ ...patch, nome: nome.slice(0, 300), checklist_colunas: EVT_DEFAULT_COLS }).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        const seedRows = EVT_SEED.map(([item, categoria], i) => ({ evento_id: created.id, ordem: i, valores: { item, categoria, status: "pendente" } }));
+        const seedRes = await supabase.from("evt_checklist_itens").insert(seedRows);
+        if (seedRes.error) {
+          await supabase.from("evt_eventos").delete().eq("id", created.id); // limpa o evento orfao
+          return res.status(500).json({ ok: false, error: seedRes.error.message });
+        }
+        return res.status(200).json({ ok: true, evento: created });
+      }
+
+      if (type === "evt_delete") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { error } = await supabase.from("evt_eventos").delete().eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true });
+      }
+
+      if (type === "evt_cols_save") {
+        const p = params(req);
+        const id = String(p.id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        if (!Array.isArray(p.colunas)) return res.status(400).json({ ok: false, error: "colunas deve ser lista" });
+        const seen = new Set(); const cols = [];
+        for (const c of p.colunas.slice(0, 40)) {
+          const key = String((c && c.key) || "").trim().slice(0, 40).replace(/[^a-zA-Z0-9_]/g, "");
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          const t = EVT_COL_TYPES.includes(c && c.type) ? c.type : "text";
+          const col = { key, label: String((c && c.label) || key).slice(0, 80), type: t };
+          if (t === "select" && Array.isArray(c && c.options)) col.options = c.options.slice(0, 40).map((o) => String(o).slice(0, 80));
+          cols.push(col);
+        }
+        if (!cols.length) return res.status(400).json({ ok: false, error: "Nenhuma coluna valida." });
+        const { data: upd, error } = await supabase.from("evt_eventos").update({ checklist_colunas: cols, updated_at: nowIso }).eq("id", id).select("id").maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        if (!upd) return res.status(404).json({ ok: false, error: "Evento nao encontrado." });
+        return res.status(200).json({ ok: true, colunas: cols });
+      }
+
+      if (type === "evt_item_add") {
+        const p = params(req);
+        const evento_id = String(p.evento_id || "").trim();
+        if (!evento_id) return res.status(400).json({ ok: false, error: "Informe evento_id" });
+        const { data: last } = await supabase.from("evt_checklist_itens").select("ordem").eq("evento_id", evento_id).order("ordem", { ascending: false }).limit(1).maybeSingle();
+        const ordem = ((last && last.ordem) != null ? last.ordem : -1) + 1;
+        const valores = (p.valores && typeof p.valores === "object" && !Array.isArray(p.valores)) ? p.valores : {};
+        const { data, error } = await supabase.from("evt_checklist_itens").insert({ evento_id, ordem, valores }).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, item: data });
+      }
+
+      if (type === "evt_item_update") {
+        const p = params(req);
+        const id = String(p.id || "").trim();
+        if (!id || !p.valores || typeof p.valores !== "object" || Array.isArray(p.valores)) return res.status(400).json({ ok: false, error: "Informe id e valores (objeto)" });
+        // Merge ATOMICO no Postgres (valores || patch) — sem lost-update entre edicoes
+        // concorrentes de celulas diferentes da mesma linha.
+        const { data, error } = await supabase.rpc("evt_item_patch", { p_id: id, p_patch: p.valores });
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        if (data == null) return res.status(404).json({ ok: false, error: "Item nao encontrado." });
+        return res.status(200).json({ ok: true, valores: data });
+      }
+
+      if (type === "evt_item_remove") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { error } = await supabase.from("evt_checklist_itens").delete().eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true });
+      }
+
+      return res.status(400).json({ ok: false, error: `Tipo evt_ invalido: ${type}` });
+    }
+
     // Participacoes societarias locais de uma empresa (base receita_socio).
     if (type === "holdings") {
       const cnpj = onlyDigits(req.query.cnpj);

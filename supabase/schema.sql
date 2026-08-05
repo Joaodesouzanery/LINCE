@@ -773,3 +773,44 @@ create table if not exists painel_noticias (
 create unique index if not exists painel_noticias_uidx on painel_noticias (painel_id, url);
 create index if not exists painel_noticias_painel_idx on painel_noticias (painel_id);
 alter table painel_noticias enable row level security;
+
+-- ===== Fase M25: Modulo "Eventos" (gestao de seminarios IRIS) — F-EVT1 =====
+-- NAO confundir com legislative_eventos/evento_pauta (agenda da Camara). Prefixo evt_*.
+-- Checklist interativo multi-evento: colunas DINAMICAS por evento (checklist_colunas jsonb)
+-- e linhas com celulas em `valores jsonb` (sem DDL por coluna nova). Dois modos de visao
+-- (planilha / por categoria) sobre o mesmo dado.
+create table if not exists evt_eventos (
+  id uuid primary key default gen_random_uuid(),
+  nome text not null,
+  data_evento date,
+  horario text,
+  local text,
+  descricao text,
+  status text not null default 'planejamento' check (status in ('planejamento', 'confirmado', 'realizado', 'cancelado')),
+  checklist_colunas jsonb not null default '[]'::jsonb,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists evt_eventos_data_idx on evt_eventos (data_evento);
+alter table evt_eventos enable row level security;
+
+create table if not exists evt_checklist_itens (
+  id uuid primary key default gen_random_uuid(),
+  evento_id uuid not null references evt_eventos(id) on delete cascade,
+  valores jsonb not null default '{}'::jsonb,   -- celula: { colKey: valor }
+  ordem int not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists evt_checklist_itens_evento_idx on evt_checklist_itens (evento_id, ordem);
+alter table evt_checklist_itens enable row level security;
+
+-- Merge ATOMICO de celula: valores || patch num unico UPDATE (evita lost-update quando
+-- dois curadores editam celulas diferentes da MESMA linha ao mesmo tempo). Retorna o
+-- valores final, ou NULL se o id nao existe. Idempotente (create or replace).
+create or replace function evt_item_patch(p_id uuid, p_patch jsonb)
+returns jsonb language sql as $$
+  update evt_checklist_itens set valores = valores || p_patch, updated_at = now()
+  where id = p_id returning valores;
+$$;
