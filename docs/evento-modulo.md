@@ -88,7 +88,9 @@ O módulo **Painéis (NOMOS)** é o molde quase perfeito: multi-entidade, lista�
 4. **Escopo** → **multi-evento** (evento-pai + Checklist). Painelistas/Patrocínio/RSVP = fases futuras. ✅
 5. **Rótulo** "Eventos"; prefixo **`evt_*`**. ✅
 
-**F-EVT1 implementado (commit desta rodada):** schema M25 (`evt_eventos` + `evt_checklist_itens`), types `evt_*` em intelligence.js (12 funções mantidas), módulo "Eventos" no front (nav + view + grid editável 2 modos + colunas dinâmicas + template semente por categoria incl. Marketing + destaque de prazo). Usuário aplica **M25**.
+**F-EVT1 implementado:** schema M25 (`evt_eventos` + `evt_checklist_itens` + RPC evt_item_patch), types `evt_*`, módulo "Eventos" no front (grid editável 2 modos + colunas dinâmicas + template semente por categoria incl. Marketing + destaque de prazo). Aplicar **M25**.
+
+**F-EVT2 implementado:** schema M26 (`evt_programacao`, `evt_painelistas`, `evt_patrocinadores`, `evt_convidados` + `evt_eventos.objetivos`); abas **Programação do dia** (linha do tempo; bloco de painel puxa painelistas), **Painelistas** (status + **vincular → dossiê LINCE** via `openDirectorDossier`/`dossier-person?q=`), **Patrocínio** (cota/valor/benefícios/status + soma R$ fechado/pipeline), **Convidados/RSVP** (editável + import "Nome – Empresa ✅" dedup por nome + contadores); **Histórico** na lista de Eventos (barra de totais + cards com métricas + comparativo); Objetivos (campo em Dados) + specs LED (obs do Backdrop). types `evt_sub_save/remove` (whitelist por kind) + `evt_convidado_import`; evt_get/evt_list enriquecidos com métricas. Aplicar **M26**.
 
 ---
 

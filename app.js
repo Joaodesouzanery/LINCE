@@ -1811,22 +1811,39 @@ async function loadEventos() {
   grid.innerHTML = emptyCard("Eventos", "Carregando…");
   try {
     const r = await requestJson("/api/intelligence?type=evt_list");
-    const items = r?.items || [];
+    const items = r?.items || [], totais = r?.totais || {};
     if (!items.length) { grid.innerHTML = emptyCard("Eventos", "Nenhum evento ainda. Clique em “+ Novo evento”."); return; }
-    grid.innerHTML = items.map((e) => `<article class="news-card target-card selectable" data-open-evento="${escapeHtml(e.id)}">
+    // Histórico: barra de totais (comparativo geral).
+    const statusStr = Object.entries(totais.por_status || {}).map(([k, v]) => `${v} ${escapeHtml(k)}`).join(" · ");
+    const totalsBar = `<article class="news-card"><span class="source-meta">Histórico — visão geral</span>
+      <div class="entity-row" style="flex-wrap:wrap;gap:10px;margin-top:6px">
+        <span class="entity-pill">${totais.n_eventos || 0} eventos${statusStr ? " (" + statusStr + ")" : ""}</span>
+        <span class="entity-pill">Arrecadado ${money(totais.arrecadado_rs || 0)}</span>
+        <span class="entity-pill">${totais.publico || 0} confirmados</span>
+        <span class="entity-pill">${totais.painelistas || 0} painelistas</span>
+      </div></article>`;
+    const cards = items.map((e) => {
+      const m = e.metricas || {};
+      return `<article class="news-card target-card selectable" data-open-evento="${escapeHtml(e.id)}">
       <div class="card-body">
         <div class="card-head"><div>
           <strong>${escapeHtml(e.nome)}</strong>
           <span class="card-sub">${e.data_evento ? escapeHtml(String(e.data_evento).slice(0, 10)) + " · " : ""}${escapeHtml(e.local || "")}</span>
         </div></div>
-        <div class="entity-row">
-          <span class="entity-pill">${e.itens || 0} itens</span>
+        <div class="entity-row" style="flex-wrap:wrap">
           <span class="entity-pill">${escapeHtml(e.status || "")}</span>
+          <span class="entity-pill">${m.convidados?.confirmados || 0} confirmados</span>
+          <span class="entity-pill">${money(m.patrocinio?.fechado_rs || 0)}</span>
+          <span class="entity-pill">${m.painelistas?.confirmados || 0}/${m.painelistas?.total || 0} painelistas</span>
+          <span class="entity-pill">checklist ${m.checklist?.pct || 0}%</span>
           <button type="button" class="entity-pill" data-evento-del="${escapeHtml(e.id)}">Excluir</button>
         </div>
       </div>
       ${cardFoot("var(--blue)", e.status || "Evento", "LINCE//EVENTO")}
-    </article>`).join("");
+    </article>`; }).join("");
+    const comparativo = `<article class="news-card"><span class="source-meta">Comparativo entre eventos</span>
+      <div style="overflow-x:auto;margin-top:6px"><table class="data-table"><thead><tr><th>Evento</th><th>Data</th><th>Público</th><th>Patrocínio</th><th>Painelistas</th><th>Checklist</th></tr></thead><tbody>${items.map((e) => { const m = e.metricas || {}; return `<tr><td>${escapeHtml(e.nome)}</td><td>${e.data_evento ? escapeHtml(String(e.data_evento).slice(0, 10)) : "—"}</td><td>${m.convidados?.confirmados || 0}</td><td>${money(m.patrocinio?.fechado_rs || 0)}</td><td>${m.painelistas?.confirmados || 0}/${m.painelistas?.total || 0}</td><td>${m.checklist?.pct || 0}%</td></tr>`; }).join("")}</tbody></table></div></article>`;
+    grid.innerHTML = totalsBar + cards + comparativo;
   } catch (e) { grid.innerHTML = emptyCard("Eventos", `Falha: ${e.message}`); }
 }
 
@@ -1852,7 +1869,14 @@ function renderEventoDetail(d) {
   if (!detail || !d) return;
   const ev = d.evento || {};
   const tab = state.eventoTab || "checklist";
-  const tabs = [["checklist", `Checklist (${(d.itens || []).length})`], ["dados", "Dados do evento"]];
+  const tabs = [
+    ["checklist", `Checklist (${(d.itens || []).length})`],
+    ["programacao", `Programação (${(d.programacao || []).length})`],
+    ["painelistas", `Painelistas (${(d.painelistas || []).length})`],
+    ["patrocinio", `Patrocínio (${(d.patrocinadores || []).length})`],
+    ["convidados", `Convidados (${(d.convidados || []).length})`],
+    ["dados", "Dados"]
+  ];
   detail.innerHTML = `
     <article class="news-card">
       <button type="button" class="entity-pill" data-evento-back>&larr; Eventos</button>
@@ -1860,7 +1884,25 @@ function renderEventoDetail(d) {
       <span class="card-sub">${ev.data_evento ? escapeHtml(String(ev.data_evento).slice(0, 10)) : "sem data"}${ev.local ? " · " + escapeHtml(ev.local) : ""} · ${escapeHtml(ev.status || "")}</span>
       <div class="dossier-tabs">${tabs.map(([id2, lbl]) => `<button type="button" class="dossier-tab ${tab === id2 ? "active" : ""}" data-evento-tab="${id2}">${lbl}</button>`).join("")}</div>
     </article>
-    <div id="evento-tab-content">${tab === "dados" ? renderEventoDados(d) : renderEventoChecklist(d)}</div>`;
+    <div id="evento-tab-content">${renderEventoTab(d, tab)}</div>`;
+}
+
+function renderEventoTab(d, tab) {
+  if (tab === "dados") return renderEventoDados(d);
+  if (tab === "programacao") return renderEventoProgramacao(d);
+  if (tab === "painelistas") return renderEventoPainelistas(d);
+  if (tab === "patrocinio") return renderEventoPatrocinadores(d);
+  if (tab === "convidados") return renderEventoConvidados(d);
+  return renderEventoChecklist(d);
+}
+
+// Célula editável genérica de sub-entidade (data-esub-* → um só handler de change).
+const EVT_LISTKEY = { painelista: "painelistas", patrocinador: "patrocinadores", convidado: "convidados", programacao: "programacao" };
+function esubCell(kind, id, field, kindType, val, opts) {
+  const a = `data-esub-kind="${kind}" data-esub-id="${escapeHtml(id)}" data-esub-field="${field}"`;
+  if (kindType === "select") return `<select ${a} class="dou-date">${(opts || []).map((o) => `<option value="${o}" ${String(val || "") === o ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  if (kindType === "num") return `<input type="number" ${a} class="dou-date" style="width:100px" value="${val == null ? "" : escapeHtml(String(val))}">`;
+  return `<input ${a} class="dou-date" style="min-width:110px" value="${escapeHtml(val == null ? "" : String(val))}">`;
 }
 
 function renderEventoDados(d) {
@@ -1878,6 +1920,7 @@ function renderEventoDados(d) {
       <select id="ev-status" class="dou-date">${STATUS.map((s) => `<option value="${s}" ${ev.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
     </div>
     <textarea id="ev-desc" class="dou-date" style="width:100%;min-height:60px;margin-top:6px" placeholder="Descrição">${escapeHtml(ev.descricao || "")}</textarea>
+    <textarea id="ev-objetivos" class="dou-date" style="width:100%;min-height:60px;margin-top:6px" placeholder="Objetivos do evento (um por linha)">${escapeHtml((ev.objetivos || []).join("\n"))}</textarea>
     <div class="entity-row" style="margin-top:6px"><button type="button" class="alert-btn primary" id="ev-save">Salvar</button><span id="ev-save-status" style="font-size:.75rem;opacity:.6"></span></div>
   </article>`;
 }
@@ -1983,7 +2026,8 @@ async function eventoSaveDados() {
   try {
     const r = await postJson("/api/intelligence?type=evt_save", {
       id: state.currentEventoId, nome: $("#ev-nome")?.value || "", data_evento: $("#ev-data")?.value || null,
-      horario: $("#ev-horario")?.value || "", local: $("#ev-local")?.value || "", descricao: $("#ev-desc")?.value || "", status: $("#ev-status")?.value
+      horario: $("#ev-horario")?.value || "", local: $("#ev-local")?.value || "", descricao: $("#ev-desc")?.value || "", status: $("#ev-status")?.value,
+      objetivos: ($("#ev-objetivos")?.value || "").split(/\n/).map((s) => s.trim()).filter(Boolean)
     });
     if (!r?.ok) throw new Error(r?.error || "erro");
     if (state.eventoData) state.eventoData.evento = r.evento;
@@ -2038,6 +2082,159 @@ async function eventoDeleteColumn(key) {
   await eventoSaveCols((d.colunas || []).filter((c) => c.key !== key));
 }
 
+// F-EVT2: helpers de sub-entidade (programacao/painelista/patrocinador/convidado).
+async function evtSubSave(kind, fields) {
+  try {
+    const r = await postJson("/api/intelligence?type=evt_sub_save", { kind, ...fields });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    openEvento(state.currentEventoId);
+    return r.row;
+  } catch (e) { alert(`Falha: ${e.message}`); return null; }
+}
+async function evtSubRemove(kind, id) {
+  await postJson("/api/intelligence?type=evt_sub_remove", { kind, id }).catch(() => {});
+  openEvento(state.currentEventoId);
+}
+// Edição inline: sincroniza o state local e persiste; reverte via refetch em falha.
+async function evtSubField(kind, id, patch) {
+  const it = (state.eventoData?.[EVT_LISTKEY[kind]] || []).find((x) => String(x.id) === String(id));
+  if (it) Object.assign(it, patch);
+  try {
+    const r = await postJson("/api/intelligence?type=evt_sub_save", { kind, id, ...patch });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+  } catch (e) { alert(`Falha ao salvar: ${e.message}`); openEvento(state.currentEventoId); }
+}
+
+// --- Programação ---
+function renderEventoProgramacao(d) {
+  const prog = (d.programacao || []).slice();
+  const byPainel = new Map();
+  for (const pl of d.painelistas || []) { const k = String(pl.painel || "").trim(); if (!byPainel.has(k)) byPainel.set(k, []); byPainel.get(k).push(pl); }
+  const blocks = prog.map((b) => {
+    const pains = (b.tipo === "painel" && b.painel_ref) ? (byPainel.get(String(b.painel_ref).trim()) || []) : [];
+    const plist = pains.length ? `<div style="margin-left:14px;font-size:.85rem;opacity:.85">${pains.map((p) => `${escapeHtml(p.nome)}${p.papel === "moderador" ? " (mod.)" : ""}${p.empresa ? " — " + escapeHtml(p.empresa) : ""}`).join(" · ")}</div>` : "";
+    return `<div class="director-row" style="align-items:flex-start">
+      <div style="flex:1"><strong>${escapeHtml(b.horario || "")} ${escapeHtml(b.titulo)}</strong> <span class="entity-pill">${escapeHtml(b.tipo || "")}</span>${b.descricao ? `<div class="card-sub">${escapeHtml(b.descricao)}</div>` : ""}${plist}</div>
+      <button type="button" class="entity-pill" data-prog-del="${escapeHtml(b.id)}">×</button>
+    </div>`;
+  }).join("");
+  return `<article class="news-card">
+    <span class="source-meta">Programação do dia</span>
+    ${blocks || `<p>Sem blocos. Monte a linha do tempo abaixo.</p>`}
+    <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin-top:8px">
+      <input id="prog-horario" class="dou-date" style="width:90px" placeholder="14h00">
+      <input id="prog-titulo" class="dou-date" style="min-width:180px;flex:1" placeholder="Título do bloco">
+      <select id="prog-tipo" class="dou-date">${["abertura", "painel", "coffee", "intervalo", "encerramento", "outro"].map((t) => `<option value="${t}">${t}</option>`).join("")}</select>
+      <input id="prog-painelref" class="dou-date" style="width:120px" placeholder="Painel (ref)">
+      <button type="button" class="entity-pill" id="prog-add">+ bloco</button>
+    </div>
+  </article>`;
+}
+
+// --- Painelistas ---
+function renderEventoPainelistas(d) {
+  const pl = d.painelistas || [];
+  const groups = new Map();
+  for (const p of pl) { const k = String(p.painel || "").trim() || "Sem painel"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
+  const body = groups.size ? [...groups.entries()].map(([painel, list]) => `<div style="margin-top:10px"><strong>${escapeHtml(painel)}</strong>${list.map((p) => `
+    <div class="director-row" style="flex-wrap:wrap;gap:6px">
+      <div style="flex:1;min-width:170px"><strong>${escapeHtml(p.nome)}</strong> <span class="card-sub">${escapeHtml(p.cargo || "")}${p.empresa ? " · " + escapeHtml(p.empresa) : ""}</span></div>
+      ${esubCell("painelista", p.id, "papel", "select", p.papel, ["painelista", "moderador"])}
+      ${esubCell("painelista", p.id, "status", "select", p.status, ["confirmado", "pendente", "recusado"])}
+      ${p.person_id ? `<button type="button" class="entity-pill" data-pain-dossie="${escapeHtml(p.person_id)}">ver dossiê</button>` : `<button type="button" class="entity-pill" data-pain-link="${escapeHtml(p.id)}">vincular</button>`}
+      <button type="button" class="entity-pill" data-pain-del="${escapeHtml(p.id)}">×</button>
+    </div>`).join("")}</div>`).join("") : `<p>Nenhum painelista. Adicione abaixo.</p>`;
+  return `<article class="news-card">
+    <span class="source-meta">Painelistas & moderadores</span>
+    ${body}
+    <div id="pain-link-box"></div>
+    <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin-top:8px">
+      <input id="pain-nome" class="dou-date" style="min-width:150px;flex:1" placeholder="Nome">
+      <input id="pain-painel" class="dou-date" style="width:110px" placeholder="Painel">
+      <input id="pain-cargo" class="dou-date" style="width:120px" placeholder="Cargo">
+      <input id="pain-empresa" class="dou-date" style="width:120px" placeholder="Empresa">
+      <select id="pain-papel-new" class="dou-date">${["painelista", "moderador"].map((o) => `<option value="${o}">${o}</option>`).join("")}</select>
+      <button type="button" class="entity-pill" id="pain-add">+ painelista</button>
+    </div>
+  </article>`;
+}
+function evtPainLinkOpen(id) {
+  state.painLinkId = id;
+  const box = $("#pain-link-box");
+  if (box) box.innerHTML = `<div class="entity-row" style="gap:6px;margin-top:6px"><input id="pain-link-q" class="dou-date" style="flex:1" placeholder="Buscar pessoa no LINCE (nome)"><button type="button" class="entity-pill" id="pain-link-search">Buscar</button></div><div id="pain-link-results"></div>`;
+}
+async function evtPainLinkSearch() {
+  const q = ($("#pain-link-q")?.value || "").trim(); const box = $("#pain-link-results");
+  if (!q || !box) return;
+  box.innerHTML = `<p style="font-size:.8rem;opacity:.6">Buscando…</p>`;
+  try {
+    const r = await requestJson(`/api/dossier-person?q=${encodeURIComponent(q)}`);
+    const people = r?.people || [];
+    box.innerHTML = people.length ? people.map((p) => `<div class="director-row"><div style="flex:1"><strong>${escapeHtml(p.full_name)}</strong> <span class="card-sub">${escapeHtml(p.role || "")}${p.agency ? " · " + escapeHtml(p.agency) : ""}</span></div><button type="button" class="entity-pill" data-pain-pick="${escapeHtml(p.id)}">vincular</button></div>`).join("") : `<p style="font-size:.8rem;opacity:.6">Nada encontrado.</p>`;
+  } catch (e) { box.innerHTML = `<p style="font-size:.8rem;opacity:.6">Falha: ${escapeHtml(e.message)}</p>`; }
+}
+
+// --- Patrocínio ---
+function renderEventoPatrocinadores(d) {
+  const pt = d.patrocinadores || [];
+  const rows = pt.map((p) => `<tr>
+    <td>${esubCell("patrocinador", p.id, "nome", "text", p.nome)}</td>
+    <td>${esubCell("patrocinador", p.id, "cota", "text", p.cota)}</td>
+    <td>${esubCell("patrocinador", p.id, "valor", "num", p.valor)}</td>
+    <td>${esubCell("patrocinador", p.id, "status", "select", p.status, ["prospect", "negociacao", "fechado", "recusado"])}</td>
+    <td>${esubCell("patrocinador", p.id, "beneficios", "text", p.beneficios)}</td>
+    <td><button type="button" class="entity-pill" data-patr-del="${escapeHtml(p.id)}">×</button></td>
+  </tr>`).join("");
+  const fechado = pt.filter((x) => x.status === "fechado").reduce((s, x) => s + (Number(x.valor) || 0), 0);
+  const pipeline = pt.reduce((s, x) => s + (Number(x.valor) || 0), 0);
+  return `<article class="news-card">
+    <span class="source-meta">Patrocínio</span>
+    <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nome</th><th>Cota</th><th>Valor</th><th>Status</th><th>Benefícios</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6">Nenhum patrocinador.</td></tr>`}</tbody></table></div>
+    <div class="entity-row" style="justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:6px">
+      <div class="entity-row" style="gap:6px;flex-wrap:wrap"><input id="patr-nome" class="dou-date" style="min-width:140px" placeholder="Nome"><input id="patr-cota" class="dou-date" style="width:90px" placeholder="Cota"><input id="patr-valor" type="number" class="dou-date" style="width:100px" placeholder="Valor"><button type="button" class="entity-pill" id="patr-add">+ patrocinador</button></div>
+      <strong>Fechado ${money(fechado)} · Pipeline ${money(pipeline)}</strong>
+    </div>
+  </article>`;
+}
+
+// --- Convidados / RSVP ---
+function renderEventoConvidados(d) {
+  const cv = d.convidados || [];
+  const byS = { confirmado: 0, pendente: 0, recusado: 0 };
+  for (const c of cv) if (byS[c.status] != null) byS[c.status]++;
+  const rows = cv.map((c) => `<tr>
+    <td>${esubCell("convidado", c.id, "nome", "text", c.nome)}</td>
+    <td>${esubCell("convidado", c.id, "empresa", "text", c.empresa)}</td>
+    <td>${esubCell("convidado", c.id, "instituicao", "text", c.instituicao)}</td>
+    <td>${esubCell("convidado", c.id, "status", "select", c.status, ["confirmado", "pendente", "recusado"])}</td>
+    <td><button type="button" class="entity-pill" data-conv-del="${escapeHtml(c.id)}">×</button></td>
+  </tr>`).join("");
+  return `<article class="news-card">
+    <div class="entity-row" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
+      <span class="source-meta">Convidados / RSVP</span>
+      <span style="font-size:.85rem">${cv.length} · ✅ ${byS.confirmado} · ⏱ ${byS.pendente} · ✖ ${byS.recusado}</span>
+    </div>
+    <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin:6px 0">
+      <input id="conv-nome" class="dou-date" style="min-width:150px;flex:1" placeholder="Nome"><input id="conv-empresa" class="dou-date" style="width:140px" placeholder="Empresa"><button type="button" class="entity-pill" id="conv-add">+ convidado</button>
+      <button type="button" class="entity-pill" id="conv-import-btn">Importar lista</button>
+    </div>
+    <div id="conv-import-box" hidden style="margin:6px 0"><textarea id="conv-import-text" class="dou-date" style="width:100%;min-height:80px" placeholder="Cole a lista (uma linha por convidado): Nome – Empresa ✅"></textarea><div class="entity-row" style="gap:6px"><button type="button" class="entity-pill" id="conv-import-do">Importar</button><span id="conv-import-status" style="font-size:.75rem;opacity:.6"></span></div></div>
+    <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nome</th><th>Empresa</th><th>Instituição</th><th>Status</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="5">Nenhum convidado.</td></tr>`}</tbody></table></div>
+  </article>`;
+}
+async function evtConvidadoImport() {
+  const texto = $("#conv-import-text")?.value || "";
+  const status = $("#conv-import-status");
+  if (!texto.trim()) return;
+  if (status) status.textContent = "Importando…";
+  try {
+    const r = await postJson("/api/intelligence?type=evt_convidado_import", { evento_id: state.currentEventoId, texto });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (status) status.textContent = `${r.inserted} adicionado(s), ${r.pulados} pulado(s).`;
+    openEvento(state.currentEventoId);
+  } catch (e) { if (status) status.textContent = `Falha: ${e.message}`; }
+}
+
 function wireEvento() {
   if (eventoWired) return; eventoWired = true;
   const view = $("#view-evento");
@@ -2062,8 +2259,39 @@ function wireEvento() {
     const cd = e.target.closest("[data-evento-col-del]");
     if (cd) { eventoDeleteColumn(cd.dataset.eventoColDel); return; }
     if (e.target.closest("#ev-save")) { eventoSaveDados(); return; }
+    // F-EVT2: Programação
+    if (e.target.closest("#prog-add")) { evtSubSave("programacao", { evento_id: state.currentEventoId, horario: $("#prog-horario")?.value || "", titulo: $("#prog-titulo")?.value || "", tipo: $("#prog-tipo")?.value, painel_ref: $("#prog-painelref")?.value || "", ordem: (state.eventoData?.programacao || []).length }); return; }
+    const progDel = e.target.closest("[data-prog-del]");
+    if (progDel) { evtSubRemove("programacao", progDel.dataset.progDel); return; }
+    // Painelistas
+    if (e.target.closest("#pain-add")) { evtSubSave("painelista", { evento_id: state.currentEventoId, nome: $("#pain-nome")?.value || "", painel: $("#pain-painel")?.value || "", cargo: $("#pain-cargo")?.value || "", empresa: $("#pain-empresa")?.value || "", papel: $("#pain-papel-new")?.value }); return; }
+    const painDel = e.target.closest("[data-pain-del]");
+    if (painDel) { evtSubRemove("painelista", painDel.dataset.painDel); return; }
+    const painDossie = e.target.closest("[data-pain-dossie]");
+    if (painDossie) { suppressDirectorsAutoload = true; document.querySelector("[data-view='directors']")?.click(); openDirectorDossier(painDossie.dataset.painDossie); return; }
+    const painLink = e.target.closest("[data-pain-link]");
+    if (painLink) { evtPainLinkOpen(painLink.dataset.painLink); return; }
+    if (e.target.closest("#pain-link-search")) { evtPainLinkSearch(); return; }
+    const painPick = e.target.closest("[data-pain-pick]");
+    if (painPick) { evtSubSave("painelista", { id: state.painLinkId, person_id: painPick.dataset.painPick }); return; }
+    // Patrocínio
+    if (e.target.closest("#patr-add")) { evtSubSave("patrocinador", { evento_id: state.currentEventoId, nome: $("#patr-nome")?.value || "", cota: $("#patr-cota")?.value || "", valor: $("#patr-valor")?.value || null }); return; }
+    const patrDel = e.target.closest("[data-patr-del]");
+    if (patrDel) { evtSubRemove("patrocinador", patrDel.dataset.patrDel); return; }
+    // Convidados
+    if (e.target.closest("#conv-add")) { evtSubSave("convidado", { evento_id: state.currentEventoId, nome: $("#conv-nome")?.value || "", empresa: $("#conv-empresa")?.value || "" }); return; }
+    const convDel = e.target.closest("[data-conv-del]");
+    if (convDel) { evtSubRemove("convidado", convDel.dataset.convDel); return; }
+    if (e.target.closest("#conv-import-btn")) { const b = $("#conv-import-box"); if (b) b.hidden = !b.hidden; return; }
+    if (e.target.closest("#conv-import-do")) { evtConvidadoImport(); return; }
   });
   view.addEventListener("change", (e) => {
+    const esub = e.target.closest("[data-esub-id]");
+    if (esub) {
+      const val = esub.type === "checkbox" ? esub.checked : esub.value;
+      evtSubField(esub.dataset.esubKind, esub.dataset.esubId, { [esub.dataset.esubField]: val });
+      return;
+    }
     const chk = e.target.closest("[data-evt-check-status]");
     if (chk) {
       const id = chk.dataset.evtCheckStatus, val = chk.checked ? "feito" : "pendente";

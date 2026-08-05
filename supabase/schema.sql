@@ -814,3 +814,58 @@ returns jsonb language sql as $$
   update evt_checklist_itens set valores = valores || p_patch, updated_at = now()
   where id = p_id returning valores;
 $$;
+
+-- ===== Fase M26: Eventos F-EVT2 — programacao, painelistas, patrocinio, convidados =====
+alter table evt_eventos add column if not exists objetivos text[];   -- objetivos do evento
+
+-- Linha do tempo do dia. tipo='painel' + painel_ref casa com evt_painelistas.painel.
+create table if not exists evt_programacao (
+  id uuid primary key default gen_random_uuid(),
+  evento_id uuid not null references evt_eventos(id) on delete cascade,
+  ordem int not null default 0,
+  horario text, titulo text not null,
+  tipo text not null default 'painel' check (tipo in ('abertura', 'painel', 'coffee', 'intervalo', 'encerramento', 'outro')),
+  descricao text, painel_ref text,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create index if not exists evt_programacao_evento_idx on evt_programacao (evento_id, ordem);
+alter table evt_programacao enable row level security;
+
+-- Painelistas/moderadores. person_id (opcional) liga ao dossie LINCE (diferencial).
+create table if not exists evt_painelistas (
+  id uuid primary key default gen_random_uuid(),
+  evento_id uuid not null references evt_eventos(id) on delete cascade,
+  painel text, nome text not null,
+  person_id uuid references people(id) on delete set null,
+  cargo text, empresa text,
+  papel text not null default 'painelista' check (papel in ('painelista', 'moderador')),
+  minibio text, foto_url text,
+  status text not null default 'pendente' check (status in ('confirmado', 'pendente', 'recusado')),
+  ordem int not null default 0, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create index if not exists evt_painelistas_evento_idx on evt_painelistas (evento_id);
+alter table evt_painelistas enable row level security;
+
+-- Patrocinadores. company_id (opcional) liga a empresa do grafo. beneficios = texto leve por cota.
+create table if not exists evt_patrocinadores (
+  id uuid primary key default gen_random_uuid(),
+  evento_id uuid not null references evt_eventos(id) on delete cascade,
+  nome text not null, company_id uuid references companies(id) on delete set null,
+  cota text, valor numeric(14,2), beneficios text,
+  status text not null default 'prospect' check (status in ('prospect', 'negociacao', 'fechado', 'recusado')),
+  contato text, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create index if not exists evt_patrocinadores_evento_idx on evt_patrocinadores (evento_id);
+alter table evt_patrocinadores enable row level security;
+
+-- Convidados/RSVP. LGPD: email so interno (base = organizacao do evento); nunca em endpoint publico.
+create table if not exists evt_convidados (
+  id uuid primary key default gen_random_uuid(),
+  evento_id uuid not null references evt_eventos(id) on delete cascade,
+  nome text not null, empresa text, email text, instituicao text,
+  status text not null default 'pendente' check (status in ('confirmado', 'pendente', 'recusado')),
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create unique index if not exists evt_convidados_uidx on evt_convidados (evento_id, lower(nome));
+create index if not exists evt_convidados_evento_idx on evt_convidados (evento_id);
+alter table evt_convidados enable row level security;

@@ -1074,7 +1074,7 @@ module.exports = async function handler(req, res) {
       const EVT_SEED = [
         ["Gerador", "Operacional"], ["Hotel", "Operacional"], ["Passagens", "Operacional"],
         ["Financeiro", "Financeiro"], ["Credenciamento", "Operacional"], ["Coffee / welcome coffee", "Operacional"],
-        ["Backdrop", "Marketing"], ["Save the date", "Marketing"], ["Post Instagram", "Marketing"],
+        ["Backdrop", "Marketing", "Painel LED: 1.280x512 e 128x512 px"], ["Save the date", "Marketing"], ["Post Instagram", "Marketing"],
         ["Post LinkedIn", "Marketing"], ["Stories", "Marketing"], ["Release / imprensa", "Marketing"],
         ["Carta-convite (painelistas)", "Comunicacao"], ["Pedido de minibio + foto", "Comunicacao"],
         ["Autorizacao de uso de imagem", "Comunicacao"], ["Abrir RSVP (formulario)", "Comunicacao"], ["Lembrete de RSVP", "Comunicacao"],
@@ -1082,17 +1082,70 @@ module.exports = async function handler(req, res) {
       ];
       const nowIso = new Date().toISOString();
 
-      if (type === "evt_list") {
-        const { data: eventos, error } = await supabase.from("evt_eventos").select("id, nome, data_evento, local, status, created_at").order("data_evento", { ascending: false, nullsFirst: false });
-        if (error) return res.status(500).json({ ok: false, error: error.message });
-        const counts = new Map();
+      // F-EVT2: métricas de um evento a partir das listas já carregadas.
+      const evtMetricas = (itens, pain, patr, conv, prog) => {
+        const feito = itens.filter((x) => (x.valores || {}).status === "feito").length;
+        const fechado = patr.filter((x) => x.status === "fechado");
+        const somaRs = (arr) => arr.reduce((s, x) => s + (Number(x.valor) || 0), 0);
+        return {
+          checklist: { total: itens.length, feito, pct: itens.length ? Math.round((feito / itens.length) * 100) : 0 },
+          painelistas: { total: pain.length, confirmados: pain.filter((x) => x.status === "confirmado").length },
+          patrocinio: { fechado_rs: somaRs(fechado), pipeline_rs: somaRs(patr), fechados_n: fechado.length },
+          convidados: { total: conv.length, confirmados: conv.filter((x) => x.status === "confirmado").length },
+          programacao: { blocos: prog.length }
+        };
+      };
+      // Varre uma tabela inteira paginando (teto 1000 do PostgREST). Lança em erro.
+      const evtScanAll = async (table, cols, fn) => {
         for (let from = 0; ; from += 1000) {
-          const { data: rows, error: e2 } = await supabase.from("evt_checklist_itens").select("evento_id").range(from, from + 999);
-          if (e2) return res.status(500).json({ ok: false, error: e2.message });
-          for (const r of rows || []) counts.set(r.evento_id, (counts.get(r.evento_id) || 0) + 1);
-          if (!rows || rows.length < 1000) break;
+          const { data, error } = await supabase.from(table).select(cols).range(from, from + 999);
+          if (error) throw new Error(`${table}: ${error.message}`);
+          for (const r of data || []) fn(r);
+          if (!data || data.length < 1000) break;
         }
-        return res.status(200).json({ ok: true, items: (eventos || []).map((e) => ({ ...e, itens: counts.get(e.id) || 0 })) });
+      };
+      // F-EVT2: sub-entidades genéricas (whitelist de campos + enums por kind).
+      const EVT_SUB = {
+        programacao: { table: "evt_programacao", fields: ["evento_id", "ordem", "horario", "titulo", "tipo", "descricao", "painel_ref"], enums: { tipo: ["abertura", "painel", "coffee", "intervalo", "encerramento", "outro"] }, num: [], req: "titulo" },
+        painelista: { table: "evt_painelistas", fields: ["evento_id", "painel", "nome", "person_id", "cargo", "empresa", "papel", "minibio", "foto_url", "status", "ordem"], enums: { papel: ["painelista", "moderador"], status: ["confirmado", "pendente", "recusado"] }, num: [], req: "nome" },
+        patrocinador: { table: "evt_patrocinadores", fields: ["evento_id", "nome", "company_id", "cota", "valor", "beneficios", "status", "contato"], enums: { status: ["prospect", "negociacao", "fechado", "recusado"] }, num: ["valor"], req: "nome" },
+        convidado: { table: "evt_convidados", fields: ["evento_id", "nome", "empresa", "email", "instituicao", "status"], enums: { status: ["confirmado", "pendente", "recusado"] }, num: [], req: "nome" }
+      };
+
+      if (type === "evt_list") {
+        const eventos = [];
+        for (let from = 0; ; from += 1000) { // pagina p/ nao truncar acima de 1000 eventos
+          const { data, error } = await supabase.from("evt_eventos").select("id, nome, data_evento, local, status, created_at").order("data_evento", { ascending: false, nullsFirst: false }).range(from, from + 999);
+          if (error) return res.status(500).json({ ok: false, error: error.message });
+          eventos.push(...(data || []));
+          if (!data || data.length < 1000) break;
+        }
+        // Agrega as sub-tabelas por evento_id (paginado, sem N+1) p/ o histórico/comparativo.
+        const agg = {};
+        const A = (eid) => (agg[eid] || (agg[eid] = { itens: 0, feito: 0, pain_t: 0, pain_c: 0, fechado_rs: 0, pipeline_rs: 0, fechados_n: 0, conv_t: 0, conv_c: 0 }));
+        try {
+          await evtScanAll("evt_checklist_itens", "evento_id, valores", (r) => { const a = A(r.evento_id); a.itens++; if ((r.valores || {}).status === "feito") a.feito++; });
+          await evtScanAll("evt_painelistas", "evento_id, status", (r) => { const a = A(r.evento_id); a.pain_t++; if (r.status === "confirmado") a.pain_c++; });
+          await evtScanAll("evt_patrocinadores", "evento_id, status, valor", (r) => { const a = A(r.evento_id); const v = Number(r.valor) || 0; a.pipeline_rs += v; if (r.status === "fechado") { a.fechado_rs += v; a.fechados_n++; } });
+          await evtScanAll("evt_convidados", "evento_id, status", (r) => { const a = A(r.evento_id); a.conv_t++; if (r.status === "confirmado") a.conv_c++; });
+        } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+        const items = (eventos || []).map((e) => {
+          const a = agg[e.id] || {};
+          return { ...e, itens: a.itens || 0, metricas: {
+            checklist: { total: a.itens || 0, feito: a.feito || 0, pct: a.itens ? Math.round(((a.feito || 0) / a.itens) * 100) : 0 },
+            painelistas: { total: a.pain_t || 0, confirmados: a.pain_c || 0 },
+            patrocinio: { fechado_rs: a.fechado_rs || 0, pipeline_rs: a.pipeline_rs || 0, fechados_n: a.fechados_n || 0 },
+            convidados: { total: a.conv_t || 0, confirmados: a.conv_c || 0 }
+          } };
+        });
+        const totais = { n_eventos: items.length, por_status: {}, arrecadado_rs: 0, publico: 0, painelistas: 0 };
+        for (const e of items) {
+          totais.por_status[e.status] = (totais.por_status[e.status] || 0) + 1;
+          totais.arrecadado_rs += e.metricas.patrocinio.fechado_rs;
+          totais.publico += e.metricas.convidados.confirmados;
+          totais.painelistas += e.metricas.painelistas.confirmados;
+        }
+        return res.status(200).json({ ok: true, items, totais });
       }
 
       if (type === "evt_get") {
@@ -1101,8 +1154,19 @@ module.exports = async function handler(req, res) {
         const { data: evento, error: gErr } = await supabase.from("evt_eventos").select("*").eq("id", id).maybeSingle();
         if (gErr) return res.status(500).json({ ok: false, error: gErr.message });
         if (!evento) return res.status(404).json({ ok: false, error: "Evento nao encontrado." });
-        const { data: itens } = await supabase.from("evt_checklist_itens").select("id, valores, ordem").eq("evento_id", id).order("ordem", { ascending: true }).order("created_at", { ascending: true });
-        return res.status(200).json({ ok: true, evento, colunas: evento.checklist_colunas || [], itens: itens || [] });
+        const [itensR, progR, painR, patrR, convR] = await Promise.allSettled([
+          supabase.from("evt_checklist_itens").select("id, valores, ordem").eq("evento_id", id).order("ordem", { ascending: true }).order("created_at", { ascending: true }),
+          supabase.from("evt_programacao").select("*").eq("evento_id", id).order("ordem", { ascending: true }).order("created_at", { ascending: true }),
+          supabase.from("evt_painelistas").select("*").eq("evento_id", id).order("ordem", { ascending: true }).order("created_at", { ascending: true }),
+          supabase.from("evt_patrocinadores").select("*").eq("evento_id", id).order("created_at", { ascending: true }),
+          supabase.from("evt_convidados").select("*").eq("evento_id", id).order("nome", { ascending: true })
+        ]);
+        const D = (r) => (r.status === "fulfilled" ? (r.value.data || []) : []);
+        const itens = D(itensR), programacao = D(progR), painelistas = D(painR), patrocinadores = D(patrR), convidados = D(convR);
+        return res.status(200).json({
+          ok: true, evento, colunas: evento.checklist_colunas || [], itens, programacao, painelistas, patrocinadores, convidados,
+          metricas: evtMetricas(itens, painelistas, patrocinadores, convidados, programacao)
+        });
       }
 
       if (type === "evt_save") {
@@ -1115,6 +1179,7 @@ module.exports = async function handler(req, res) {
           ...(p.local !== undefined ? { local: p.local ? String(p.local).slice(0, 300) : null } : {}),
           ...(p.descricao !== undefined ? { descricao: p.descricao ? String(p.descricao).slice(0, 2000) : null } : {}),
           ...(p.status && EVT_STATUS.includes(p.status) ? { status: p.status } : {}),
+          ...(Array.isArray(p.objetivos) ? { objetivos: p.objetivos.map((s) => String(s).slice(0, 400)).filter(Boolean).slice(0, 30) } : {}),
           updated_at: nowIso
         };
         if (p.id) {
@@ -1126,7 +1191,7 @@ module.exports = async function handler(req, res) {
         if (!nome) return res.status(400).json({ ok: false, error: "Informe o nome do evento." });
         const { data: created, error } = await supabase.from("evt_eventos").insert({ ...patch, nome: nome.slice(0, 300), checklist_colunas: EVT_DEFAULT_COLS }).select().maybeSingle();
         if (error) return res.status(500).json({ ok: false, error: error.message });
-        const seedRows = EVT_SEED.map(([item, categoria], i) => ({ evento_id: created.id, ordem: i, valores: { item, categoria, status: "pendente" } }));
+        const seedRows = EVT_SEED.map(([item, categoria, obs], i) => ({ evento_id: created.id, ordem: i, valores: { item, categoria, status: "pendente", ...(obs ? { obs } : {}) } }));
         const seedRes = await supabase.from("evt_checklist_itens").insert(seedRows);
         if (seedRes.error) {
           await supabase.from("evt_eventos").delete().eq("id", created.id); // limpa o evento orfao
@@ -1195,6 +1260,81 @@ module.exports = async function handler(req, res) {
         const { error } = await supabase.from("evt_checklist_itens").delete().eq("id", id);
         if (error) return res.status(500).json({ ok: false, error: error.message });
         return res.status(200).json({ ok: true });
+      }
+
+      // F-EVT2: upsert generico de sub-entidade (programacao/painelista/patrocinador/convidado).
+      if (type === "evt_sub_save") {
+        const p = params(req);
+        const spec = EVT_SUB[p.kind];
+        if (!spec) return res.status(400).json({ ok: false, error: "kind invalido" });
+        const row = {};
+        for (const f of spec.fields) {
+          if (p[f] === undefined) continue;
+          let v = p[f];
+          if (typeof v === "string") v = v.trim();
+          if (v === "") v = null;
+          if (spec.enums[f]) { if (v == null || !spec.enums[f].includes(v)) continue; } // enum vazio/invalido -> usa o default/mantem
+          else if (spec.num.includes(f)) { v = (v == null) ? null : (Number.isFinite(Number(v)) ? Number(v) : null); }
+          else if (f === "ordem") { v = (v == null) ? 0 : (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : 0); }
+          else if (typeof v === "string") v = v.slice(0, 4000);
+          row[f] = v;
+        }
+        if (p.id) {
+          delete row.evento_id; // nao muda o pai no update
+          row.updated_at = nowIso;
+          const { data, error } = await supabase.from(spec.table).update(row).eq("id", String(p.id)).select().maybeSingle();
+          if (error) return res.status(500).json({ ok: false, error: error.message });
+          if (!data) return res.status(404).json({ ok: false, error: "Registro nao encontrado." });
+          return res.status(200).json({ ok: true, row: data });
+        }
+        if (!row.evento_id || !row[spec.req]) return res.status(400).json({ ok: false, error: `Informe evento_id e ${spec.req}` });
+        const { data, error } = await supabase.from(spec.table).insert(row).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, row: data });
+      }
+
+      if (type === "evt_sub_remove") {
+        const p = params(req);
+        const spec = EVT_SUB[p.kind];
+        if (!spec) return res.status(400).json({ ok: false, error: "kind invalido" });
+        const id = String(p.id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { error } = await supabase.from(spec.table).delete().eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true });
+      }
+
+      // F-EVT2: import de convidados a partir de lista colada ("Nome – Empresa ✅").
+      if (type === "evt_convidado_import") {
+        const p = params(req);
+        const evento_id = String(p.evento_id || "").trim();
+        if (!evento_id) return res.status(400).json({ ok: false, error: "Informe evento_id" });
+        const rows = [], seen = new Set();
+        for (const raw of String(p.texto || "").split(/\r?\n/).slice(0, 500)) {
+          const line = raw.replace(/[✅✔☑⏱❌✖️]/g, "").trim();
+          if (!line) continue;
+          const parts = line.split(/\s+[–—-]\s+/);
+          const nome = (parts[0] || "").trim().slice(0, 200);
+          if (!nome) continue;
+          const k = nome.toLowerCase();
+          if (seen.has(k)) continue; seen.add(k);
+          const status = /[❌✖]/.test(raw) ? "recusado" : (/[✅✔☑]/.test(raw) ? "confirmado" : "pendente");
+          rows.push({ evento_id, nome, empresa: (parts[1] || "").trim().slice(0, 200) || null, status });
+        }
+        if (!rows.length) return res.status(400).json({ ok: false, error: "Nenhum nome reconhecido (use uma linha por convidado)." });
+        const have = new Set();
+        for (let from = 0; ; from += 1000) { // pagina p/ dedup correto acima de 1000 convidados
+          const { data: ex, error: exErr } = await supabase.from("evt_convidados").select("nome").eq("evento_id", evento_id).range(from, from + 999);
+          if (exErr) return res.status(500).json({ ok: false, error: exErr.message });
+          for (const e of ex || []) have.add(String(e.nome).toLowerCase());
+          if (!ex || ex.length < 1000) break;
+        }
+        const fresh = rows.filter((r) => !have.has(r.nome.toLowerCase()));
+        if (fresh.length) {
+          const { error } = await supabase.from("evt_convidados").insert(fresh);
+          if (error) return res.status(500).json({ ok: false, error: error.message });
+        }
+        return res.status(200).json({ ok: true, inserted: fresh.length, pulados: rows.length - fresh.length });
       }
 
       return res.status(400).json({ ok: false, error: `Tipo evt_ invalido: ${type}` });
