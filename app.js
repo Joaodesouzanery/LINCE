@@ -1841,9 +1841,19 @@ async function loadEventos() {
       </div>
       ${cardFoot("var(--blue)", e.status || "Evento", "LINCE//EVENTO")}
     </article>`; }).join("");
+    // Gráfico de evolução (público e patrocínio por evento, ordem cronológica).
+    const chron = items.slice().reverse();
+    const pubSeries = chron.map((e) => ({ total: e.metricas?.convidados?.confirmados || 0 }));
+    const patrSeries = chron.map((e) => ({ total: e.metricas?.patrocinio?.fechado_rs || 0 }));
+    const hasPub = pubSeries.some((s) => s.total > 0), hasPatr = patrSeries.some((s) => s.total > 0);
+    const charts = (hasPub || hasPatr) ? `<article class="news-card"><span class="source-meta">Evolução (por evento)</span>
+      <div class="entity-row" style="gap:24px;flex-wrap:wrap;margin-top:6px">
+        ${hasPub ? `<div><div style="font-size:.72rem;opacity:.6;margin-bottom:2px">Público confirmado</div>${buildMiniChart(pubSeries, 0)}</div>` : ""}
+        ${hasPatr ? `<div><div style="font-size:.72rem;opacity:.6;margin-bottom:2px">Patrocínio fechado (R$)</div>${buildMiniChart(patrSeries, 0)}</div>` : ""}
+      </div></article>` : "";
     const comparativo = `<article class="news-card"><span class="source-meta">Comparativo entre eventos</span>
       <div style="overflow-x:auto;margin-top:6px"><table class="data-table"><thead><tr><th>Evento</th><th>Data</th><th>Público</th><th>Patrocínio</th><th>Painelistas</th><th>Checklist</th></tr></thead><tbody>${items.map((e) => { const m = e.metricas || {}; return `<tr><td>${escapeHtml(e.nome)}</td><td>${e.data_evento ? escapeHtml(String(e.data_evento).slice(0, 10)) : "—"}</td><td>${m.convidados?.confirmados || 0}</td><td>${money(m.patrocinio?.fechado_rs || 0)}</td><td>${m.painelistas?.confirmados || 0}/${m.painelistas?.total || 0}</td><td>${m.checklist?.pct || 0}%</td></tr>`; }).join("")}</tbody></table></div></article>`;
-    grid.innerHTML = totalsBar + cards + comparativo;
+    grid.innerHTML = totalsBar + charts + cards + comparativo;
   } catch (e) { grid.innerHTML = emptyCard("Eventos", `Falha: ${e.message}`); }
 }
 
@@ -1879,7 +1889,10 @@ function renderEventoDetail(d) {
   ];
   detail.innerHTML = `
     <article class="news-card">
-      <button type="button" class="entity-pill" data-evento-back>&larr; Eventos</button>
+      <div class="entity-row" style="justify-content:space-between">
+        <button type="button" class="entity-pill" data-evento-back>&larr; Eventos</button>
+        <button type="button" class="entity-pill" data-evento-export title="Baixa um Markdown do evento p/ o Claude Design">Exportar (.md)</button>
+      </div>
       <strong>${escapeHtml(ev.nome || "Evento")}</strong>
       <span class="card-sub">${ev.data_evento ? escapeHtml(String(ev.data_evento).slice(0, 10)) : "sem data"}${ev.local ? " · " + escapeHtml(ev.local) : ""} · ${escapeHtml(ev.status || "")}</span>
       <div class="dossier-tabs">${tabs.map(([id2, lbl]) => `<button type="button" class="dossier-tab ${tab === id2 ? "active" : ""}" data-evento-tab="${id2}">${lbl}</button>`).join("")}</div>
@@ -2177,9 +2190,11 @@ async function evtPainLinkSearch() {
 // --- Patrocínio ---
 function renderEventoPatrocinadores(d) {
   const pt = d.patrocinadores || [];
+  const cotas = (d.evento && d.evento.metadata && d.evento.metadata.cotas) || [];
+  const cotaCell = (p) => `<input class="dou-date" list="evt-cota-list" data-esub-kind="patrocinador" data-esub-id="${escapeHtml(p.id)}" data-esub-field="cota" value="${escapeHtml(p.cota || "")}" style="width:100px">`;
   const rows = pt.map((p) => `<tr>
     <td>${esubCell("patrocinador", p.id, "nome", "text", p.nome)}</td>
-    <td>${esubCell("patrocinador", p.id, "cota", "text", p.cota)}</td>
+    <td>${cotaCell(p)}</td>
     <td>${esubCell("patrocinador", p.id, "valor", "num", p.valor)}</td>
     <td>${esubCell("patrocinador", p.id, "status", "select", p.status, ["prospect", "negociacao", "fechado", "recusado"])}</td>
     <td>${esubCell("patrocinador", p.id, "beneficios", "text", p.beneficios)}</td>
@@ -2187,13 +2202,20 @@ function renderEventoPatrocinadores(d) {
   </tr>`).join("");
   const fechado = pt.filter((x) => x.status === "fechado").reduce((s, x) => s + (Number(x.valor) || 0), 0);
   const pipeline = pt.reduce((s, x) => s + (Number(x.valor) || 0), 0);
+  const cotasBlock = `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">
+    <strong style="display:block;margin-bottom:4px">Cotas do evento (catálogo)</strong>
+    ${cotas.length ? cotas.map((c, i) => `<div class="entity-row" style="gap:6px;flex-wrap:wrap"><span class="entity-pill">${escapeHtml(c.nome)}${c.valor != null ? " · " + money(c.valor) : ""}</span>${c.beneficios ? `<span class="card-sub" style="flex:1">${escapeHtml(c.beneficios)}</span>` : ""}<button type="button" class="entity-pill" data-cota-del="${i}">×</button></div>`).join("") : `<span class="card-sub">Sem cotas cadastradas.</span>`}
+    <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin-top:6px"><input id="cota-nome" class="dou-date" style="width:130px" placeholder="Cota (Diamante)"><input id="cota-valor" type="number" class="dou-date" style="width:100px" placeholder="Valor"><input id="cota-benef" class="dou-date" style="min-width:150px;flex:1" placeholder="Benefícios"><button type="button" class="entity-pill" id="cota-add">+ cota</button></div>
+  </div>`;
   return `<article class="news-card">
+    <datalist id="evt-cota-list">${cotas.map((c) => `<option value="${escapeHtml(c.nome)}"></option>`).join("")}</datalist>
     <span class="source-meta">Patrocínio</span>
     <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nome</th><th>Cota</th><th>Valor</th><th>Status</th><th>Benefícios</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6">Nenhum patrocinador.</td></tr>`}</tbody></table></div>
     <div class="entity-row" style="justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:6px">
-      <div class="entity-row" style="gap:6px;flex-wrap:wrap"><input id="patr-nome" class="dou-date" style="min-width:140px" placeholder="Nome"><input id="patr-cota" class="dou-date" style="width:90px" placeholder="Cota"><input id="patr-valor" type="number" class="dou-date" style="width:100px" placeholder="Valor"><button type="button" class="entity-pill" id="patr-add">+ patrocinador</button></div>
+      <div class="entity-row" style="gap:6px;flex-wrap:wrap"><input id="patr-nome" class="dou-date" style="min-width:140px" placeholder="Nome"><input id="patr-cota" class="dou-date" list="evt-cota-list" style="width:100px" placeholder="Cota"><input id="patr-valor" type="number" class="dou-date" style="width:100px" placeholder="Valor"><button type="button" class="entity-pill" id="patr-add">+ patrocinador</button></div>
       <strong>Fechado ${money(fechado)} · Pipeline ${money(pipeline)}</strong>
     </div>
+    ${cotasBlock}
   </article>`;
 }
 
@@ -2235,6 +2257,74 @@ async function evtConvidadoImport() {
   } catch (e) { if (status) status.textContent = `Falha: ${e.message}`; }
 }
 
+// F-EVT3: exporta o evento como Markdown (one-pager/programação) p/ o Claude Design.
+function exportEventoMd() {
+  const d = state.eventoData;
+  if (!d) return;
+  const ev = d.evento || {}, m = d.metricas || {};
+  const cell = (s) => String(s == null ? "" : s).replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ").trim();
+  const d10 = (s) => String(s || "").slice(0, 10);
+  const L = [];
+  L.push(`# ${ev.nome || "Evento"}`);
+  L.push("");
+  L.push(`_${[d10(ev.data_evento) || "sem data", ev.horario, ev.local, ev.status].filter(Boolean).join(" · ")}_`);
+  if (ev.descricao) { L.push(""); L.push(cell(ev.descricao)); }
+  if ((ev.objetivos || []).length) { L.push(""); L.push("## Objetivos"); L.push(""); for (const o of ev.objetivos) L.push(`- ${cell(o)}`); }
+
+  const prog = d.programacao || [], byPainel = new Map();
+  for (const pl of d.painelistas || []) { const k = String(pl.painel || "").trim(); if (!byPainel.has(k)) byPainel.set(k, []); byPainel.get(k).push(pl); }
+  if (prog.length) {
+    L.push(""); L.push("## Programação"); L.push(""); L.push("| Horário | Bloco | Tipo | Painelistas |"); L.push("| --- | --- | --- | --- |");
+    for (const b of prog) {
+      const pains = (b.tipo === "painel" && b.painel_ref) ? (byPainel.get(String(b.painel_ref).trim()) || []) : [];
+      L.push(`| ${cell(b.horario)} | ${cell(b.titulo)} | ${cell(b.tipo)} | ${cell(pains.map((p) => p.nome + (p.papel === "moderador" ? " (mod.)" : "")).join(", "))} |`);
+    }
+  }
+
+  if ((d.painelistas || []).length) {
+    L.push(""); L.push("## Painelistas & moderadores");
+    const g = new Map(); for (const p of d.painelistas) { const k = String(p.painel || "").trim() || "Sem painel"; if (!g.has(k)) g.set(k, []); g.get(k).push(p); }
+    for (const [painel, list] of g) { L.push(""); L.push(`### ${cell(painel)}`); for (const p of list) L.push(`- **${cell(p.nome)}**${p.cargo ? " — " + cell(p.cargo) : ""}${p.empresa ? " (" + cell(p.empresa) + ")" : ""} — ${cell(p.status)}`); }
+  }
+
+  const pt = d.patrocinadores || [], cotas = (ev.metadata && ev.metadata.cotas) || [];
+  if (pt.length || cotas.length) {
+    L.push(""); L.push("## Patrocínio");
+    if (cotas.length) { L.push(""); L.push("**Cotas:** " + cotas.map((c) => `${cell(c.nome)}${c.valor != null ? " (" + money(c.valor) + ")" : ""}`).join(" · ")); }
+    if (pt.length) {
+      L.push(""); L.push("| Patrocinador | Cota | Valor | Status |"); L.push("| --- | --- | --- | --- |");
+      for (const p of pt) L.push(`| ${cell(p.nome)} | ${cell(p.cota)} | ${p.valor != null ? money(p.valor) : "—"} | ${cell(p.status)} |`);
+      const fechado = pt.filter((x) => x.status === "fechado").reduce((s, x) => s + (Number(x.valor) || 0), 0);
+      const pipeline = pt.reduce((s, x) => s + (Number(x.valor) || 0), 0);
+      L.push(""); L.push(`_Fechado: ${money(fechado)} · Pipeline: ${money(pipeline)}_`);
+    }
+  }
+
+  const cv = d.convidados || [];
+  if (cv.length) {
+    const conf = cv.filter((c) => c.status === "confirmado").length;
+    L.push(""); L.push(`## Convidados (${conf} confirmados de ${cv.length})`); L.push("");
+    for (const c of cv) L.push(`- ${cell(c.nome)}${c.empresa ? " — " + cell(c.empresa) : ""}${c.status !== "confirmado" ? " [" + cell(c.status) + "]" : ""}`);
+  }
+
+  L.push(""); L.push("---");
+  L.push(`_Checklist ${m.checklist?.pct || 0}% · ${m.painelistas?.confirmados || 0}/${m.painelistas?.total || 0} painelistas confirmados · ${m.convidados?.confirmados || 0} convidados confirmados · patrocínio fechado ${money(m.patrocinio?.fechado_rs || 0)}. Conteúdo gerado pela LINCE para arte no Claude Design._`);
+
+  const slug = String(ev.nome || "evento").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "evento";
+  downloadText(`${slug}.md`, L.join("\n"));
+}
+
+// F-EVT3: cotas-catálogo (em evento.metadata.cotas).
+function eventoCotas() { return (state.eventoData?.evento?.metadata?.cotas) || []; }
+async function eventoCotasSave(cotas) {
+  try {
+    const r = await postJson("/api/intelligence?type=evt_cotas_save", { id: state.currentEventoId, cotas });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (state.eventoData?.evento) state.eventoData.evento.metadata = { ...(state.eventoData.evento.metadata || {}), cotas: r.cotas };
+    renderEventoDetail(state.eventoData);
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+
 function wireEvento() {
   if (eventoWired) return; eventoWired = true;
   const view = $("#view-evento");
@@ -2246,6 +2336,7 @@ function wireEvento() {
     const open = e.target.closest("[data-open-evento]");
     if (open) { openEvento(open.dataset.openEvento); return; }
     if (e.target.closest("[data-evento-back]")) { loadEventos(); return; }
+    if (e.target.closest("[data-evento-export]")) { exportEventoMd(); return; }
     const tab = e.target.closest("[data-evento-tab]");
     if (tab) { state.eventoTab = tab.dataset.eventoTab; renderEventoDetail(state.eventoData); return; }
     const vw = e.target.closest("[data-evento-view]");
@@ -2278,6 +2369,16 @@ function wireEvento() {
     if (e.target.closest("#patr-add")) { evtSubSave("patrocinador", { evento_id: state.currentEventoId, nome: $("#patr-nome")?.value || "", cota: $("#patr-cota")?.value || "", valor: $("#patr-valor")?.value || null }); return; }
     const patrDel = e.target.closest("[data-patr-del]");
     if (patrDel) { evtSubRemove("patrocinador", patrDel.dataset.patrDel); return; }
+    // Cotas-catálogo
+    if (e.target.closest("#cota-add")) {
+      const nome = ($("#cota-nome")?.value || "").trim();
+      if (!nome) return;
+      const valorRaw = $("#cota-valor")?.value;
+      eventoCotasSave([...eventoCotas(), { nome, valor: (valorRaw === "" || valorRaw == null) ? null : Number(valorRaw), beneficios: ($("#cota-benef")?.value || "").trim() }]);
+      return;
+    }
+    const cotaDel = e.target.closest("[data-cota-del]");
+    if (cotaDel) { const i = Number(cotaDel.dataset.cotaDel); eventoCotasSave(eventoCotas().filter((_, ix) => ix !== i)); return; }
     // Convidados
     if (e.target.closest("#conv-add")) { evtSubSave("convidado", { evento_id: state.currentEventoId, nome: $("#conv-nome")?.value || "", empresa: $("#conv-empresa")?.value || "" }); return; }
     const convDel = e.target.closest("[data-conv-del]");

@@ -92,6 +92,8 @@ O módulo **Painéis (NOMOS)** é o molde quase perfeito: multi-entidade, lista�
 
 **F-EVT2 implementado:** schema M26 (`evt_programacao`, `evt_painelistas`, `evt_patrocinadores`, `evt_convidados` + `evt_eventos.objetivos`); abas **Programação do dia** (linha do tempo; bloco de painel puxa painelistas), **Painelistas** (status + **vincular → dossiê LINCE** via `openDirectorDossier`/`dossier-person?q=`), **Patrocínio** (cota/valor/benefícios/status + soma R$ fechado/pipeline), **Convidados/RSVP** (editável + import "Nome – Empresa ✅" dedup por nome + contadores); **Histórico** na lista de Eventos (barra de totais + cards com métricas + comparativo); Objetivos (campo em Dados) + specs LED (obs do Backdrop). types `evt_sub_save/remove` (whitelist por kind) + `evt_convidado_import`; evt_get/evt_list enriquecidos com métricas. Aplicar **M26**.
 
+**F-EVT3 implementado (fecho software-only, sem schema):** **Exportar (.md)** do evento (one-pager/programação → Claude Design, reusa `downloadText`); **gráfico** de público/patrocínio por evento no histórico (reusa `buildMiniChart`); **cotas-catálogo** (Diamante/Ouro/Prata + valor + benefícios em `evt_eventos.metadata.cotas`, sem tabela; datalist no campo cota + entra no export). type `evt_cotas_save`. Rev. adversarial: 0 achados. **Falta (precisa de você): Supabase Storage p/ artes/fotos (bucket).**
+
 ---
 
 ## 6. Restrições herdadas (duras)

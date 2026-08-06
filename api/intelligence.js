@@ -1337,6 +1337,26 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ ok: true, inserted: fresh.length, pulados: rows.length - fresh.length });
       }
 
+      // F-EVT3: cotas-catálogo do evento (metadata.cotas; merge sem perder outras chaves).
+      if (type === "evt_cotas_save") {
+        const p = params(req);
+        const id = String(p.id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        if (!Array.isArray(p.cotas)) return res.status(400).json({ ok: false, error: "cotas deve ser lista" });
+        const cotas = p.cotas.slice(0, 20).map((c) => ({
+          nome: String((c && c.nome) || "").trim().slice(0, 120),
+          valor: (c && c.valor != null && Number.isFinite(Number(c.valor))) ? Number(c.valor) : null,
+          beneficios: String((c && c.beneficios) || "").slice(0, 2000)
+        })).filter((c) => c.nome);
+        const { data: cur, error: gErr } = await supabase.from("evt_eventos").select("metadata").eq("id", id).maybeSingle();
+        if (gErr) return res.status(500).json({ ok: false, error: gErr.message });
+        if (!cur) return res.status(404).json({ ok: false, error: "Evento nao encontrado." });
+        const metadata = { ...(cur.metadata || {}), cotas };
+        const { error } = await supabase.from("evt_eventos").update({ metadata, updated_at: nowIso }).eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, cotas });
+      }
+
       return res.status(400).json({ ok: false, error: `Tipo evt_ invalido: ${type}` });
     }
 
