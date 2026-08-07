@@ -32,7 +32,8 @@
     "fix:agency": "node scripts/fix-agency-attribution.js",
     "clean:orphan-people": "node scripts/clean-orphan-people.js",
     "sync:votos-iris": "node scripts/sync-votos-iris.js",
-    "collect:votos": "node scripts/collect-votos.js"
+    "collect:votos": "node scripts/collect-votos.js",
+    "score:sponsors": "node scripts/score-sponsors.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

@@ -111,6 +111,7 @@ const state = {
 // Preenchidos por bootstrap() antes do app subir; injetados em requestJson/postJson.
 let _sb = null;
 let _accessToken = null;
+let _userEmail = null; // e-mail do usuário logado (p/ registrar quem promoveu no Score de Patrocinador)
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -2198,7 +2199,7 @@ function renderEventoPatrocinadores(d) {
     <td>${esubCell("patrocinador", p.id, "valor", "num", p.valor)}</td>
     <td>${esubCell("patrocinador", p.id, "status", "select", p.status, ["prospect", "negociacao", "fechado", "recusado"])}</td>
     <td>${esubCell("patrocinador", p.id, "beneficios", "text", p.beneficios)}</td>
-    <td><button type="button" class="entity-pill" data-patr-del="${escapeHtml(p.id)}">×</button></td>
+    <td>${p.sponsor_score_id ? `<button type="button" class="entity-pill" data-patr-outcome="${escapeHtml(p.id)}" title="registrar desfecho (loop de resultado + supressão)">⟳${p.respondeu ? "✓" : ""}</button> ` : ""}<button type="button" class="entity-pill" data-patr-del="${escapeHtml(p.id)}">×</button></td>
   </tr>`).join("");
   const fechado = pt.filter((x) => x.status === "fechado").reduce((s, x) => s + (Number(x.valor) || 0), 0);
   const pipeline = pt.reduce((s, x) => s + (Number(x.valor) || 0), 0);
@@ -2207,6 +2208,7 @@ function renderEventoPatrocinadores(d) {
     ${cotas.length ? cotas.map((c, i) => `<div class="entity-row" style="gap:6px;flex-wrap:wrap"><span class="entity-pill">${escapeHtml(c.nome)}${c.valor != null ? " · " + money(c.valor) : ""}</span>${c.beneficios ? `<span class="card-sub" style="flex:1">${escapeHtml(c.beneficios)}</span>` : ""}<button type="button" class="entity-pill" data-cota-del="${i}">×</button></div>`).join("") : `<span class="card-sub">Sem cotas cadastradas.</span>`}
     <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin-top:6px"><input id="cota-nome" class="dou-date" style="width:130px" placeholder="Cota (Diamante)"><input id="cota-valor" type="number" class="dou-date" style="width:100px" placeholder="Valor"><input id="cota-benef" class="dou-date" style="min-width:150px;flex:1" placeholder="Benefícios"><button type="button" class="entity-pill" id="cota-add">+ cota</button></div>
   </div>`;
+  setTimeout(ensureProspeccao, 0); // F-EVT4: carrega o bloco de Prospecção após montar
   return `<article class="news-card">
     <datalist id="evt-cota-list">${cotas.map((c) => `<option value="${escapeHtml(c.nome)}"></option>`).join("")}</datalist>
     <span class="source-meta">Patrocínio</span>
@@ -2216,7 +2218,238 @@ function renderEventoPatrocinadores(d) {
       <strong>Fechado ${money(fechado)} · Pipeline ${money(pipeline)}</strong>
     </div>
     ${cotasBlock}
-  </article>`;
+  </article>
+  <article class="news-card" id="prosp-article"><div id="prosp-box"><span class="card-sub">Carregando prospecção…</span></div></article>`;
+}
+
+// ══════════════ F-EVT4: Prospecção (Score de Patrocinador) ══════════════════
+// Ranqueia empresas por FIT (contrato-com-órgão-alvo=eixo, +sinal/porte +propensão)
+// com EVIDÊNCIA sempre visível; relacionamento entra como PROMOÇÃO manual de tier
+// (decisão humana, fora dos pontos). Ver docs/patrocinio-score.md.
+async function ensureProspeccao() {
+  const box = $("#prosp-box");
+  if (!box) return;
+  if (state.prosp && state.prosp.eventoId === state.currentEventoId && !state.prosp.loading) { box.innerHTML = renderProspBox(); return; }
+  if (state.prosp && state.prosp.eventoId === state.currentEventoId && state.prosp.loading) return;
+  await loadProspeccao();
+}
+async function loadProspeccao() {
+  const eid = state.currentEventoId; // fixa o alvo: se o usuário trocar de evento durante o fetch, não rotula/renderiza dado do evento errado
+  state.prosp = { eventoId: eid, loading: true, agencies: (state.prosp && state.prosp.agencies) || [] };
+  try {
+    const r = await requestJson(`/api/intelligence?type=evt_sponsor_list&evento_id=${encodeURIComponent(eid)}`);
+    if (eid !== state.currentEventoId) return; // trocou de evento no meio do caminho — descarta
+    state.prosp = { eventoId: eid, run: r.run || null, items: r.items || [], bloqueados: r.bloqueados || [], agencies: r.agencies || [] };
+  } catch (e) {
+    if (eid !== state.currentEventoId) return;
+    state.prosp = { eventoId: eid, error: e.message, items: [], bloqueados: [], agencies: [] };
+  }
+  const box = $("#prosp-box");
+  if (box && eid === state.currentEventoId) box.innerHTML = renderProspBox();
+}
+const PROSP_TIER_LABEL = { 1: "Tier 1", 2: "Tier 2", 3: "Tier 3" };
+const PROSP_CAP_LABEL = { propensao: "sem sinal de propensão", fit_cnae: "CNAE não usada", total: "confiança limitada (1 dimensão)" };
+function prospEvidenceHtml(s) {
+  const e = s.evidence || {};
+  const ct = (e.contratos || []).slice(0, 3).map((c) => `${money(c.value || 0)}${c.signed_at ? " · " + String(c.signed_at).slice(0, 10) : ""}`).join(" · ");
+  const parts = [];
+  parts.push(`<strong>Contratos c/ órgãos-alvo:</strong> ${e.n_contratos || 0} · Σ ${money(e.soma_contratos || 0)}${e.max_signed_at ? " · último " + String(e.max_signed_at).slice(0, 10) : ""}`);
+  if (ct) parts.push(`<span class="card-sub">${escapeHtml(ct)}</span>`);
+  if (e.n_doacoes) parts.push(`Doações PJ (TSE): ${e.n_doacoes} · Σ ${money(e.soma_doacoes || 0)}`);
+  if (e.arestas) parts.push(`Vínculos no grafo: ${e.arestas}`);
+  if (e.porte) parts.push(`Porte: ${escapeHtml(e.porte)}`);
+  return parts.map((p) => `<div style="font-size:.78rem">${p}</div>`).join("");
+}
+function prospCard(s) {
+  const t = s.timing || {};
+  const janela = t.janela === "abrir" ? `<span class="entity-pill" style="background:var(--green-soft,#1c3)">abordar agora</span>` : t.janela === "esperar" ? `<span class="entity-pill">esperar (t-${t.semanas_para_evento ?? "?"}sem)</span>` : t.janela === "passou" ? `<span class="entity-pill" style="opacity:.6">evento passou</span>` : "";
+  const ciclo = t.ciclo_orcamentario ? `<span class="entity-pill" title="Ciclo orçamentário BR (out–dez): verba do ano seguinte">janela orçamentária</span>` : "";
+  const capped = (s.capped || []).map((c) => `<span class="entity-pill" style="opacity:.6" title="confiança">${escapeHtml(PROSP_CAP_LABEL[c] || c)}</span>`).join("");
+  const tierShown = s.promovido ? `${PROSP_TIER_LABEL[s.promovido_tier] || "T?"} <span class="card-sub">(promovido de ${PROSP_TIER_LABEL[s.tier] || "—"})</span>` : (PROSP_TIER_LABEL[s.tier] || "—");
+  const st = s.status;
+  const acted = st === "aprovado" ? `<span class="entity-pill" style="background:var(--green-soft,#1c3)">aprovado</span>` : st === "descartado" ? `<span class="entity-pill" style="opacity:.5">descartado</span>` : "";
+  const actions = (st === "sugerido") ? `<div class="entity-row" style="gap:6px;flex-wrap:wrap;margin-top:6px">
+      <button type="button" class="entity-pill" data-prosp-promote="${escapeHtml(s.id)}">Promover tier</button>
+      <button type="button" class="entity-pill" data-prosp-angle="${escapeHtml(s.id)}">Gerar ângulo</button>
+      <button type="button" class="entity-pill" data-prosp-approve="${escapeHtml(s.id)}">Aprovar → patrocinador</button>
+      <button type="button" class="entity-pill" data-prosp-discard="${escapeHtml(s.id)}">Descartar</button>
+    </div>` : "";
+  const angulo = s.angulo ? `<div style="margin-top:6px;border-left:2px solid var(--blue);padding-left:8px;font-size:.82rem">${escapeHtml(s.angulo)}</div>` : "";
+  return `<div class="entity-row" style="flex-direction:column;align-items:stretch;gap:2px;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px">
+    <div class="entity-row" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
+      <strong>${escapeHtml(s.nome)}</strong>
+      <span><strong>${Number(s.total).toFixed(0)}</strong> · ${tierShown} ${acted}</span>
+    </div>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap">${s.cota_sugerida ? `<span class="entity-pill" title="cota sugerida (determinística)">${escapeHtml(s.cota_sugerida)}</span>` : ""}${janela}${ciclo}${capped}</div>
+    ${prospEvidenceHtml(s)}
+    ${angulo}
+    ${actions}
+  </div>`;
+}
+function renderProspBox() {
+  const p = state.prosp || {};
+  const ags = p.agencies || [];
+  const run = p.run;
+  const selected = new Set((run && run.orgaos) || []);
+  const orgaosSel = ags.length
+    ? `<div style="max-height:120px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:6px">${ags.map((a) => `<label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:.8rem"><input type="checkbox" name="prosp-orgao" value="${escapeHtml(a.id)}" ${selected.has(a.id) ? "checked" : ""}>${escapeHtml(a.acronym || a.name || "?")}</label>`).join("")}</div>`
+    : `<span class="card-sub">Sem órgãos cadastrados.</span>`;
+  const controls = `<div class="entity-row" style="flex-direction:column;align-items:stretch;gap:6px">
+      <span class="source-meta">Prospecção — Score de Patrocinador</span>
+      <label style="font-size:.78rem;opacity:.7">Órgãos-alvo (contratam no tema do evento):</label>
+      ${orgaosSel}
+      <div class="entity-row" style="gap:6px;flex-wrap:wrap"><input id="prosp-setor" class="dou-date" style="min-width:160px" placeholder="Setor (opcional, ex.: metroferroviário)" value="${escapeHtml((run && run.setor) || "")}"><button type="button" class="entity-pill" id="prosp-run">${run ? "Re-pontuar" : "Pontuar patrocinadores"}</button><button type="button" class="entity-pill" id="prosp-validate">Validação</button><button type="button" class="entity-pill" id="prosp-insumos-toggle">Insumos (entrevista)</button></div>
+    </div>`;
+  if (p.error) return controls + `<div class="card-sub" style="color:var(--red)">Falha: ${escapeHtml(p.error)}</div>`;
+  let body = "";
+  if (run && run.status === "running") body = `<div class="card-sub">Pontuando… <button type="button" class="entity-pill" id="prosp-refresh">atualizar</button></div>`;
+  else if (run && run.status === "failed") body = `<div class="card-sub" style="color:var(--red);margin-top:8px">Falha na última pontuação${run.note ? ": " + escapeHtml(run.note) : ""}. Ajuste os órgãos e clique em Re-pontuar.</div>`;
+  else if (!run) body = `<div class="card-sub" style="margin-top:8px">Nenhuma pontuação ainda. Selecione os órgãos-alvo e clique em <strong>Pontuar</strong>.</div>`;
+  else {
+    const items = p.items || [];
+    const byTier = {};
+    for (const s of items) { const t = (s.promovido && s.promovido_tier) ? s.promovido_tier : s.tier; (byTier[t] = byTier[t] || []).push(s); }
+    const groups = [1, 2, 3].map((t) => (byTier[t] && byTier[t].length) ? `<div style="margin-top:8px"><strong style="font-size:.85rem">${PROSP_TIER_LABEL[t]} (${byTier[t].length})</strong>${byTier[t].map(prospCard).join("")}</div>` : "").join("");
+    const meta = `<div class="card-sub" style="margin-top:6px">${items.length} no shortlist${run.n_candidates ? " · " + run.n_candidates + " candidatas" : ""}${p.bloqueados && p.bloqueados.length ? " · " + p.bloqueados.length + " bloqueada(s) por screening" : ""}${run.truncado ? " · ⚠ scan truncado" : ""}${run.note ? " · " + escapeHtml(run.note) : ""}</div>`;
+    const bloq = (p.bloqueados && p.bloqueados.length) ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:.8rem;opacity:.7">Bloqueadas por screening (${p.bloqueados.length})</summary>${p.bloqueados.map((s) => `<div style="font-size:.78rem;opacity:.7;padding:2px 0">${escapeHtml(s.nome)} — ${escapeHtml((s.screening && s.screening.reason) || "sanção/inaptidão")}</div>`).join("")}</details>` : "";
+    body = meta + (groups || `<div class="card-sub">Nenhuma empresa atingiu o corte mínimo de tier.</div>`) + bloq;
+  }
+  return controls + `<div id="prosp-validate-box"></div>` + `<div id="prosp-insumos-box" hidden></div>` + body;
+}
+async function prospRun() {
+  const orgaos = [...document.querySelectorAll("input[name='prosp-orgao']:checked")].map((el) => el.value);
+  if (!orgaos.length) { alert("Selecione ao menos um órgão-alvo."); return; }
+  const setor = $("#prosp-setor")?.value || "";
+  const btn = $("#prosp-run");
+  if (btn) { btn.disabled = true; btn.textContent = "Pontuando…"; }
+  try {
+    const r = await postJson("/api/intelligence?type=evt_sponsor_run", { evento_id: state.currentEventoId, orgaos, setor });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    await loadProspeccao();
+  } catch (e) { alert(`Falha ao pontuar: ${e.message}`); if (btn) { btn.disabled = false; btn.textContent = "Pontuar patrocinadores"; } }
+}
+async function prospPromote(id) {
+  const tier = prompt("Promover para qual tier? (1, 2 ou 3)");
+  if (!tier || !["1", "2", "3"].includes(String(tier).trim())) return;
+  const justificativa = prompt("Justificativa (relacionamento/decisão humana):") || "";
+  const promovido_por = _userEmail || "";
+  try {
+    const r = await postJson("/api/intelligence?type=evt_sponsor_promote", { id, tier: Number(tier), justificativa, promovido_por });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    await loadProspeccao();
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+async function prospAngle(id) {
+  const btn = document.querySelector(`[data-prosp-angle="${id}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "Gerando…"; }
+  try {
+    const r = await postJson("/api/intelligence?type=evt_sponsor_angle", { id });
+    if (r?.skipped === "no_api_key") alert("Ângulo indisponível: falta ANTHROPIC_API_KEY.");
+    else if (!r?.ok) throw new Error(r?.error || "erro");
+    else if (r.error) alert(`Ângulo falhou: ${r.error}`);
+    await loadProspeccao();
+  } catch (e) { alert(`Falha: ${e.message}`); if (btn) { btn.disabled = false; btn.textContent = "Gerar ângulo"; } }
+}
+async function prospApprove(id) {
+  if (!confirm("Aprovar esta empresa como patrocinador (reverifica screening agora)?")) return;
+  try {
+    const r = await postJson("/api/intelligence?type=evt_sponsor_decide", { id, decisao: "aprovar" });
+    if (r?.blocked) { alert(`Bloqueada: ${r.error}`); await loadProspeccao(); return; }
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (r.warn) alert(r.warn);
+    await loadProspeccao();
+    openEvento(state.currentEventoId); // atualiza a tabela de patrocinadores
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+async function prospDiscard(id) {
+  try {
+    const r = await postJson("/api/intelligence?type=evt_sponsor_decide", { id, decisao: "descartar" });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    await loadProspeccao();
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+async function prospValidate() {
+  const box = $("#prosp-validate-box");
+  if (!box) return;
+  if (box.dataset.open === "1") { box.dataset.open = "0"; box.innerHTML = ""; return; }
+  box.dataset.open = "1";
+  box.innerHTML = `<span class="card-sub">Carregando validação…</span>`;
+  try {
+    const r = await requestJson("/api/intelligence?type=evt_sponsor_validate");
+    const tiers = r.tiers || [];
+    const rows = tiers.map((t) => `<tr><td>${PROSP_TIER_LABEL[t.tier] || t.tier}</td><td>${t.abordados}</td><td>${t.abordados >= 5 ? Math.round((t.taxa_resposta || 0) * 100) + "%" : `<span class="card-sub" title="n<5: amostra pequena">${t.respondeu}/${t.abordados}</span>`}</td><td>${t.fechados}</td><td>${money(t.valor_fechado || 0)}</td></tr>`).join("");
+    const chart = buildMiniChart(tiers.map((t) => ({ total: t.valor_fechado || 0 })), 0);
+    const g = r.golden || {};
+    box.innerHTML = `<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
+      <strong style="font-size:.85rem">Validação (indicador antecedente)</strong>
+      <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Tier</th><th>Abordados</th><th>Taxa resposta</th><th>Fechados</th><th>Valor fechado</th></tr></thead><tbody>${rows || `<tr><td colspan="5">Sem histórico ainda.</td></tr>`}</tbody></table></div>
+      ${chart ? `<div class="card-sub">Valor fechado por tier</div>${chart}` : ""}
+      <div class="card-sub" style="margin-top:6px">Golden set (determinístico): ${g.n ? `${Math.round((g.concordancia || 0) * 100)}% de concordância em ${g.n} empresas` : "sem empresas comparáveis ainda"}</div>
+    </div>`;
+  } catch (e) { box.innerHTML = `<span class="card-sub" style="color:var(--red)">Falha: ${escapeHtml(e.message)}</span>`; }
+}
+async function prospInsumosToggle() {
+  const box = $("#prosp-insumos-box");
+  if (!box) return;
+  if (!box.hidden) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<span class="card-sub">Carregando insumos…</span>`;
+  try {
+    const [nn, gg] = await Promise.all([
+      requestJson("/api/intelligence?type=evt_ref_note_list").catch(() => ({ items: [] })),
+      requestJson("/api/intelligence?type=evt_golden_list").catch(() => ({ items: [] }))
+    ]);
+    box.innerHTML = renderProspInsumos(nn.items || [], gg.items || []);
+  } catch (e) { box.innerHTML = `<span class="card-sub" style="color:var(--red)">Falha: ${escapeHtml(e.message)}</span>`; }
+}
+const REFNOTE_KINDS = [["won_language", "linguagem que fechou"], ["loss_reason", "motivo de perda"], ["objecao", "objeção"], ["banido", "banido/opt-out"]];
+function renderProspInsumos(notes, golden) {
+  const nrows = notes.map((n) => `<div class="entity-row" style="gap:6px;flex-wrap:wrap;font-size:.78rem"><span class="entity-pill">${escapeHtml((REFNOTE_KINDS.find((k) => k[0] === n.kind) || [null, n.kind])[1])}</span><span style="flex:1">${escapeHtml(n.content)}${n.segment ? " · " + escapeHtml(n.segment) : ""}</span><button type="button" class="entity-pill" data-refnote-del="${escapeHtml(n.id)}">×</button></div>`).join("");
+  const grows = golden.map((g) => `<div class="entity-row" style="gap:6px;flex-wrap:wrap;font-size:.78rem"><span class="entity-pill">T${g.tier_humano}</span><span style="flex:1">${escapeHtml(g.nome)}${g.cnpj ? " · " + escapeHtml(formatCnpj(g.cnpj)) : ""}</span><button type="button" class="entity-pill" data-golden-del="${escapeHtml(g.id)}">×</button></div>`).join("");
+  return `<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
+    <strong style="font-size:.85rem">Arquivos de referência (da entrevista com os diretores)</strong>
+    <div class="card-sub">Alimentam o ângulo (won-language/objeção) e a calibração (golden). Não pontuam automaticamente.</div>
+    <div style="margin-top:6px">${nrows || `<span class="card-sub">Sem notas.</span>`}</div>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap;margin-top:6px"><select id="refnote-kind" class="dou-date">${REFNOTE_KINDS.map((k) => `<option value="${k[0]}">${k[1]}</option>`).join("")}</select><input id="refnote-content" class="dou-date" style="min-width:180px;flex:1" placeholder="Conteúdo"><input id="refnote-segment" class="dou-date" style="width:120px" placeholder="Segmento (opc.)"><button type="button" class="entity-pill" id="refnote-add">+ nota</button></div>
+    <div style="margin-top:10px"><strong style="font-size:.85rem">Golden set (tier que os diretores dariam)</strong></div>
+    <div style="margin-top:6px">${grows || `<span class="card-sub">Sem empresas.</span>`}</div>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap;margin-top:6px"><input id="golden-nome" class="dou-date" style="min-width:150px;flex:1" placeholder="Empresa"><input id="golden-cnpj" class="dou-date" style="width:150px" placeholder="CNPJ (opc.)"><select id="golden-tier" class="dou-date"><option value="1">Tier 1</option><option value="2">Tier 2</option><option value="3">Tier 3</option></select><button type="button" class="entity-pill" id="golden-add">+ golden</button></div>
+  </div>`;
+}
+async function prospRefNoteAdd() {
+  const kind = $("#refnote-kind")?.value, content = ($("#refnote-content")?.value || "").trim();
+  if (!content) return;
+  try { const r = await postJson("/api/intelligence?type=evt_ref_note_save", { kind, content, segment: $("#refnote-segment")?.value || "" }); if (!r?.ok) throw new Error(r?.error || "erro"); prospInsumosReload(); }
+  catch (e) { alert(`Falha: ${e.message}`); }
+}
+async function prospGoldenAdd() {
+  const nome = ($("#golden-nome")?.value || "").trim();
+  if (!nome) return;
+  try { const r = await postJson("/api/intelligence?type=evt_golden_save", { nome, cnpj: $("#golden-cnpj")?.value || "", tier_humano: Number($("#golden-tier")?.value || 2) }); if (!r?.ok) throw new Error(r?.error || "erro"); prospInsumosReload(); }
+  catch (e) { alert(`Falha: ${e.message}`); }
+}
+async function prospInsumosReload() {
+  const box = $("#prosp-insumos-box");
+  if (!box) return;
+  const [nn, gg] = await Promise.all([
+    requestJson("/api/intelligence?type=evt_ref_note_list").catch(() => ({ items: [] })),
+    requestJson("/api/intelligence?type=evt_golden_list").catch(() => ({ items: [] }))
+  ]);
+  box.innerHTML = renderProspInsumos(nn.items || [], gg.items || []);
+}
+// Loop de resultado: registra desfecho de um patrocinador ligado a um score
+// (seta respondeu + move status + atualiza a supressão entre eventos).
+async function prospOutcome(patrId) {
+  const desfecho = (prompt("Desfecho? respondeu / fechou / recusou / optout") || "").trim();
+  if (!["respondeu", "fechou", "recusou", "optout"].includes(desfecho)) return;
+  const body = { patrocinador_id: patrId, desfecho, respondeu: true };
+  if (desfecho === "fechou") { const v = prompt("Valor fechado (R$):"); if (v != null && v !== "") body.valor = Number(v) || 0; }
+  if (desfecho === "recusou" || desfecho === "optout") body.motivo = prompt("Motivo:") || "";
+  try {
+    const r = await postJson("/api/intelligence?type=evt_outcome_save", body);
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    openEvento(state.currentEventoId);
+  } catch (e) { alert(`Falha: ${e.message}`); }
 }
 
 // --- Convidados / RSVP ---
@@ -2369,6 +2602,8 @@ function wireEvento() {
     if (e.target.closest("#patr-add")) { evtSubSave("patrocinador", { evento_id: state.currentEventoId, nome: $("#patr-nome")?.value || "", cota: $("#patr-cota")?.value || "", valor: $("#patr-valor")?.value || null }); return; }
     const patrDel = e.target.closest("[data-patr-del]");
     if (patrDel) { evtSubRemove("patrocinador", patrDel.dataset.patrDel); return; }
+    const patrOut = e.target.closest("[data-patr-outcome]");
+    if (patrOut) { prospOutcome(patrOut.dataset.patrOutcome); return; }
     // Cotas-catálogo
     if (e.target.closest("#cota-add")) {
       const nome = ($("#cota-nome")?.value || "").trim();
@@ -2385,6 +2620,19 @@ function wireEvento() {
     if (convDel) { evtSubRemove("convidado", convDel.dataset.convDel); return; }
     if (e.target.closest("#conv-import-btn")) { const b = $("#conv-import-box"); if (b) b.hidden = !b.hidden; return; }
     if (e.target.closest("#conv-import-do")) { evtConvidadoImport(); return; }
+    // F-EVT4: Prospecção (Score de Patrocinador)
+    if (e.target.closest("#prosp-run")) { prospRun(); return; }
+    if (e.target.closest("#prosp-refresh")) { loadProspeccao(); return; }
+    if (e.target.closest("#prosp-validate")) { prospValidate(); return; }
+    if (e.target.closest("#prosp-insumos-toggle")) { prospInsumosToggle(); return; }
+    const pPromote = e.target.closest("[data-prosp-promote]"); if (pPromote) { prospPromote(pPromote.dataset.prospPromote); return; }
+    const pAngle = e.target.closest("[data-prosp-angle]"); if (pAngle) { prospAngle(pAngle.dataset.prospAngle); return; }
+    const pApprove = e.target.closest("[data-prosp-approve]"); if (pApprove) { prospApprove(pApprove.dataset.prospApprove); return; }
+    const pDiscard = e.target.closest("[data-prosp-discard]"); if (pDiscard) { prospDiscard(pDiscard.dataset.prospDiscard); return; }
+    if (e.target.closest("#refnote-add")) { prospRefNoteAdd(); return; }
+    const rnDel = e.target.closest("[data-refnote-del]"); if (rnDel) { postJson("/api/intelligence?type=evt_ref_note_remove", { id: rnDel.dataset.refnoteDel }).then(prospInsumosReload).catch(() => {}); return; }
+    if (e.target.closest("#golden-add")) { prospGoldenAdd(); return; }
+    const gDel = e.target.closest("[data-golden-del]"); if (gDel) { postJson("/api/intelligence?type=evt_golden_remove", { id: gDel.dataset.goldenDel }).then(prospInsumosReload).catch(() => {}); return; }
   });
   view.addEventListener("change", (e) => {
     const esub = e.target.closest("[data-esub-id]");
@@ -4992,6 +5240,7 @@ function showApp(user) {
 // Sucesso de login (inicial ou re-login após expiração). Inicia o app só 1 vez.
 function onAuthSuccess(session, user) {
   _accessToken = session?.access_token || null;
+  _userEmail = user?.email || null;
   _authLost = false;
   showApp(user);
   if (!_appStarted) { _appStarted = true; init(); }

@@ -6,6 +6,9 @@
 // POST /api/intelligence?type=monitor_save|monitor_toggle|monitor_delete|deal_narrative|exec_summary
 const { getSupabase } = require("../lib/supabase");
 const { normalizeName, onlyDigits } = require("../lib/text");
+const { runScore, CONTRACT_SCAN_CAP } = require("../lib/sponsor-score"); // M27 — Score de Patrocinador (F-EVT4)
+const { sponsorAngle } = require("../lib/anthropic");         // M27 — angulo (gated)
+const { screeningByCnpj } = require("../lib/transparencia");  // M27 — screening (bloqueio duro na aprovacao)
 
 // Mutacoes e listas de monitor aceitam POST (body JSON) ou GET (querystring).
 function params(req) {
@@ -1355,6 +1358,323 @@ module.exports = async function handler(req, res) {
         const { error } = await supabase.from("evt_eventos").update({ metadata, updated_at: nowIso }).eq("id", id);
         if (error) return res.status(500).json({ ok: false, error: error.message });
         return res.status(200).json({ ok: true, cotas });
+      }
+
+      // ===== M27: "Score de Patrocinador" (F-EVT4) — prospeccao de patrocinio =====
+      const nowMs = Date.now();
+      const addDays = (d) => new Date(nowMs + d * 86400000).toISOString();
+      const addMonths = (m) => { const dt = new Date(nowMs); dt.setUTCMonth(dt.getUTCMonth() + m); return dt.toISOString(); };
+      const BAD_STATUS = /baix|suspens|inapt|nula|inativ|cancel/i;   // situacao cadastral que bloqueia (sinal local)
+      // Supressao ATIVA por CNPJ (until null = permanente; futuro = ainda vale).
+      const activeSuppression = async () => {
+        const set = new Set();
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await supabase.from("evt_sponsor_supressao").select("cnpj_norm, until").range(from, from + 999);
+          if (error) throw new Error(error.message);
+          for (const r of data || []) { if (r.cnpj_norm && (r.until == null || r.until > nowIso)) set.add(r.cnpj_norm); }
+          if (!data || data.length < 1000) break;
+        }
+        return set;
+      };
+
+      if (type === "evt_sponsor_run") {
+        const p = params(req);
+        const evento_id = String(p.evento_id || "").trim();
+        const orgaos = Array.isArray(p.orgaos) ? p.orgaos.map((x) => String(x).trim()).filter(Boolean).slice(0, 50) : [];
+        const setor = p.setor ? String(p.setor).slice(0, 120) : null;
+        if (!evento_id) return res.status(400).json({ ok: false, error: "Informe evento_id" });
+        if (!orgaos.length) return res.status(400).json({ ok: false, error: "Selecione ao menos um orgao-alvo." });
+        const { data: ev, error: evErr } = await supabase.from("evt_eventos").select("id, data_evento, metadata").eq("id", evento_id).maybeSingle();
+        if (evErr) return res.status(500).json({ ok: false, error: evErr.message });
+        if (!ev) return res.status(404).json({ ok: false, error: "Evento nao encontrado." });
+        const { data: rub } = await supabase.from("evt_sponsor_rubrics").select("*").eq("active", true).maybeSingle();
+        const cotas = (ev.metadata && ev.metadata.cotas) || [];
+        const rescore_of = p.rescore_of ? String(p.rescore_of) : null;
+
+        const { data: run, error: runErr } = await supabase.from("evt_sponsor_runs").insert({
+          evento_id, status: "running", orgaos, setor, rubric_version: (rub && rub.version) || null, rescore_of
+        }).select().maybeSingle();
+        if (runErr) return res.status(500).json({ ok: false, error: runErr.message });
+
+        let result;
+        try {
+          const suppressed = await activeSuppression();
+          result = await runScore(supabase, {
+            orgaos, setor, cotas, dataEvento: ev.data_evento,
+            weights: rub && rub.weights, tiers: rub && rub.tiers, cotaBands: rub && rub.cota_bands,
+            sectorCnae: (rub && rub.sector_cnae && setor && rub.sector_cnae[setor]) || [],
+            suppressed
+          });
+        } catch (e) { result = { ok: false, error: e.message }; }
+        if (!result.ok) {
+          await supabase.from("evt_sponsor_runs").update({ status: "failed", note: String(result.error).slice(0, 500), finished_at: nowIso }).eq("id", run.id);
+          return res.status(500).json({ ok: false, error: result.error, run_id: run.id });
+        }
+
+        const rows = result.scored.map((s) => {
+          const bloqueado = BAD_STATUS.test(String(s.evidence.situacao || ""));
+          return {
+            evento_id, run_id: run.id, company_id: s.company_id, cnpj: s.cnpj, empresa_key: s.empresa_key, nome: String(s.nome).slice(0, 300),
+            total: s.total, tier: s.tier, subscores: s.subscores, evidence: s.evidence, as_of: result.as_of, capped: s.capped,
+            cota_sugerida: s.cota_sugerida, timing: s.timing, rubric_version: (rub && rub.version) || null,
+            bloqueado, screening: bloqueado ? { verified: false, local_block: true, reason: s.evidence.situacao } : { verified: false }
+          };
+        });
+        if (rows.length) {
+          const { error: insErr } = await supabase.from("evt_sponsor_scores").insert(rows);
+          if (insErr) {
+            await supabase.from("evt_sponsor_runs").update({ status: "failed", note: insErr.message.slice(0, 500), finished_at: nowIso }).eq("id", run.id);
+            return res.status(500).json({ ok: false, error: insErr.message, run_id: run.id });
+          }
+        }
+        const note = [result.truncado ? `scan truncado em ${CONTRACT_SCAN_CAP}` : null, result.remainder ? `${result.remainder} empresas alem do teto de enriquecimento` : null].filter(Boolean).join("; ") || null;
+        const { data: doneRun, error: doneErr } = await supabase.from("evt_sponsor_runs").update({
+          status: "done", n_candidates: result.n_candidates, n_scored: rows.length, truncado: result.truncado, finished_at: nowIso, note
+        }).eq("id", run.id).select().maybeSingle();
+        // Sem isso, um erro aqui deixaria o run preso em 'running' e o shortlist (ja gravado) invisivel, com ok:true enganoso.
+        if (doneErr) return res.status(500).json({ ok: false, error: `falha ao concluir run: ${doneErr.message}`, run_id: run.id });
+        const bloq = rows.filter((r) => r.bloqueado).length;
+        return res.status(200).json({ ok: true, run: doneRun || run, n_scored: rows.length, bloqueados: bloq, remainder: result.remainder, truncado: result.truncado });
+      }
+
+      if (type === "evt_sponsor_list") {
+        const evento_id = String(params(req).evento_id || "").trim();
+        if (!evento_id) return res.status(400).json({ ok: false, error: "Informe evento_id" });
+        // Selector de orgaos (agencias com sigla). Sempre retornado.
+        const { data: ags } = await supabase.from("agencies").select("id, acronym, name").not("acronym", "is", null).order("acronym").limit(500);
+        const { data: run } = await supabase.from("evt_sponsor_runs").select("*").eq("evento_id", evento_id).order("started_at", { ascending: false }).limit(1).maybeSingle();
+        if (!run) return res.status(200).json({ ok: true, run: null, items: [], bloqueados: [], agencies: ags || [] });
+        if (run.status === "running") return res.status(200).json({ ok: true, run, items: [], bloqueados: [], agencies: ags || [] });
+        const { data: scores, error: sErr } = await supabase.from("evt_sponsor_scores").select("*").eq("run_id", run.id).order("total", { ascending: false });
+        if (sErr) return res.status(500).json({ ok: false, error: sErr.message });
+        const items = (scores || []).filter((s) => !s.bloqueado);
+        const bloqueados = (scores || []).filter((s) => s.bloqueado);
+        return res.status(200).json({ ok: true, run, items, bloqueados, agencies: ags || [] });
+      }
+
+      if (type === "evt_sponsor_promote") {
+        const p = params(req);
+        const id = String(p.id || "").trim();
+        const tier = Number(p.tier);
+        if (!id || !Number.isFinite(tier)) return res.status(400).json({ ok: false, error: "Informe id e tier" });
+        const patch = {
+          promovido: true, promovido_tier: Math.trunc(tier),
+          promovido_por: p.promovido_por ? String(p.promovido_por).slice(0, 200) : null,
+          promovido_justificativa: p.justificativa ? String(p.justificativa).slice(0, 1000) : null
+        };
+        const { data, error } = await supabase.from("evt_sponsor_scores").update(patch).eq("id", id).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        if (!data) return res.status(404).json({ ok: false, error: "Score nao encontrado." });
+        return res.status(200).json({ ok: true, score: data });
+      }
+
+      if (type === "evt_sponsor_angle") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { data: s, error } = await supabase.from("evt_sponsor_scores").select("*").eq("id", id).maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        if (!s) return res.status(404).json({ ok: false, error: "Score nao encontrado." });
+        const { data: run } = await supabase.from("evt_sponsor_runs").select("setor").eq("id", s.run_id).maybeSingle();
+        const setor = (run && run.setor) || null;
+        const { data: notes } = await supabase.from("evt_ref_notes").select("id, kind, segment, content").in("kind", ["won_language", "objecao"]).limit(40);
+        const refUsadas = (notes || []).filter((n) => !n.segment || !setor || String(n.segment).toLowerCase() === String(setor).toLowerCase());
+        const { data: ev } = await supabase.from("evt_eventos").select("nome, data_evento, descricao").eq("id", s.evento_id).maybeSingle();
+        const payload = {
+          evento: ev ? { nome: ev.nome, data: ev.data_evento, descricao: ev.descricao } : null,
+          empresa: { nome: s.nome, tier: s.tier, total: s.total, cota_sugerida: s.cota_sugerida },
+          evidencia: s.evidence,
+          ref_notes: refUsadas.map((n) => ({ kind: n.kind, content: n.content }))
+        };
+        const out = await sponsorAngle(payload);
+        if (!out.angulo && out.skipped === "no_api_key") return res.status(200).json({ ok: true, skipped: "no_api_key", angulo: null });
+        // IA falhou (rate-limit/HTTP/JSON) -> NAO sobrescreve um angulo valido anterior com null.
+        if (!out.angulo) return res.status(200).json({ ok: false, angulo: null, error: out.error || "sem resposta da IA" });
+        const angulo_fontes = { ref_notes: refUsadas.map((n) => n.id), evidencia_keys: Object.keys(s.evidence || {}), confidence: out.confidence };
+        const { data: upd, error: updErr } = await supabase.from("evt_sponsor_scores").update({ angulo: out.angulo, angulo_fontes }).eq("id", id).select().maybeSingle();
+        if (updErr) return res.status(500).json({ ok: false, error: updErr.message });
+        return res.status(200).json({ ok: true, angulo: out.angulo, confidence: out.confidence, score: upd });
+      }
+
+      if (type === "evt_sponsor_decide") {
+        const p = params(req);
+        const id = String(p.id || "").trim();
+        const decisao = String(p.decisao || "").trim();
+        if (!id || !["aprovar", "descartar"].includes(decisao)) return res.status(400).json({ ok: false, error: "Informe id e decisao (aprovar|descartar)" });
+        const { data: s, error } = await supabase.from("evt_sponsor_scores").select("*").eq("id", id).maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        if (!s) return res.status(404).json({ ok: false, error: "Score nao encontrado." });
+        if (decisao === "descartar") {
+          await supabase.from("evt_sponsor_scores").update({ status: "descartado" }).eq("id", id);
+          return res.status(200).json({ ok: true, status: "descartado" });
+        }
+        // aprovar: REVERIFICA screening AGORA (a situacao muda entre a pontuacao e a aprovacao).
+        let warn = null, screening = { verified: false, checked_at: nowIso };
+        if (s.cnpj && onlyDigits(s.cnpj).length === 14) {
+          const sc = await screeningByCnpj(onlyDigits(s.cnpj)).catch(() => null);
+          // screeningByCnpj retorna ok:true mesmo SEM chave (fontes falham -> has_sanctions=false).
+          // So confia se ALGUMA fonte respondeu de fato; senao e "nao verificado" (nao passar como ok).
+          const anyOk = !!(sc && sc.sources && Object.values(sc.sources).some((x) => x && x.ok));
+          if (anyOk) {
+            screening = { verified: true, has_sanctions: !!(sc.flags && sc.flags.has_sanctions), checked_at: nowIso };
+            if (screening.has_sanctions) {
+              await supabase.from("evt_sponsor_scores").update({ bloqueado: true, screening }).eq("id", id);
+              return res.status(200).json({ ok: false, blocked: true, error: "Empresa com sancao ativa (CEIS/CNEP) — bloqueada.", screening });
+            }
+          } else {
+            warn = "Screening externo indisponivel (sem chave do Portal da Transparencia ou fonte fora do ar) — verifique manualmente antes de confirmar.";
+          }
+        } else { warn = "Empresa sem CNPJ valido — screening externo nao aplicavel."; }
+
+        const cota = (p.cota != null && String(p.cota).trim()) ? String(p.cota).slice(0, 120) : (s.cota_sugerida || null);
+        const valor = (p.valor != null && Number.isFinite(Number(p.valor))) ? Number(p.valor) : null;
+        const { data: patr, error: pErr } = await supabase.from("evt_patrocinadores").insert({
+          evento_id: s.evento_id, nome: s.nome, company_id: s.company_id, cota, valor,
+          status: "negociacao", sponsor_score_id: s.id, contato: p.contato ? String(p.contato).slice(0, 300) : null
+        }).select().maybeSingle();
+        if (pErr) return res.status(500).json({ ok: false, error: pErr.message });
+        await supabase.from("evt_sponsor_scores").update({ status: "aprovado", screening }).eq("id", id);
+        // Supressao curta 'em_abordagem' (protege a conta ENTRE aprovacao e resposta).
+        if (s.cnpj) await supabase.from("evt_sponsor_supressao").insert({ cnpj: s.cnpj, company_id: s.company_id, evento_id: s.evento_id, status: "em_abordagem", desfecho: null, until: addDays(30) });
+        return res.status(200).json({ ok: true, patrocinador: patr, warn, screening });
+      }
+
+      if (type === "evt_outcome_save") {
+        const p = params(req);
+        const patrocinador_id = String(p.patrocinador_id || "").trim();
+        const desfecho = String(p.desfecho || "").trim();   // andamento|respondeu|fechou|recusou|optout
+        if (!patrocinador_id) return res.status(400).json({ ok: false, error: "Informe patrocinador_id" });
+        const { data: patr, error: gErr } = await supabase.from("evt_patrocinadores").select("id, evento_id, sponsor_score_id").eq("id", patrocinador_id).maybeSingle();
+        if (gErr) return res.status(500).json({ ok: false, error: gErr.message });
+        if (!patr) return res.status(404).json({ ok: false, error: "Patrocinador nao encontrado." });
+        const patch = { updated_at: nowIso };
+        if (p.respondeu != null) patch.respondeu = !!p.respondeu;
+        if (p.motivo != null) patch.motivo = String(p.motivo).slice(0, 1000);
+        if (p.valor != null && Number.isFinite(Number(p.valor))) patch.valor = Number(p.valor);
+        if (desfecho === "fechou") { patch.status = "fechado"; patch.respondeu = true; }
+        else if (desfecho === "recusou") { patch.status = "recusado"; patch.respondeu = true; }
+        else if (desfecho === "respondeu") { patch.respondeu = true; }
+        const { error: uErr } = await supabase.from("evt_patrocinadores").update(patch).eq("id", patrocinador_id);
+        if (uErr) return res.status(500).json({ ok: false, error: uErr.message });
+        // Atualiza supressao pelo desfecho (via CNPJ do score ligado). Casa por cnpj_norm
+        // em QUALQUER status (nao so 'em_abordagem') — senao um 2o desfecho (ex.: optout
+        // depois de recusou) seria descartado e o opt-out permanente nunca gravaria.
+        if (patr.sponsor_score_id && ["fechou", "recusou", "optout"].includes(desfecho)) {
+          const { data: sc } = await supabase.from("evt_sponsor_scores").select("cnpj, cnpj_norm, company_id").eq("id", patr.sponsor_score_id).maybeSingle();
+          const cnpjNorm = sc && sc.cnpj_norm;
+          if (cnpjNorm) {
+            if (desfecho === "fechou") {
+              // fechou = melhor prospect do proximo -> remove QUALQUER supressao daquele CNPJ.
+              await supabase.from("evt_sponsor_supressao").delete().eq("cnpj_norm", cnpjNorm);
+            } else {
+              const until = desfecho === "optout" ? null : addMonths(12);  // optout = permanente
+              const { data: upd } = await supabase.from("evt_sponsor_supressao").update({ status: "suprimido", desfecho, until }).eq("cnpj_norm", cnpjNorm).select("id");
+              // Sem linha (supressao ja removida por um 'fechou' anterior, p.ex.): insere.
+              if (!upd || !upd.length) await supabase.from("evt_sponsor_supressao").insert({ cnpj: sc.cnpj || null, company_id: sc.company_id || null, evento_id: patr.evento_id, status: "suprimido", desfecho, until });
+            }
+          }
+        }
+        return res.status(200).json({ ok: true });
+      }
+
+      if (type === "evt_ref_note_list") {
+        const { data, error } = await supabase.from("evt_ref_notes").select("*").order("created_at", { ascending: false }).limit(500);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, items: data || [] });
+      }
+      if (type === "evt_ref_note_save") {
+        const p = params(req);
+        const kind = String(p.kind || "").trim();
+        if (!["won_language", "loss_reason", "objecao", "banido"].includes(kind)) return res.status(400).json({ ok: false, error: "kind invalido" });
+        const content = String(p.content || "").trim();
+        if (!content) return res.status(400).json({ ok: false, error: "Informe content" });
+        const row = { kind, content: content.slice(0, 4000), segment: p.segment ? String(p.segment).slice(0, 120) : null, source: p.source ? String(p.source).slice(0, 300) : null };
+        if (p.id) {
+          const { data, error } = await supabase.from("evt_ref_notes").update(row).eq("id", String(p.id)).select().maybeSingle();
+          if (error) return res.status(500).json({ ok: false, error: error.message });
+          return res.status(200).json({ ok: true, item: data });
+        }
+        const { data, error } = await supabase.from("evt_ref_notes").insert(row).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, item: data });
+      }
+      if (type === "evt_ref_note_remove") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { error } = await supabase.from("evt_ref_notes").delete().eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true });
+      }
+
+      if (type === "evt_golden_list") {
+        const { data, error } = await supabase.from("evt_sponsor_golden").select("*").order("created_at", { ascending: false }).limit(500);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, items: data || [] });
+      }
+      if (type === "evt_golden_save") {
+        const p = params(req);
+        const nome = String(p.nome || "").trim();
+        const tier_humano = Number(p.tier_humano);
+        if (!nome || !Number.isFinite(tier_humano)) return res.status(400).json({ ok: false, error: "Informe nome e tier_humano" });
+        // LGPD: so persiste CNPJ (14 digitos). Um CPF colado no campo vira null (nunca persiste CPF).
+        const cnpjDig = p.cnpj ? onlyDigits(p.cnpj) : "";
+        const row = { nome: nome.slice(0, 300), tier_humano: Math.trunc(tier_humano), cnpj: cnpjDig.length === 14 ? cnpjDig : null, nota: p.nota ? String(p.nota).slice(0, 1000) : null };
+        if (p.id) {
+          const { data, error } = await supabase.from("evt_sponsor_golden").update(row).eq("id", String(p.id)).select().maybeSingle();
+          if (error) return res.status(500).json({ ok: false, error: error.message });
+          return res.status(200).json({ ok: true, item: data });
+        }
+        const { data, error } = await supabase.from("evt_sponsor_golden").insert(row).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, item: data });
+      }
+      if (type === "evt_golden_remove") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { error } = await supabase.from("evt_sponsor_golden").delete().eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true });
+      }
+
+      // Validacao: INDICADOR ANTECEDENTE (taxa de RESPOSTA por tier + valor fechado por
+      // tier) + concordancia do DETERMINISTICO vs golden. Devolve o `n` (front suprime n<5).
+      if (type === "evt_sponsor_validate") {
+        const p = params(req);
+        // Junta patrocinadores <- score (tier deterministico). Pagina.
+        const scoreTier = new Map(); // score_id -> tier (deterministico)
+        await evtScanAll("evt_sponsor_scores", "id, tier", (r) => scoreTier.set(r.id, r.tier));
+        const porTier = {}; // tier -> { abordados, respondeu, fechados, valor_fechado }
+        const T = (t) => (porTier[t] || (porTier[t] = { tier: t, abordados: 0, respondeu: 0, fechados: 0, valor_fechado: 0 }));
+        await evtScanAll("evt_patrocinadores", "sponsor_score_id, respondeu, status, valor", (r) => {
+          if (!r.sponsor_score_id) return;
+          const tier = scoreTier.get(r.sponsor_score_id);
+          if (tier == null) return;
+          const b = T(tier);
+          b.abordados++;
+          if (r.respondeu) b.respondeu++;
+          if (r.status === "fechado") { b.fechados++; b.valor_fechado += Number(r.valor) || 0; }
+        });
+        const tiers = Object.values(porTier).map((b) => ({ ...b, taxa_resposta: b.abordados ? b.respondeu / b.abordados : null })).sort((a, z) => a.tier - z.tier);
+
+        // Concordancia deterministico vs golden (exato). Usa o score mais recente por CNPJ.
+        const goldenRes = await supabase.from("evt_sponsor_golden").select("cnpj_norm, tier_humano");
+        const golden = (goldenRes.data || []).filter((g) => g.cnpj_norm);
+        let concordancia = null, nGolden = 0;
+        if (golden.length) {
+          const latestTier = new Map(); // cnpj_norm -> tier (do score mais recente)
+          const seen = new Set();
+          // scores ja ordenados por created_at desc p/ pegar o mais recente por cnpj
+          const { data: srows } = await supabase.from("evt_sponsor_scores").select("cnpj_norm, tier, created_at").order("created_at", { ascending: false }).limit(5000);
+          for (const r of srows || []) { if (r.cnpj_norm && !seen.has(r.cnpj_norm)) { seen.add(r.cnpj_norm); latestTier.set(r.cnpj_norm, r.tier); } }
+          let hit = 0, n = 0;
+          for (const g of golden) { const t = latestTier.get(g.cnpj_norm); if (t == null) continue; n++; if (t === g.tier_humano) hit++; }
+          nGolden = n; concordancia = n ? hit / n : null;
+        }
+        // Grava calibracao apenas quando pedido (evita spam).
+        if (req.method === "POST" && p.save && concordancia != null) {
+          const { data: rub } = await supabase.from("evt_sponsor_rubrics").select("version").eq("active", true).maybeSingle();
+          await supabase.from("evt_sponsor_calibracoes").insert({ rubric_version: (rub && rub.version) || null, evento_id: p.evento_id || null, concordancia, n: nGolden });
+        }
+        return res.status(200).json({ ok: true, tiers, golden: { concordancia, n: nGolden } });
       }
 
       return res.status(400).json({ ok: false, error: `Tipo evt_ invalido: ${type}` });

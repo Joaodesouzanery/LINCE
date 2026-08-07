@@ -869,3 +869,157 @@ create table if not exists evt_convidados (
 create unique index if not exists evt_convidados_uidx on evt_convidados (evento_id, lower(nome));
 create index if not exists evt_convidados_evento_idx on evt_convidados (evento_id);
 alter table evt_convidados enable row level security;
+
+-- ===== Fase M27: "Score de Patrocinador" (Eventos F-EVT4) — prospeccao de patrocinio =====
+-- Aplica o fosso de dados da LINCE (contratos PNCP, doacoes TSE, grafo, CNAE,
+-- screening) a captacao de patrocinadores. Score DETERMINISTICO (100 pts, so dado
+-- publico) com EVIDENCIA obrigatoria; relacionamento entra como OVERRIDE MANUAL de
+-- tier (decisao humana, FORA dos pontos). Rubrica VERSIONADA em tabela (o codigo nao
+-- muda quando a entrevista com os diretores recalibra pesos/eixos). Ver docs/patrocinio-score.md.
+-- LGPD: so doador PJ; sem CPF. Governanca: nada vira patrocinador sem aprovacao humana.
+
+-- Rubrica versionada. weights/tiers/cota_bands/sector_cnae em jsonb -> recalibra sem DDL.
+create table if not exists evt_sponsor_rubrics (
+  id uuid primary key default gen_random_uuid(),
+  version int not null unique,
+  weights jsonb not null default '{}'::jsonb,      -- {fit_contrato,fit_cnae,sinal_valor,sinal_recencia,propensao_doacao,propensao_grafo} (soma 100)
+  tiers jsonb not null default '[]'::jsonb,         -- [{tier:1,min:80},...] (abaixo do menor min -> fora do shortlist)
+  cota_bands jsonb not null default '[]'::jsonb,    -- [{min:80,rank:1},...] mapeia score->cota do catalogo do evento
+  sector_cnae jsonb not null default '{}'::jsonb,   -- {setor: ["prefixo_cnae", ...]} p/ o sinal fit_cnae (menor, ruidoso)
+  active boolean not null default false,
+  note text,
+  created_at timestamptz not null default now()
+);
+-- So UMA rubrica ativa por vez.
+create unique index if not exists evt_sponsor_rubrics_active_uidx on evt_sponsor_rubrics (active) where active;
+
+-- Seed v1 (default): funciona ANTES da entrevista; a entrevista adiciona uma versao
+-- nova (sector_cnae + pesos calibrados), sem tocar no codigo. Idempotente por (version).
+insert into evt_sponsor_rubrics (version, weights, tiers, cota_bands, sector_cnae, active, note)
+values (
+  1,
+  '{"fit_contrato":30,"fit_cnae":15,"sinal_valor":20,"sinal_recencia":10,"propensao_doacao":15,"propensao_grafo":10}'::jsonb,
+  '[{"tier":1,"min":80},{"tier":2,"min":55},{"tier":3,"min":30}]'::jsonb,
+  '[{"min":80,"rank":1},{"min":55,"rank":2},{"min":0,"rank":3}]'::jsonb,
+  '{}'::jsonb,
+  true,
+  'v1 default (pre-entrevista): fit=contrato-com-orgao-alvo (CNAE 0 ate ter sector_cnae -> capped); recalibrar apos entrevista IRIS.'
+)
+on conflict (version) do nothing;
+
+-- Arquivos de referencia (da entrevista com os diretores): won-language, motivo-de-perda,
+-- objecao, banido. Alimentam o ANGULO (evita texto generico) e a supressao (banido).
+create table if not exists evt_ref_notes (
+  id uuid primary key default gen_random_uuid(),
+  kind text not null check (kind in ('won_language', 'loss_reason', 'objecao', 'banido')),
+  segment text,                                     -- setor/segmento a que se aplica (opcional)
+  content text not null,
+  source text,
+  created_at timestamptz not null default now()
+);
+create index if not exists evt_ref_notes_kind_idx on evt_ref_notes (kind);
+alter table evt_ref_notes enable row level security;
+
+-- Um RUN de pontuacao por evento (status + parametros + rescore). A tela le o run
+-- corrente (ultimo 'done' do evento). rescore_of = run original quando re-pontua.
+create table if not exists evt_sponsor_runs (
+  id uuid primary key default gen_random_uuid(),
+  evento_id uuid not null references evt_eventos(id) on delete cascade,
+  status text not null default 'running' check (status in ('running', 'done', 'failed')),
+  orgaos jsonb not null default '[]'::jsonb,        -- agency_ids alvo
+  setor text,
+  n_candidates int not null default 0,
+  n_scored int not null default 0,
+  truncado boolean not null default false,          -- scan de contratos bateu o teto (sem corte silencioso)
+  rubric_version int,
+  rescore_of uuid references evt_sponsor_runs(id) on delete set null,
+  note text,
+  started_at timestamptz not null default now(),
+  finished_at timestamptz
+);
+create index if not exists evt_sponsor_runs_evento_idx on evt_sponsor_runs (evento_id, started_at desc);
+alter table evt_sponsor_runs enable row level security;
+
+-- Score por empresa/run. empresa_key = SEMPRE o CNPJ normalizado (resolvido no sourcing);
+-- fallback company_id::text so p/ quem nao tem CNPJ. cnpj_norm = coluna GERADA (so digitos).
+create table if not exists evt_sponsor_scores (
+  id uuid primary key default gen_random_uuid(),
+  evento_id uuid not null references evt_eventos(id) on delete cascade,
+  run_id uuid not null references evt_sponsor_runs(id) on delete cascade,
+  company_id uuid references companies(id) on delete set null,
+  cnpj text,
+  cnpj_norm text generated always as (regexp_replace(coalesce(cnpj, ''), '\D', '', 'g')) stored,
+  empresa_key text not null,
+  nome text not null,
+  total numeric(6, 2) not null default 0,
+  tier int,
+  subscores jsonb not null default '{}'::jsonb,     -- {fit_contrato:.., sinal_valor:.., ...}
+  evidence jsonb not null default '{}'::jsonb,      -- SNAPSHOT: ids/valores/data de corte (re-score sobre o mesmo dado)
+  as_of date,
+  capped jsonb not null default '[]'::jsonb,        -- categorias sem evidencia (confianca menor)
+  cota_sugerida text,                               -- deterministica (porte + Sigma-contratos -> faixa)
+  timing jsonb not null default '{}'::jsonb,        -- {semana_alvo, janela, ciclo_orcamentario}
+  promovido boolean not null default false,         -- override MANUAL de tier (relacionamento; FORA dos pontos)
+  promovido_por text,
+  promovido_justificativa text,
+  promovido_tier int,
+  angulo text,
+  angulo_fontes jsonb,                              -- ref_notes + evidencia injetadas no prompt (diagnostico)
+  bloqueado boolean not null default false,         -- screening = bloqueio duro (nao aparece no shortlist)
+  screening jsonb,                                  -- {verified, has_sanctions, sources, checked_at}
+  status text not null default 'sugerido' check (status in ('sugerido', 'aprovado', 'descartado')),
+  rubric_version int,
+  created_at timestamptz not null default now()
+);
+-- Unique POR RUN (permite re-pontuar em run novo). Sem coalesce em constraint (Postgres rejeita).
+create unique index if not exists evt_sponsor_scores_run_key_uidx on evt_sponsor_scores (run_id, empresa_key);
+create index if not exists evt_sponsor_scores_evento_idx on evt_sponsor_scores (evento_id);
+alter table evt_sponsor_scores enable row level security;
+
+-- Golden set (tier que os diretores dariam). Calibra SO o deterministico (relacionamento
+-- em branco) — senao a rubrica conteria o proprio golden (circular).
+create table if not exists evt_sponsor_golden (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid references companies(id) on delete set null,
+  cnpj text,
+  cnpj_norm text generated always as (regexp_replace(coalesce(cnpj, ''), '\D', '', 'g')) stored,
+  nome text not null,
+  tier_humano int not null,
+  nota text,
+  created_at timestamptz not null default now()
+);
+create index if not exists evt_sponsor_golden_cnpj_idx on evt_sponsor_golden (cnpj_norm);
+alter table evt_sponsor_golden enable row level security;
+
+-- Historico de calibracao (v3 melhorou/piorou vs v2 na concordancia com o golden).
+create table if not exists evt_sponsor_calibracoes (
+  id uuid primary key default gen_random_uuid(),
+  rubric_version int,
+  evento_id uuid references evt_eventos(id) on delete set null,
+  concordancia numeric(5, 4),
+  n int not null default 0,
+  created_at timestamptz not null default now()
+);
+alter table evt_sponsor_calibracoes enable row level security;
+
+-- Supressao entre eventos: nao requeimar a mesma empresa. Nasce no `decide` como
+-- 'em_abordagem' (janela curta, protege ENTRE aprovacao e resposta) e vira 'suprimido'
+-- pelo desfecho: 12m recusou, permanente (until null) opt-out, NADA p/ quem fechou.
+create table if not exists evt_sponsor_supressao (
+  id uuid primary key default gen_random_uuid(),
+  cnpj text,
+  cnpj_norm text generated always as (regexp_replace(coalesce(cnpj, ''), '\D', '', 'g')) stored,
+  company_id uuid references companies(id) on delete set null,
+  evento_id uuid references evt_eventos(id) on delete set null,
+  status text not null default 'em_abordagem' check (status in ('em_abordagem', 'suprimido')),
+  desfecho text,
+  until timestamptz,                                -- null = permanente (opt-out); no passado = expirado
+  created_at timestamptz not null default now()
+);
+create index if not exists evt_sponsor_supressao_cnpj_idx on evt_sponsor_supressao (cnpj_norm);
+alter table evt_sponsor_supressao enable row level security;
+
+-- Loop de resultado no proprio pipeline: desfecho + RESPOSTA a 1a abordagem + liga ao score.
+alter table evt_patrocinadores add column if not exists motivo text;
+alter table evt_patrocinadores add column if not exists respondeu boolean not null default false;
+alter table evt_patrocinadores add column if not exists sponsor_score_id uuid references evt_sponsor_scores(id) on delete set null;
