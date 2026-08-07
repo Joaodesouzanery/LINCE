@@ -1862,6 +1862,7 @@ async function openEvento(id) {
   const grid = $("#eventos-grid"), detail = $("#evento-detail");
   if (!detail) return;
   state.currentEventoId = id;
+  state.eventoCatCollapsed = new Set(); // F-EVT5: colapso é por-evento (não vaza entre eventos)
   state.eventoTab = state.eventoTab || "checklist";
   state.eventoView = state.eventoView || "planilha";
   if (grid) grid.hidden = true;
@@ -1967,12 +1968,50 @@ function evtCell(it, c) {
   return `<input class="dou-date" style="min-width:140px" ${a} value="${escapeHtml(v == null ? "" : String(v))}">`;
 }
 
+// F-EVT5: ordem canônica das áreas = options da coluna 'categoria'; extras depois; "Sem área" por último.
+function evtAreaOrder(cols, itens) {
+  const catCol = (cols || []).find((c) => c.key === "categoria");
+  const canonical = (catCol && Array.isArray(catCol.options)) ? catCol.options : [];
+  const present = new Set((itens || []).map((it) => (it.valores || {}).categoria || ""));
+  const order = [];
+  for (const c of canonical) if (present.has(c)) order.push(c);            // canônicas presentes, na ordem
+  for (const c of present) if (c && !canonical.includes(c)) order.push(c); // extras (não canônicas)
+  if (present.has("")) order.push("");                                     // "Sem área" por último
+  return order;
+}
+
+// F-EVT5: planilha AGRUPADA por área. Cabeçalho por seção (progresso, +item, recolher),
+// coluna 'categoria' escondida (redundante) e um select "área" p/ mover o item de seção.
 function renderChecklistPlanilha(cols, itens) {
   const cbtn = "background:none;border:none;cursor:pointer;opacity:.55;padding:0 1px;font-size:.85em";
-  const th = cols.map((c) => `<th style="white-space:nowrap">${escapeHtml(c.label)} <button type="button" data-evento-col-ren="${escapeHtml(c.key)}" title="Renomear" style="${cbtn}">✎</button><button type="button" data-evento-col-del="${escapeHtml(c.key)}" title="Remover coluna" style="${cbtn}">×</button></th>`).join("");
-  const rows = itens.map((it) => `<tr data-evt-row="${escapeHtml(it.id)}" style="${evtRowStyle(it)}">${cols.map((c) => `<td>${evtCell(it, c)}</td>`).join("")}<td><button type="button" class="entity-pill" data-evento-item-del="${escapeHtml(it.id)}">×</button></td></tr>`).join("");
-  return `<div style="overflow-x:auto;margin-top:8px"><table class="data-table"><thead><tr>${th}<th><button type="button" class="entity-pill" id="evento-col-add">+ coluna</button></th></tr></thead><tbody>${rows || `<tr><td colspan="${cols.length + 1}">Sem itens.</td></tr>`}</tbody></table></div>
-    <button type="button" class="alert-btn primary" id="evento-item-add" style="margin-top:8px">+ linha</button>`;
+  const bodyCols = cols.filter((c) => c.key !== "categoria");
+  const catCol = cols.find((c) => c.key === "categoria");
+  const areaOpts = (catCol && Array.isArray(catCol.options)) ? catCol.options.filter(Boolean) : [];
+  const th = bodyCols.map((c) => `<th style="white-space:nowrap">${escapeHtml(c.label)} <button type="button" data-evento-col-ren="${escapeHtml(c.key)}" title="Renomear" style="${cbtn}">✎</button><button type="button" data-evento-col-del="${escapeHtml(c.key)}" title="Remover coluna" style="${cbtn}">×</button></th>`).join("");
+  const colspan = bodyCols.length + 1;
+  const collapsed = state.eventoCatCollapsed = state.eventoCatCollapsed || new Set();
+  const byArea = new Map();
+  for (const it of itens) { const c = (it.valores || {}).categoria || ""; if (!byArea.has(c)) byArea.set(c, []); byArea.get(c).push(it); }
+  const moveCell = (it) => {
+    const cur = (it.valores || {}).categoria || "";
+    const opts = ["", ...areaOpts, ...(cur && !areaOpts.includes(cur) ? [cur] : [])];
+    return `<select class="dou-date" data-evt-move="${escapeHtml(it.id)}" title="Mover de área" style="font-size:.72rem;opacity:.6;max-width:120px">${opts.map((o) => `<option value="${escapeHtml(o)}" ${cur === o ? "selected" : ""}>${escapeHtml(o || "— área")}</option>`).join("")}</select>`;
+  };
+  const sections = evtAreaOrder(cols, itens).map((area) => {
+    const list = byArea.get(area) || [];
+    const done = list.filter((it) => (it.valores || {}).status === "feito").length;
+    const isCol = collapsed.has(area);
+    const head = `<tr><td colspan="${colspan}" style="background:var(--surface-2,rgba(127,127,127,.09));padding:6px 8px">
+        <button type="button" data-evt-cat-toggle="${escapeHtml(area)}" style="background:none;border:none;cursor:pointer;font-weight:600;color:inherit;font-size:.9em">${isCol ? "▸" : "▾"} ${escapeHtml(area || "Sem área")}</button>
+        <span class="card-sub"> · ${done}/${list.length} feito</span>
+        <button type="button" class="entity-pill" data-evt-add-cat="${escapeHtml(area)}" style="margin-left:8px;font-size:.72rem">+ item</button>
+      </td></tr>`;
+    if (isCol) return head;
+    const rows = list.map((it) => `<tr data-evt-row="${escapeHtml(it.id)}" style="${evtRowStyle(it)}">${bodyCols.map((c) => `<td>${evtCell(it, c)}</td>`).join("")}<td style="white-space:nowrap">${moveCell(it)} <button type="button" class="entity-pill" data-evento-item-del="${escapeHtml(it.id)}">×</button></td></tr>`).join("");
+    return head + rows;
+  }).join("");
+  return `<div style="overflow-x:auto;margin-top:8px"><table class="data-table"><thead><tr>${th}<th><button type="button" class="entity-pill" id="evento-col-add">+ coluna</button></th></tr></thead><tbody>${sections || `<tr><td colspan="${colspan}">Sem itens.</td></tr>`}</tbody></table></div>
+    <div class="entity-row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><button type="button" class="alert-btn primary" id="evento-item-add">+ linha</button><button type="button" class="entity-pill" id="evt-area-collapse-all">recolher tudo</button><button type="button" class="entity-pill" id="evt-area-expand-all">expandir tudo</button></div>`;
 }
 
 function renderChecklistCategoria(cols, itens) {
@@ -2003,7 +2042,7 @@ function renderEventoChecklist(d) {
   const pill = (m, lbl) => `<button type="button" class="entity-pill ${vm === m ? "score-high" : ""}" data-evento-view="${m}">${lbl}</button>`;
   const toolbar = `<div class="entity-row" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
     <span class="source-meta">Checklist — ${itens.length} item(ns)</span>
-    <div class="entity-row" style="gap:6px">${pill("planilha", "Planilha")}${pill("categoria", "Por categoria")}</div>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap"><button type="button" class="entity-pill" id="evt-seed-envios" title="Adiciona os itens de envio padrão que faltam (dedup)">+ itens de envio padrão</button>${pill("planilha", "Planilha")}${pill("categoria", "Por categoria")}</div>
   </div>`;
   return `<article class="news-card">${toolbar}${vm === "categoria" ? renderChecklistCategoria(cols, itens) : renderChecklistPlanilha(cols, itens)}</article>`;
 }
@@ -2049,11 +2088,52 @@ async function eventoSaveDados() {
   } catch (e) { if (status) status.textContent = `Falha: ${e.message}`; }
 }
 
-async function eventoAddRow() {
+async function eventoAddRow(categoria) {
   try {
-    const r = await postJson("/api/intelligence?type=evt_item_add", { evento_id: state.currentEventoId, valores: {} });
+    const valores = categoria ? { categoria } : {};
+    const r = await postJson("/api/intelligence?type=evt_item_add", { evento_id: state.currentEventoId, valores });
     if (r?.ok) openEvento(state.currentEventoId);
   } catch (e) { alert(`Falha: ${e.message}`); }
+}
+
+// F-EVT5: move um item de área (select "área ▾") → salva categoria + re-render (a linha pula de seção).
+async function evtMoveArea(id, categoria) {
+  evtLocalSet(id, { categoria });
+  try {
+    const r = await postJson("/api/intelligence?type=evt_item_update", { id, valores: { categoria } });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    renderEventoDetail(state.eventoData);
+  } catch (e) { alert(`Falha: ${e.message}`); openEvento(state.currentEventoId); }
+}
+
+// F-EVT5: itens de envio padrão (materiais de envio do mês). Espelha o EVT_SEED do backend
+// (api/intelligence.js). Backfill: insere os que faltam no evento atual (dedup por nome, sem acento).
+const EVT_ENVIOS_PADRAO = [
+  ["Carta-convite (painelistas)", "Comunicacao", "D-30"],
+  ["Convite a orgaos/empresas p/ indicarem convidados (ate N)", "Comunicacao", "D-21 · variar por organizacao"],
+  ["Convite + RSVP aos convidados (link do formulario)", "Comunicacao", "D-21"],
+  ["Pedido de minibio + foto", "Comunicacao", "apos aceite"],
+  ["Autorizacao de uso de imagem", "Comunicacao", "apos aceite"],
+  ["Abrir RSVP (formulario)", "Comunicacao", "D-21"],
+  ["Solicitar autorizacao de logo no LED/backdrop (patrocinadores)", "Comunicacao", "D-14"],
+  ["Encaminhar programacao aos convidados", "Comunicacao", "D-3"],
+  ["Lembrete de RSVP", "Comunicacao", "D-7 e D-2"],
+  ["Confirmacao final + instrucoes de credenciamento", "Comunicacao", "D-2"],
+  ["Revisar minibios antes de postar", "Marketing", "antes de cada post (QA)"]
+];
+async function evtSeedEnvios() {
+  const d = state.eventoData; if (!d) return;
+  const norm = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+  const have = new Set((d.itens || []).map((it) => norm((it.valores || {}).item)));
+  const missing = EVT_ENVIOS_PADRAO.filter(([item]) => !have.has(norm(item)));
+  if (!missing.length) { alert("Todos os itens de envio padrão já estão no checklist."); return; }
+  if (!confirm(`Adicionar ${missing.length} item(ns) de envio ao checklist?`)) return;
+  try {
+    for (const [item, categoria, obs] of missing) {
+      await postJson("/api/intelligence?type=evt_item_add", { evento_id: state.currentEventoId, valores: { item, categoria, status: "pendente", obs } });
+    }
+    openEvento(state.currentEventoId);
+  } catch (e) { alert(`Falha: ${e.message}`); openEvento(state.currentEventoId); }
 }
 
 function eventoUniqueColKey(label, cols) {
@@ -2577,6 +2657,14 @@ function wireEvento() {
     if (e.target.closest("#evento-item-add")) { eventoAddRow(); return; }
     const itDel = e.target.closest("[data-evento-item-del]");
     if (itDel) { await postJson("/api/intelligence?type=evt_item_remove", { id: itDel.dataset.eventoItemDel }).catch(() => {}); openEvento(state.currentEventoId); return; }
+    // F-EVT5: checklist agrupado por área
+    if (e.target.closest("#evt-seed-envios")) { evtSeedEnvios(); return; }
+    const addCat = e.target.closest("[data-evt-add-cat]");
+    if (addCat) { eventoAddRow(addCat.dataset.evtAddCat || undefined); return; }
+    const catTog = e.target.closest("[data-evt-cat-toggle]");
+    if (catTog) { const s = state.eventoCatCollapsed = state.eventoCatCollapsed || new Set(); const a = catTog.dataset.evtCatToggle; s.has(a) ? s.delete(a) : s.add(a); renderEventoDetail(state.eventoData); return; }
+    if (e.target.closest("#evt-area-collapse-all")) { state.eventoCatCollapsed = new Set(evtAreaOrder(state.eventoData?.colunas, state.eventoData?.itens)); renderEventoDetail(state.eventoData); return; }
+    if (e.target.closest("#evt-area-expand-all")) { state.eventoCatCollapsed = new Set(); renderEventoDetail(state.eventoData); return; }
     if (e.target.closest("#evento-col-add")) { eventoAddColumn(); return; }
     const cr = e.target.closest("[data-evento-col-ren]");
     if (cr) { eventoRenameColumn(cr.dataset.eventoColRen); return; }
@@ -2650,6 +2738,8 @@ function wireEvento() {
         .catch(() => openEvento(state.currentEventoId));
       return;
     }
+    const mv = e.target.closest("[data-evt-move]"); // F-EVT5: mover item de área
+    if (mv) { evtMoveArea(mv.dataset.evtMove, mv.value); return; }
     const cell = e.target.closest("[data-evt-id][data-evt-key]");
     if (cell) { evtCellUpdate(cell); }
   });

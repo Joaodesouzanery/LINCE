@@ -1079,8 +1079,15 @@ module.exports = async function handler(req, res) {
         ["Financeiro", "Financeiro"], ["Credenciamento", "Operacional"], ["Coffee / welcome coffee", "Operacional"],
         ["Backdrop", "Marketing", "Painel LED: 1.280x512 e 128x512 px"], ["Save the date", "Marketing"], ["Post Instagram", "Marketing"],
         ["Post LinkedIn", "Marketing"], ["Stories", "Marketing"], ["Release / imprensa", "Marketing"],
-        ["Carta-convite (painelistas)", "Comunicacao"], ["Pedido de minibio + foto", "Comunicacao"],
-        ["Autorizacao de uso de imagem", "Comunicacao"], ["Abrir RSVP (formulario)", "Comunicacao"], ["Lembrete de RSVP", "Comunicacao"],
+        ["Carta-convite (painelistas)", "Comunicacao", "D-30"], ["Pedido de minibio + foto", "Comunicacao", "apos aceite"],
+        ["Autorizacao de uso de imagem", "Comunicacao", "apos aceite"], ["Abrir RSVP (formulario)", "Comunicacao", "D-21"], ["Lembrete de RSVP", "Comunicacao", "D-7 e D-2"],
+        // F-EVT5: materiais de envio (mensagens do mes). obs = timing sugerido.
+        ["Convite a orgaos/empresas p/ indicarem convidados (ate N)", "Comunicacao", "D-21 · variar por organizacao"],
+        ["Convite + RSVP aos convidados (link do formulario)", "Comunicacao", "D-21"],
+        ["Encaminhar programacao aos convidados", "Comunicacao", "D-3"],
+        ["Solicitar autorizacao de logo no LED/backdrop (patrocinadores)", "Comunicacao", "D-14"],
+        ["Confirmacao final + instrucoes de credenciamento", "Comunicacao", "D-2"],
+        ["Revisar minibios antes de postar", "Marketing", "antes de cada post (QA)"],
         ["Fechar painelistas/moderadores", "Paineis"], ["Coletar minibios", "Paineis"], ["Programacao preliminar", "Paineis"]
       ];
       const nowIso = new Date().toISOString();
