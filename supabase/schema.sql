@@ -1023,3 +1023,36 @@ alter table evt_sponsor_supressao enable row level security;
 alter table evt_patrocinadores add column if not exists motivo text;
 alter table evt_patrocinadores add column if not exists respondeu boolean not null default false;
 alter table evt_patrocinadores add column if not exists sponsor_score_id uuid references evt_sponsor_scores(id) on delete set null;
+
+-- ===== Fase M28: Eventos F-EVT6 — contato do decisor + densidade de ICP + calibracao gravada =====
+
+-- Contato do DECISOR por EMPRESA (nao por score de um evento): a pesquisa de "quem responde
+-- por marketing" e reutilizavel entre eventos. LGPD: SO identificador PROFISSIONAL (nome,
+-- cargo, LinkedIn publico, obs) sob legitimo interesse do evento. NAO persistir e-mail/telefone
+-- nem CPF. cnpj_norm = coluna gerada (so digitos) p/ casar a empresa mesmo sem company_id.
+create table if not exists evt_sponsor_contatos (
+  id uuid primary key default gen_random_uuid(),
+  company_id uuid references companies(id) on delete cascade,
+  cnpj text,
+  cnpj_norm text generated always as (regexp_replace(coalesce(cnpj, ''), '\D', '', 'g')) stored,
+  nome text not null,
+  cargo text,
+  link text,                                         -- LinkedIn/perfil publico (opcional)
+  obs text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists evt_sponsor_contatos_company_idx on evt_sponsor_contatos (company_id);
+create index if not exists evt_sponsor_contatos_cnpj_idx on evt_sponsor_contatos (cnpj_norm);
+alter table evt_sponsor_contatos enable row level security;
+
+-- Densidade de ICP: segmento do convidado (quem esta na sala). Contagem por ORGANIZACAO
+-- distinta, so confirmados. Taxonomia validada no app (Autoridade/Operador publico/Operador
+-- privado-Concessionaria/Regulador/Fornecedor/Investidor/Consultoria/Associacao/Imprensa/Outro).
+alter table evt_convidados add column if not exists segmento text;
+
+-- Calibracao como ARTEFATO: alem da concordancia de tier, "golden no top-N" do run (dos K do
+-- golden, quantos no top-N por score) — comparavel entre versoes de rubrica.
+alter table evt_sponsor_calibracoes add column if not exists top_hits int;
+alter table evt_sponsor_calibracoes add column if not exists top_n int;
+alter table evt_sponsor_calibracoes add column if not exists golden_n int;

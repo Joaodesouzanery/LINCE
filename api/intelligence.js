@@ -1114,12 +1114,15 @@ module.exports = async function handler(req, res) {
           if (!data || data.length < 1000) break;
         }
       };
+      // F-EVT6: taxonomia de segmento de convidado (densidade de ICP). IDENTICA no front (app.js).
+      // "Compradores" (densidade que fecha cota) = Autoridade + Operadores + Regulador/Governo.
+      const EVT_SEGMENTOS = ["Autoridade", "Operador publico", "Operador privado/Concessionaria", "Regulador/Governo", "Fornecedor", "Investidor/Financiador", "Consultoria/Juridico", "Associacao/Entidade", "Imprensa/Academia", "Outro"];
       // F-EVT2: sub-entidades genéricas (whitelist de campos + enums por kind).
       const EVT_SUB = {
         programacao: { table: "evt_programacao", fields: ["evento_id", "ordem", "horario", "titulo", "tipo", "descricao", "painel_ref"], enums: { tipo: ["abertura", "painel", "coffee", "intervalo", "encerramento", "outro"] }, num: [], req: "titulo" },
         painelista: { table: "evt_painelistas", fields: ["evento_id", "painel", "nome", "person_id", "cargo", "empresa", "papel", "minibio", "foto_url", "status", "ordem"], enums: { papel: ["painelista", "moderador"], status: ["confirmado", "pendente", "recusado"] }, num: [], req: "nome" },
         patrocinador: { table: "evt_patrocinadores", fields: ["evento_id", "nome", "company_id", "cota", "valor", "beneficios", "status", "contato"], enums: { status: ["prospect", "negociacao", "fechado", "recusado"] }, num: ["valor"], req: "nome" },
-        convidado: { table: "evt_convidados", fields: ["evento_id", "nome", "empresa", "email", "instituicao", "status"], enums: { status: ["confirmado", "pendente", "recusado"] }, num: [], req: "nome" }
+        convidado: { table: "evt_convidados", fields: ["evento_id", "nome", "empresa", "email", "instituicao", "status", "segmento"], enums: { status: ["confirmado", "pendente", "recusado"], segmento: EVT_SEGMENTOS }, nullable: ["segmento"], num: [], req: "nome" }
       };
 
       if (type === "evt_list") {
@@ -1283,7 +1286,12 @@ module.exports = async function handler(req, res) {
           let v = p[f];
           if (typeof v === "string") v = v.trim();
           if (v === "") v = null;
-          if (spec.enums[f]) { if (v == null || !spec.enums[f].includes(v)) continue; } // enum vazio/invalido -> usa o default/mantem
+          if (spec.enums[f]) {
+            // enum invalido -> mantem. Vazio(null): campo OPCIONAL (ex.: segmento) limpa p/ null;
+            // campo com default NOT NULL (status/papel) mantem o valor atual.
+            if (v == null) { if (!(spec.nullable || []).includes(f)) continue; }
+            else if (!spec.enums[f].includes(v)) continue;
+          }
           else if (spec.num.includes(f)) { v = (v == null) ? null : (Number.isFinite(Number(v)) ? Number(v) : null); }
           else if (f === "ordem") { v = (v == null) ? 0 : (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : 0); }
           else if (typeof v === "string") v = v.slice(0, 4000);
@@ -1456,7 +1464,46 @@ module.exports = async function handler(req, res) {
         if (sErr) return res.status(500).json({ ok: false, error: sErr.message });
         const items = (scores || []).filter((s) => !s.bloqueado);
         const bloqueados = (scores || []).filter((s) => s.bloqueado);
-        return res.status(200).json({ ok: true, run, items, bloqueados, agencies: ags || [] });
+        // F-EVT6: contatos conhecidos (por empresa) das empresas do shortlist — 1 query.
+        const cids = [...new Set(items.map((s) => s.company_id).filter(Boolean))];
+        const contatos = {};
+        if (cids.length) {
+          const { data: cts } = await supabase.from("evt_sponsor_contatos").select("id, company_id, nome, cargo, link, obs").in("company_id", cids).order("updated_at", { ascending: false });
+          for (const c of cts || []) (contatos[c.company_id] = contatos[c.company_id] || []).push(c);
+        }
+        return res.status(200).json({ ok: true, run, items, bloqueados, agencies: ags || [], contatos });
+      }
+
+      // F-EVT6: contato do DECISOR por EMPRESA (reutilizavel entre eventos). LGPD: so
+      // profissional (nome/cargo/link/obs) — sem e-mail/telefone/CPF.
+      if (type === "evt_sponsor_contato_save") {
+        const p = params(req);
+        const nome = String(p.nome || "").trim();
+        if (!nome) return res.status(400).json({ ok: false, error: "Informe o nome do contato" });
+        const company_id = p.company_id ? String(p.company_id) : null;
+        const cnpj = p.cnpj ? onlyDigits(p.cnpj) : null;
+        if (!company_id && !(cnpj && cnpj.length === 14)) return res.status(400).json({ ok: false, error: "Informe a empresa (company_id ou CNPJ)" });
+        const row = {
+          company_id, cnpj: cnpj && cnpj.length === 14 ? cnpj : null,
+          nome: nome.slice(0, 200), cargo: p.cargo ? String(p.cargo).slice(0, 200) : null,
+          link: p.link ? String(p.link).slice(0, 400) : null, obs: p.obs ? String(p.obs).slice(0, 500) : null
+        };
+        if (p.id) {
+          row.updated_at = nowIso;
+          const { data, error } = await supabase.from("evt_sponsor_contatos").update(row).eq("id", String(p.id)).select().maybeSingle();
+          if (error) return res.status(500).json({ ok: false, error: error.message });
+          return res.status(200).json({ ok: true, contato: data });
+        }
+        const { data, error } = await supabase.from("evt_sponsor_contatos").insert(row).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, contato: data });
+      }
+      if (type === "evt_sponsor_contato_remove") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { error } = await supabase.from("evt_sponsor_contatos").delete().eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true });
       }
 
       if (type === "evt_sponsor_promote") {
@@ -1534,9 +1581,15 @@ module.exports = async function handler(req, res) {
 
         const cota = (p.cota != null && String(p.cota).trim()) ? String(p.cota).slice(0, 120) : (s.cota_sugerida || null);
         const valor = (p.valor != null && Number.isFinite(Number(p.valor))) ? Number(p.valor) : null;
+        // F-EVT6: herda o ULTIMO contato conhecido da empresa (nome — cargo) se nao vier no request.
+        let contato = p.contato ? String(p.contato).slice(0, 300) : null;
+        if (!contato && s.company_id) {
+          const { data: ct } = await supabase.from("evt_sponsor_contatos").select("nome, cargo").eq("company_id", s.company_id).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+          if (ct && ct.nome) contato = (ct.nome + (ct.cargo ? ` — ${ct.cargo}` : "")).slice(0, 300);
+        }
         const { data: patr, error: pErr } = await supabase.from("evt_patrocinadores").insert({
           evento_id: s.evento_id, nome: s.nome, company_id: s.company_id, cota, valor,
-          status: "negociacao", sponsor_score_id: s.id, contato: p.contato ? String(p.contato).slice(0, 300) : null
+          status: "negociacao", sponsor_score_id: s.id, contato
         }).select().maybeSingle();
         if (pErr) return res.status(500).json({ ok: false, error: pErr.message });
         await supabase.from("evt_sponsor_scores").update({ status: "aprovado", screening }).eq("id", id);
@@ -1676,12 +1729,27 @@ module.exports = async function handler(req, res) {
           for (const g of golden) { const t = latestTier.get(g.cnpj_norm); if (t == null) continue; n++; if (t === g.tier_humano) hit++; }
           nGolden = n; concordancia = n ? hit / n : null;
         }
-        // Grava calibracao apenas quando pedido (evita spam).
-        if (req.method === "POST" && p.save && concordancia != null) {
-          const { data: rub } = await supabase.from("evt_sponsor_rubrics").select("version").eq("active", true).maybeSingle();
-          await supabase.from("evt_sponsor_calibracoes").insert({ rubric_version: (rub && rub.version) || null, evento_id: p.evento_id || null, concordancia, n: nGolden });
+        // F-EVT6: "golden no top-N" do run corrente do evento (o teste real da rubrica).
+        const TOP_N = 20;
+        let topHits = null;
+        const eventoId = p.evento_id ? String(p.evento_id) : null;
+        if (golden.length && eventoId) {
+          const { data: crun } = await supabase.from("evt_sponsor_runs").select("id").eq("evento_id", eventoId).eq("status", "done").order("started_at", { ascending: false }).limit(1).maybeSingle();
+          if (crun) {
+            // Casa com o shortlist VISIVEL (evt_sponsor_list exclui bloqueados por screening).
+            const { data: top } = await supabase.from("evt_sponsor_scores").select("cnpj_norm").eq("run_id", crun.id).eq("bloqueado", false).order("total", { ascending: false }).limit(TOP_N);
+            const topset = new Set((top || []).map((r) => r.cnpj_norm).filter(Boolean));
+            topHits = golden.filter((g) => topset.has(g.cnpj_norm)).length;
+          }
         }
-        return res.status(200).json({ ok: true, tiers, golden: { concordancia, n: nGolden } });
+        // Grava calibracao apenas quando pedido (evita spam) — artefato comparavel entre versoes.
+        if (req.method === "POST" && p.save && (concordancia != null || topHits != null)) {
+          const { data: rub } = await supabase.from("evt_sponsor_rubrics").select("version").eq("active", true).maybeSingle();
+          const { error: calErr } = await supabase.from("evt_sponsor_calibracoes").insert({ rubric_version: (rub && rub.version) || null, evento_id: eventoId, concordancia, n: nGolden, top_hits: topHits, top_n: TOP_N, golden_n: golden.length });
+          if (calErr) return res.status(500).json({ ok: false, error: `falha ao salvar calibracao: ${calErr.message}` });
+        }
+        const { data: historico } = await supabase.from("evt_sponsor_calibracoes").select("rubric_version, concordancia, n, top_hits, top_n, golden_n, created_at").order("created_at", { ascending: false }).limit(20);
+        return res.status(200).json({ ok: true, tiers, golden: { concordancia, n: nGolden, top_hits: topHits, top_n: TOP_N, golden_total: golden.length }, historico: historico || [] });
       }
 
       return res.status(400).json({ ok: false, error: `Tipo evt_ invalido: ${type}` });

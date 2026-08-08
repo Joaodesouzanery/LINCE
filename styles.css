@@ -624,6 +624,19 @@ h1 {
   grid-template-columns: minmax(0, 1fr) 420px;
 }
 
+/* F-EVT6: views que usam .sources-grid com UM SÓ .panel deixavam a 2ª coluna (420px)
+   vazia — ~1/3 da tela ocioso à direita. Estas ocupam a largura toda (mesmo layout que
+   já usam <1180px). As de 2 painéis (view-intelligence, view-sources) mantêm as 2 colunas. */
+#view-consultas .sources-grid,
+#view-agenda .sources-grid,
+#view-dou .sources-grid,
+#view-directors .sources-grid,
+#view-legislativo .sources-grid,
+#view-paineis .sources-grid,
+#view-evento .sources-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .panel {
   overflow: hidden;
 }

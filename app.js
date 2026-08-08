@@ -2319,7 +2319,7 @@ async function loadProspeccao() {
   try {
     const r = await requestJson(`/api/intelligence?type=evt_sponsor_list&evento_id=${encodeURIComponent(eid)}`);
     if (eid !== state.currentEventoId) return; // trocou de evento no meio do caminho — descarta
-    state.prosp = { eventoId: eid, run: r.run || null, items: r.items || [], bloqueados: r.bloqueados || [], agencies: r.agencies || [] };
+    state.prosp = { eventoId: eid, run: r.run || null, items: r.items || [], bloqueados: r.bloqueados || [], agencies: r.agencies || [], contatos: r.contatos || {} };
   } catch (e) {
     if (eid !== state.currentEventoId) return;
     state.prosp = { eventoId: eid, error: e.message, items: [], bloqueados: [], agencies: [] };
@@ -2329,6 +2329,34 @@ async function loadProspeccao() {
 }
 const PROSP_TIER_LABEL = { 1: "Tier 1", 2: "Tier 2", 3: "Tier 3" };
 const PROSP_CAP_LABEL = { propensao: "sem sinal de propensão", fit_cnae: "CNAE não usada", total: "confiança limitada (1 dimensão)" };
+// F-EVT6: taxonomia de segmento de convidado (IDÊNTICA ao backend EVT_SEGMENTOS). "Compradores"
+// = quem fecha a cota (a densidade que importa pro patrocinador fornecedor).
+const EVT_SEGMENTOS = ["Autoridade", "Operador publico", "Operador privado/Concessionaria", "Regulador/Governo", "Fornecedor", "Investidor/Financiador", "Consultoria/Juridico", "Associacao/Entidade", "Imprensa/Academia", "Outro"];
+const EVT_SEG_COMPRADOR = new Set(["Autoridade", "Operador publico", "Operador privado/Concessionaria", "Regulador/Governo"]);
+// Densidade de ICP: conta ORGANIZAÇÕES distintas (por empresa/instituição), só CONFIRMADOS.
+function evtDensidade(convidados) {
+  const conf = (convidados || []).filter((c) => c.status === "confirmado");
+  const orgKey = (c) => String(c.empresa || c.instituicao || "").trim().toLowerCase();
+  const segOrgs = new Map(), compradorOrgs = new Set(), allOrgs = new Set();
+  let comSeg = 0;
+  for (const c of conf) {
+    const seg = c.segmento || "", org = orgKey(c);
+    if (org) allOrgs.add(org);
+    if (!seg) continue;
+    comSeg++;
+    if (!segOrgs.has(seg)) segOrgs.set(seg, new Set());
+    segOrgs.get(seg).add(org || ("p:" + String(c.nome || "").toLowerCase()));
+    if (EVT_SEG_COMPRADOR.has(seg) && org) compradorOrgs.add(org);
+  }
+  const perSeg = [...segOrgs.entries()].map(([seg, set]) => ({ seg, n: set.size })).sort((a, z) => z.n - a.n);
+  return { compradores: compradorOrgs.size, perSeg, totalOrgs: allOrgs.size, totalPessoas: conf.length, comSeg };
+}
+function evtDensidadeLinha(convidados) {
+  const d = evtDensidade(convidados);
+  if (!d.comSeg) return `<span class="card-sub">Classifique os convidados por segmento p/ calcular a densidade de ICP (o argumento de venda).</span>`;
+  const buyers = d.perSeg.filter((x) => EVT_SEG_COMPRADOR.has(x.seg)).map((x) => `${escapeHtml(x.seg)} ${x.n}`).join(" · ");
+  return `<strong>Compradores confirmados: ${d.compradores} organizações</strong>${buyers ? ` <span class="card-sub">(${buyers})</span>` : ""} <span class="card-sub">· ${d.totalPessoas} confirmados no total</span>`;
+}
 function prospEvidenceHtml(s) {
   const e = s.evidence || {};
   const ct = (e.contratos || []).slice(0, 3).map((c) => `${money(c.value || 0)}${c.signed_at ? " · " + String(c.signed_at).slice(0, 10) : ""}`).join(" · ");
@@ -2355,13 +2383,21 @@ function prospCard(s) {
       <button type="button" class="entity-pill" data-prosp-discard="${escapeHtml(s.id)}">Descartar</button>
     </div>` : "";
   const angulo = s.angulo ? `<div style="margin-top:6px;border-left:2px solid var(--blue);padding-left:8px;font-size:.82rem">${escapeHtml(s.angulo)}</div>` : "";
+  // F-EVT6: densidade de COMPRADORES na sala (argumento de venda, igual p/ todo prospect fornecedor).
+  const dens = evtDensidade(state.eventoData?.convidados);
+  const densPill = dens.comSeg ? `<span class="entity-pill" title="organizações compradoras confirmadas na sala (o que fecha a cota)">${dens.compradores} compradores na sala</span>` : "";
+  // F-EVT6: contato(s) do decisor conhecidos DA EMPRESA (reutilizável entre eventos). Só profissional.
+  const cts = (state.prosp?.contatos || {})[s.company_id] || [];
+  const ctList = cts.map((c) => `<div class="entity-row" style="gap:4px;font-size:.78rem"><span>👤 ${escapeHtml(c.nome)}${c.cargo ? " — " + escapeHtml(c.cargo) : ""}${safeUrl(c.link) ? ` <a href="${escapeHtml(safeUrl(c.link))}" target="_blank" rel="noopener">↗</a>` : ""}</span><button type="button" class="entity-pill" data-prosp-ct-del="${escapeHtml(c.id)}" style="font-size:.7rem">×</button></div>`).join("");
+  const contatoBloco = s.company_id ? `<div style="margin-top:4px">${ctList || `<span class="card-sub" style="font-size:.75rem">Sem contato do decisor.</span>`} <button type="button" class="entity-pill" data-prosp-ct-add="${escapeHtml(s.id)}" style="font-size:.7rem">+ contato</button></div>` : "";
   return `<div class="entity-row" style="flex-direction:column;align-items:stretch;gap:2px;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px">
     <div class="entity-row" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
       <strong>${escapeHtml(s.nome)}</strong>
       <span><strong>${Number(s.total).toFixed(0)}</strong> · ${tierShown} ${acted}</span>
     </div>
-    <div class="entity-row" style="gap:6px;flex-wrap:wrap">${s.cota_sugerida ? `<span class="entity-pill" title="cota sugerida (determinística)">${escapeHtml(s.cota_sugerida)}</span>` : ""}${janela}${ciclo}${capped}</div>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap">${s.cota_sugerida ? `<span class="entity-pill" title="cota sugerida (determinística)">${escapeHtml(s.cota_sugerida)}</span>` : ""}${janela}${ciclo}${densPill}${capped}</div>
     ${prospEvidenceHtml(s)}
+    ${contatoBloco}
     ${angulo}
     ${actions}
   </div>`;
@@ -2380,7 +2416,20 @@ function renderProspBox() {
       ${orgaosSel}
       <div class="entity-row" style="gap:6px;flex-wrap:wrap"><input id="prosp-setor" class="dou-date" style="min-width:160px" placeholder="Setor (opcional, ex.: metroferroviário)" value="${escapeHtml((run && run.setor) || "")}"><button type="button" class="entity-pill" id="prosp-run">${run ? "Re-pontuar" : "Pontuar patrocinadores"}</button><button type="button" class="entity-pill" id="prosp-validate">Validação</button><button type="button" class="entity-pill" id="prosp-insumos-toggle">Insumos (entrevista)</button></div>
     </div>`;
-  if (p.error) return controls + `<div class="card-sub" style="color:var(--red)">Falha: ${escapeHtml(p.error)}</div>`;
+  // F-EVT6: painel de SEQUÊNCIA (data → convidados → densidade → cotas → pontuar) + densidade de ICP.
+  const ev = state.eventoData?.evento || {};
+  const conv = state.eventoData?.convidados || [];
+  const confirmados = conv.filter((c) => c.status === "confirmado").length;
+  const cotas = (ev.metadata && ev.metadata.cotas) || [];
+  const chk = (ok) => ok ? `<span style="color:var(--green-bright,#3c3)">✓</span>` : `<span style="color:var(--amber,#e0a500)">✗</span>`;
+  const sequencia = `<div style="border:1px solid var(--border);border-radius:6px;padding:8px;margin:6px 0;font-size:.8rem">
+      <strong style="font-size:.82rem">Sequência do evento</strong>
+      <div>${chk(!!ev.data_evento)} Data definida${ev.data_evento ? " (" + escapeHtml(String(ev.data_evento).slice(0, 10)) + ")" : ""}</div>
+      <div>${chk(confirmados > 0)} Convidados confirmados: ${confirmados}</div>
+      <div>${chk(cotas.length > 0)} Cotas cadastradas: ${cotas.length}</div>
+      <div style="margin-top:4px">${evtDensidadeLinha(conv)}</div>
+    </div>`;
+  if (p.error) return controls + sequencia + `<div class="card-sub" style="color:var(--red)">Falha: ${escapeHtml(p.error)}</div>`;
   let body = "";
   if (run && run.status === "running") body = `<div class="card-sub">Pontuando… <button type="button" class="entity-pill" id="prosp-refresh">atualizar</button></div>`;
   else if (run && run.status === "failed") body = `<div class="card-sub" style="color:var(--red);margin-top:8px">Falha na última pontuação${run.note ? ": " + escapeHtml(run.note) : ""}. Ajuste os órgãos e clique em Re-pontuar.</div>`;
@@ -2394,11 +2443,21 @@ function renderProspBox() {
     const bloq = (p.bloqueados && p.bloqueados.length) ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:.8rem;opacity:.7">Bloqueadas por screening (${p.bloqueados.length})</summary>${p.bloqueados.map((s) => `<div style="font-size:.78rem;opacity:.7;padding:2px 0">${escapeHtml(s.nome)} — ${escapeHtml((s.screening && s.screening.reason) || "sanção/inaptidão")}</div>`).join("")}</details>` : "";
     body = meta + (groups || `<div class="card-sub">Nenhuma empresa atingiu o corte mínimo de tier.</div>`) + bloq;
   }
-  return controls + `<div id="prosp-validate-box"></div>` + `<div id="prosp-insumos-box" hidden></div>` + body;
+  return controls + sequencia + `<div id="prosp-validate-box"></div>` + `<div id="prosp-insumos-box" hidden></div>` + body;
 }
 async function prospRun() {
   const orgaos = [...document.querySelectorAll("input[name='prosp-orgao']:checked")].map((el) => el.value);
   if (!orgaos.length) { alert("Selecione ao menos um órgão-alvo."); return; }
+  // F-EVT6: soft-gate — a ordem é data → convidados confirmados → densidade → pontuar.
+  const ev = state.eventoData?.evento || {};
+  const conv = state.eventoData?.convidados || [];
+  const confirmados = conv.filter((c) => c.status === "confirmado").length;
+  const cotas = (ev.metadata && ev.metadata.cotas) || [];
+  const faltas = [];
+  if (!ev.data_evento) faltas.push("data do evento");
+  if (!confirmados) faltas.push("convidados confirmados");
+  if (!cotas.length) faltas.push("cotas cadastradas");
+  if (faltas.length && !confirm(`Falta: ${faltas.join(", ")}.\n\nConfirme os convidados e cadastre as cotas primeiro — a densidade de ICP é o que fecha a cota (sem cota cadastrada não há teto de shortlist nem faixa sugerida). Ou pontue agora se estiver calibrando contra um evento passado.\n\nPontuar mesmo assim?`)) return;
   const setor = $("#prosp-setor")?.value || "";
   const btn = $("#prosp-run");
   if (btn) { btn.disabled = true; btn.textContent = "Pontuando…"; }
@@ -2455,18 +2514,50 @@ async function prospValidate() {
   box.dataset.open = "1";
   box.innerHTML = `<span class="card-sub">Carregando validação…</span>`;
   try {
-    const r = await requestJson("/api/intelligence?type=evt_sponsor_validate");
+    const r = await requestJson(`/api/intelligence?type=evt_sponsor_validate&evento_id=${encodeURIComponent(state.currentEventoId)}`);
     const tiers = r.tiers || [];
     const rows = tiers.map((t) => `<tr><td>${PROSP_TIER_LABEL[t.tier] || t.tier}</td><td>${t.abordados}</td><td>${t.abordados >= 5 ? Math.round((t.taxa_resposta || 0) * 100) + "%" : `<span class="card-sub" title="n<5: amostra pequena">${t.respondeu}/${t.abordados}</span>`}</td><td>${t.fechados}</td><td>${money(t.valor_fechado || 0)}</td></tr>`).join("");
     const chart = buildMiniChart(tiers.map((t) => ({ total: t.valor_fechado || 0 })), 0);
     const g = r.golden || {};
+    const topLine = (g.top_hits != null)
+      ? `<strong>Golden no top-${g.top_n || 20}:</strong> ${g.top_hits} de ${g.golden_total || 0} — rode contra um evento passado e veja se as empresas esperadas sobem ao topo (o teste real da rubrica).`
+      : `Golden no top-N: rode a pontuação deste evento e cadastre o golden set (aba Insumos) p/ calibrar.`;
+    const hist = (r.historico || []).map((h) => `<tr><td>v${h.rubric_version ?? "?"}</td><td>${h.top_hits != null ? `${h.top_hits}/${h.golden_n ?? "?"}` : "—"}</td><td>${h.concordancia != null ? Math.round(h.concordancia * 100) + "%" : "—"}</td><td>${escapeHtml(String(h.created_at || "").slice(0, 10))}</td></tr>`).join("");
     box.innerHTML = `<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
       <strong style="font-size:.85rem">Validação (indicador antecedente)</strong>
       <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Tier</th><th>Abordados</th><th>Taxa resposta</th><th>Fechados</th><th>Valor fechado</th></tr></thead><tbody>${rows || `<tr><td colspan="5">Sem histórico ainda.</td></tr>`}</tbody></table></div>
       ${chart ? `<div class="card-sub">Valor fechado por tier</div>${chart}` : ""}
-      <div class="card-sub" style="margin-top:6px">Golden set (determinístico): ${g.n ? `${Math.round((g.concordancia || 0) * 100)}% de concordância em ${g.n} empresas` : "sem empresas comparáveis ainda"}</div>
+      <div class="card-sub" style="margin-top:6px">Concordância determinística vs golden: ${g.n ? `${Math.round((g.concordancia || 0) * 100)}% em ${g.n} empresas` : "sem empresas comparáveis ainda"}</div>
+      <div class="card-sub" style="margin-top:4px">${topLine}</div>
+      <div class="entity-row" style="gap:6px;margin-top:6px"><button type="button" class="entity-pill" id="prosp-calib-save">Salvar calibração</button><span id="prosp-calib-status" class="card-sub"></span></div>
+      ${hist ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:.8rem;opacity:.7">Histórico de calibração</summary><div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Rubrica</th><th>Golden top-N</th><th>Concord.</th><th>Data</th></tr></thead><tbody>${hist}</tbody></table></div></details>` : ""}
     </div>`;
   } catch (e) { box.innerHTML = `<span class="card-sub" style="color:var(--red)">Falha: ${escapeHtml(e.message)}</span>`; }
+}
+async function prospCalibSave() {
+  const st = $("#prosp-calib-status");
+  if (st) st.textContent = "Salvando…";
+  try {
+    const r = await postJson("/api/intelligence?type=evt_sponsor_validate", { evento_id: state.currentEventoId, save: true });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (st) st.textContent = "Calibração salva.";
+    const box = $("#prosp-validate-box"); if (box) box.dataset.open = "0"; // força reabrir com histórico atualizado
+    prospValidate();
+  } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; }
+}
+// F-EVT6: contato do decisor (por empresa). LGPD: só nome/cargo/link profissional — sem e-mail/telefone.
+async function prospContatoAdd(scoreId) {
+  const s = (state.prosp?.items || []).find((x) => x.id === scoreId);
+  if (!s || !s.company_id) { alert("Empresa sem vínculo no grafo — o contato não pode ser guardado por empresa."); return; }
+  const nome = prompt("Nome do contato (decisor). LGPD: não inclua e-mail/telefone.");
+  if (!nome || !nome.trim()) return;
+  const cargo = prompt("Cargo (opcional):") || "";
+  const link = prompt("LinkedIn/perfil público (opcional):") || "";
+  try {
+    const r = await postJson("/api/intelligence?type=evt_sponsor_contato_save", { company_id: s.company_id, cnpj: s.cnpj, nome: nome.trim(), cargo, link });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    await loadProspeccao();
+  } catch (e) { alert(`Falha: ${e.message}`); }
 }
 async function prospInsumosToggle() {
   const box = $("#prosp-insumos-box");
@@ -2541,6 +2632,7 @@ function renderEventoConvidados(d) {
     <td>${esubCell("convidado", c.id, "nome", "text", c.nome)}</td>
     <td>${esubCell("convidado", c.id, "empresa", "text", c.empresa)}</td>
     <td>${esubCell("convidado", c.id, "instituicao", "text", c.instituicao)}</td>
+    <td>${esubCell("convidado", c.id, "segmento", "select", c.segmento, ["", ...EVT_SEGMENTOS])}</td>
     <td>${esubCell("convidado", c.id, "status", "select", c.status, ["confirmado", "pendente", "recusado"])}</td>
     <td><button type="button" class="entity-pill" data-conv-del="${escapeHtml(c.id)}">×</button></td>
   </tr>`).join("");
@@ -2549,12 +2641,13 @@ function renderEventoConvidados(d) {
       <span class="source-meta">Convidados / RSVP</span>
       <span style="font-size:.85rem">${cv.length} · ✅ ${byS.confirmado} · ⏱ ${byS.pendente} · ✖ ${byS.recusado}</span>
     </div>
+    <div style="margin:6px 0;font-size:.82rem">${evtDensidadeLinha(cv)}</div>
     <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin:6px 0">
       <input id="conv-nome" class="dou-date" style="min-width:150px;flex:1" placeholder="Nome"><input id="conv-empresa" class="dou-date" style="width:140px" placeholder="Empresa"><button type="button" class="entity-pill" id="conv-add">+ convidado</button>
       <button type="button" class="entity-pill" id="conv-import-btn">Importar lista</button>
     </div>
     <div id="conv-import-box" hidden style="margin:6px 0"><textarea id="conv-import-text" class="dou-date" style="width:100%;min-height:80px" placeholder="Cole a lista (uma linha por convidado): Nome – Empresa ✅"></textarea><div class="entity-row" style="gap:6px"><button type="button" class="entity-pill" id="conv-import-do">Importar</button><span id="conv-import-status" style="font-size:.75rem;opacity:.6"></span></div></div>
-    <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nome</th><th>Empresa</th><th>Instituição</th><th>Status</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="5">Nenhum convidado.</td></tr>`}</tbody></table></div>
+    <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nome</th><th>Empresa</th><th>Instituição</th><th>Segmento</th><th>Status</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6">Nenhum convidado.</td></tr>`}</tbody></table></div>
   </article>`;
 }
 async function evtConvidadoImport() {
@@ -2712,7 +2805,10 @@ function wireEvento() {
     if (e.target.closest("#prosp-run")) { prospRun(); return; }
     if (e.target.closest("#prosp-refresh")) { loadProspeccao(); return; }
     if (e.target.closest("#prosp-validate")) { prospValidate(); return; }
+    if (e.target.closest("#prosp-calib-save")) { prospCalibSave(); return; }
     if (e.target.closest("#prosp-insumos-toggle")) { prospInsumosToggle(); return; }
+    const ctAdd = e.target.closest("[data-prosp-ct-add]"); if (ctAdd) { prospContatoAdd(ctAdd.dataset.prospCtAdd); return; }
+    const ctDel = e.target.closest("[data-prosp-ct-del]"); if (ctDel) { postJson("/api/intelligence?type=evt_sponsor_contato_remove", { id: ctDel.dataset.prospCtDel }).then(loadProspeccao).catch(() => {}); return; }
     const pPromote = e.target.closest("[data-prosp-promote]"); if (pPromote) { prospPromote(pPromote.dataset.prospPromote); return; }
     const pAngle = e.target.closest("[data-prosp-angle]"); if (pAngle) { prospAngle(pAngle.dataset.prospAngle); return; }
     const pApprove = e.target.closest("[data-prosp-approve]"); if (pApprove) { prospApprove(pApprove.dataset.prospApprove); return; }
@@ -2727,6 +2823,7 @@ function wireEvento() {
     if (esub) {
       const val = esub.type === "checkbox" ? esub.checked : esub.value;
       evtSubField(esub.dataset.esubKind, esub.dataset.esubId, { [esub.dataset.esubField]: val });
+      if (esub.tagName === "SELECT") renderEventoDetail(state.eventoData); // F-EVT6: segmento/status muda densidade/contadores — atualiza na hora
       return;
     }
     const chk = e.target.closest("[data-evt-check-status]");
