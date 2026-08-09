@@ -1056,3 +1056,39 @@ alter table evt_convidados add column if not exists segmento text;
 alter table evt_sponsor_calibracoes add column if not exists top_hits int;
 alter table evt_sponsor_calibracoes add column if not exists top_n int;
 alter table evt_sponsor_calibracoes add column if not exists golden_n int;
+
+-- ===== Fase M29: Central de Eventos (F-EVT7) — Base de contatos + disciplina do pipeline =====
+
+-- BASE de contatos CROSS-EVENTO (funil de associados): a lista de presenca de um evento vira a
+-- base de prospeccao do proximo; quem nao fecha cota de patrocinio vira prospect de associado.
+-- Padrao do schema: SEM evento_id obrigatorio (dado reutilizavel entre eventos, como
+-- evt_sponsor_contatos). LGPD: e-mail/telefone = dado pessoal sob LEGITIMO INTERESSE do evento
+-- (mesma base de evt_convidados) — declarado; NAO persistir CPF.
+create table if not exists evt_contatos (
+  id uuid primary key default gen_random_uuid(),
+  nome text not null,
+  empresa text,
+  cargo text,
+  setor text,
+  email text,
+  telefone text,
+  company_id uuid references companies(id) on delete set null,
+  origem_evento_id uuid references evt_eventos(id) on delete set null,  -- evento de origem (nulo se importado avulso)
+  rel text not null default 'Contato',       -- Contato/Prospect patrocinio/Prospect associado/Patrocinador/Associado/Institucional
+  cota_assoc text,                            -- regua de associacao: Apoiador/Bronze/Prata/Ouro/Platinum
+  obs text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+-- Dedup por pessoa+empresa (case-insensitive): a mesma pessoa nao duplica a cada evento importado.
+create unique index if not exists evt_contatos_uidx on evt_contatos (lower(nome), lower(coalesce(empresa, '')));
+create index if not exists evt_contatos_rel_idx on evt_contatos (rel);
+create index if not exists evt_contatos_origem_idx on evt_contatos (origem_evento_id);
+alter table evt_contatos enable row level security;
+
+-- Disciplina do PIPELINE: o Score prospecta os alvos; aqui o pipeline e trabalhado com etapas +
+-- proxima-acao datada (regra da "linha morta"). estagio complementa o status legado (prospect/…).
+alter table evt_patrocinadores add column if not exists estagio text;        -- Alvo/Contatado/Reuniao/Proposta/Fechado/Associado/Perdido
+alter table evt_patrocinadores add column if not exists porta text;          -- membro IRIS que abre a conta
+alter table evt_patrocinadores add column if not exists proxima_acao text;
+alter table evt_patrocinadores add column if not exists data_acao date;

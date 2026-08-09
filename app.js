@@ -1802,6 +1802,13 @@ function renderLegislativo(items) {
 let eventoWired = false;
 const EVT_TYPES = ["text", "date", "select", "check", "url", "num"];
 
+// F-EVT7: constantes da Base (funil de associados) — IDÊNTICAS ao backend (EVT_REL).
+const EVT_REL = ["Contato", "Prospect patrocinio", "Prospect associado", "Patrocinador", "Associado", "Institucional"];
+const EVT_COTA_ASSOC = ["", "Apoiador", "Bronze", "Prata", "Ouro", "Platinum"];
+function renderEventosToggle(cur) {
+  const pill = (v, l) => `<button type="button" class="entity-pill ${cur === v ? "score-high" : ""}" data-eventos-view="${v}">${l}</button>`;
+  return `<article class="news-card"><div class="entity-row" style="gap:6px">${pill("lista", "Eventos")}${pill("base", "Base de contatos")}</div></article>`;
+}
 async function loadEventos() {
   const grid = $("#eventos-grid"), detail = $("#evento-detail");
   if (!grid) return;
@@ -1809,11 +1816,20 @@ async function loadEventos() {
   state.currentEventoId = null;
   if (detail) { detail.hidden = true; detail.innerHTML = ""; }
   grid.hidden = false;
+  if (state.eventosView === "base") return loadBase();  // F-EVT7: aba Base de contatos
   grid.innerHTML = emptyCard("Eventos", "Carregando…");
   try {
-    const r = await requestJson("/api/intelligence?type=evt_list");
+    const [r, rp] = await Promise.all([
+      requestJson("/api/intelligence?type=evt_list"),
+      requestJson("/api/intelligence?type=evt_pauta").catch(() => ({ items: [] }))
+    ]);
     const items = r?.items || [], totais = r?.totais || {};
-    if (!items.length) { grid.innerHTML = emptyCard("Eventos", "Nenhum evento ainda. Clique em “+ Novo evento”."); return; }
+    if (!items.length) { grid.innerHTML = renderEventosToggle("lista") + emptyCard("Eventos", "Nenhum evento ainda. Clique em “+ Novo evento”."); return; }
+    // Pauta da semana (cross-evento): tarefas + próximas-ações mais próximas/vencidas.
+    const pauta = (rp?.items || []);
+    const now = Date.now();
+    const pautaBlock = pauta.length ? `<article class="news-card"><span class="source-meta">Pauta da semana</span>
+      <ul style="list-style:none;margin:6px 0 0;padding:0">${pauta.slice(0, 14).map((it) => { const dt = new Date(it.date + "T12:00:00"); const late = !Number.isNaN(dt.getTime()) && dt.getTime() < now; return `<li class="entity-row" style="gap:10px;align-items:baseline;padding:6px 0;border-bottom:1px solid var(--border)"><span style="font-family:monospace;min-width:60px;color:${late ? "var(--red)" : "var(--muted,#8a9)"}">${escapeHtml(String(it.date).slice(5))}</span><span class="entity-pill" style="font-size:.68rem">${escapeHtml(it.kind)}</span><span style="flex:1">${escapeHtml(it.txt)}</span><span class="card-sub">${escapeHtml(it.evento || "")}${it.who ? " · " + escapeHtml(it.who) : ""}</span></li>`; }).join("")}</ul></article>` : "";
     // Histórico: barra de totais (comparativo geral).
     const statusStr = Object.entries(totais.por_status || {}).map(([k, v]) => `${v} ${escapeHtml(k)}`).join(" · ");
     const totalsBar = `<article class="news-card"><span class="source-meta">Histórico — visão geral</span>
@@ -1854,8 +1870,132 @@ async function loadEventos() {
       </div></article>` : "";
     const comparativo = `<article class="news-card"><span class="source-meta">Comparativo entre eventos</span>
       <div style="overflow-x:auto;margin-top:6px"><table class="data-table"><thead><tr><th>Evento</th><th>Data</th><th>Público</th><th>Patrocínio</th><th>Painelistas</th><th>Checklist</th></tr></thead><tbody>${items.map((e) => { const m = e.metricas || {}; return `<tr><td>${escapeHtml(e.nome)}</td><td>${e.data_evento ? escapeHtml(String(e.data_evento).slice(0, 10)) : "—"}</td><td>${m.convidados?.confirmados || 0}</td><td>${money(m.patrocinio?.fechado_rs || 0)}</td><td>${m.painelistas?.confirmados || 0}/${m.painelistas?.total || 0}</td><td>${m.checklist?.pct || 0}%</td></tr>`; }).join("")}</tbody></table></div></article>`;
-    grid.innerHTML = totalsBar + charts + cards + comparativo;
-  } catch (e) { grid.innerHTML = emptyCard("Eventos", `Falha: ${e.message}`); }
+    grid.innerHTML = renderEventosToggle("lista") + pautaBlock + totalsBar + charts + cards + comparativo;
+  } catch (e) { grid.innerHTML = renderEventosToggle("lista") + emptyCard("Eventos", `Falha: ${e.message}`); }
+}
+
+// ══════════════ F-EVT7: Base de contatos (funil de associados) ══════════════
+async function loadBase() {
+  const grid = $("#eventos-grid");
+  if (!grid) return;
+  grid.innerHTML = renderEventosToggle("base") + `<article class="news-card"><span class="card-sub">Carregando base…</span></article>`;
+  try {
+    const [rc, re] = await Promise.all([
+      requestJson(`/api/intelligence?type=evt_contato_list${state.baseRel ? "&rel=" + encodeURIComponent(state.baseRel) : ""}`),
+      requestJson("/api/intelligence?type=evt_list").catch(() => ({ items: [] }))
+    ]);
+    state.base = { contatos: rc.items || [], total: rc.total || 0, eventos: re.items || [] };
+    renderBaseInto(grid);
+  } catch (e) { grid.innerHTML = renderEventosToggle("base") + emptyCard("Base", `Falha: ${e.message}`); }
+}
+function renderBaseRows() {
+  const b = state.base || { contatos: [], eventos: [] };
+  const q = (state.baseQ || "").toLowerCase();
+  let cts = b.contatos || [];
+  if (q) cts = cts.filter((c) => (c.nome || "").toLowerCase().includes(q) || (c.empresa || "").toLowerCase().includes(q));
+  const bcSel = (c, field, opts, val) => `<select data-bc-id="${escapeHtml(c.id)}" data-bc-field="${field}" class="dou-date">${opts.map((o) => `<option value="${escapeHtml(o)}" ${String(val || "") === o ? "selected" : ""}>${escapeHtml(o || "—")}</option>`).join("")}</select>`;
+  const bcInp = (c, field, val) => `<input data-bc-id="${escapeHtml(c.id)}" data-bc-field="${field}" class="dou-date" style="min-width:100px" value="${escapeHtml(val == null ? "" : String(val))}">`;
+  const origemNome = (id) => { const e = (b.eventos || []).find((x) => x.id === id); return e ? e.nome : ""; };
+  return cts.map((c) => `<tr>
+    <td>${bcInp(c, "nome", c.nome)}</td>
+    <td>${bcInp(c, "empresa", c.empresa)}</td>
+    <td>${bcInp(c, "cargo", c.cargo)}</td>
+    <td>${bcInp(c, "setor", c.setor)}</td>
+    <td>${bcInp(c, "email", c.email)}</td>
+    <td>${bcInp(c, "telefone", c.telefone)}</td>
+    <td>${bcSel(c, "rel", EVT_REL, c.rel)}</td>
+    <td>${bcSel(c, "cota_assoc", EVT_COTA_ASSOC, c.cota_assoc)}</td>
+    <td class="card-sub" style="font-size:.72rem">${escapeHtml(origemNome(c.origem_evento_id))}</td>
+    <td style="white-space:nowrap"><button type="button" class="entity-pill" data-bc-pipe="${escapeHtml(c.id)}" title="Criar alvo no pipeline do evento selecionado">→ pipeline</button> <button type="button" class="entity-pill" data-bc-del="${escapeHtml(c.id)}">×</button></td>
+  </tr>`).join("") || `<tr><td colspan="10"><span class="card-sub">Base vazia. Importe uma lista ou traga os confirmados de um evento.</span></td></tr>`;
+}
+function renderBaseInto(grid) {
+  const b = state.base || { contatos: [], eventos: [] };
+  const eventoOpts = (b.eventos || []).map((e) => `<option value="${escapeHtml(e.id)}">${escapeHtml(e.nome)}</option>`).join("") || "<option value=''>—</option>";
+  const relFilter = `<select id="base-rel" class="dou-date"><option value="">Todas as relações</option>${EVT_REL.map((r) => `<option ${state.baseRel === r ? "selected" : ""}>${r}</option>`).join("")}</select>`;
+  grid.innerHTML = renderEventosToggle("base") + `<article class="news-card">
+    <span class="source-meta">Base de contatos — funil de associados${b.total ? ` (${b.total})` : ""}</span>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap;margin:6px 0">
+      <input id="base-search" type="search" class="dou-date" style="min-width:160px" placeholder="Buscar nome/empresa…" value="${escapeHtml(state.baseQ || "")}">
+      ${relFilter}
+      <button type="button" class="entity-pill" id="base-add">+ contato</button>
+      <button type="button" class="entity-pill" id="base-import-btn">importar lista</button>
+      <span style="border-left:1px solid var(--border);padding-left:8px;font-size:.8rem">Evento: <select id="base-evento" class="dou-date">${eventoOpts}</select></span>
+      <button type="button" class="entity-pill" id="base-from-conv" title="Traz os convidados CONFIRMADOS do evento selecionado para a Base (origem)">confirmados → Base</button>
+    </div>
+    <div id="base-import-box" hidden style="margin:6px 0"><textarea id="base-import-text" class="dou-date" style="width:100%;min-height:80px" placeholder="Cole a lista (uma linha por contato): Nome – Empresa"></textarea><div class="entity-row" style="gap:6px"><button type="button" class="entity-pill" id="base-import-do">Importar (origem = evento selecionado)</button><span id="base-import-status" class="card-sub"></span></div></div>
+    <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nome</th><th>Empresa</th><th>Cargo</th><th>Setor</th><th>E-mail</th><th>Telefone</th><th>Relação</th><th>Cota assoc.</th><th>Origem</th><th></th></tr></thead><tbody id="base-tbody">${renderBaseRows()}</tbody></table></div>
+    <p class="card-sub" style="margin:4px 0 0">Quem não fecha cota de patrocínio vira prospect de associado. A régua de associação começa em Apoiador.</p>
+  </article>`;
+}
+async function bcSave(id, patch) {
+  const c = (state.base?.contatos || []).find((x) => String(x.id) === String(id));
+  if (c) Object.assign(c, patch);
+  try {
+    const r = await postJson("/api/intelligence?type=evt_contato_save", { id, ...patch });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+  } catch (e) { alert(`Falha ao salvar: ${e.message}`); loadBase(); }
+}
+function baseEventoSel() { return $("#base-evento")?.value || ""; }
+async function baseAdd() {
+  const nome = prompt("Nome do contato:");
+  if (!nome || !nome.trim()) return;
+  try { const r = await postJson("/api/intelligence?type=evt_contato_save", { nome: nome.trim() }); if (!r?.ok) throw new Error(r?.error || "erro"); loadBase(); }
+  catch (e) { alert(`Falha: ${e.message}`); }
+}
+async function baseImportDo() {
+  const texto = $("#base-import-text")?.value || "", st = $("#base-import-status");
+  if (!texto.trim()) return;
+  if (st) st.textContent = "Importando…";
+  try {
+    const r = await postJson("/api/intelligence?type=evt_contato_import", { texto, origem_evento_id: baseEventoSel() || null });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (st) st.textContent = `${r.inserted} adicionado(s), ${r.pulados} pulado(s).`;
+    loadBase();
+  } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; }
+}
+async function baseFromConvidados() {
+  const evento_id = baseEventoSel();
+  if (!evento_id) { alert("Selecione um evento."); return; }
+  try {
+    const r = await postJson("/api/intelligence?type=evt_contato_from_convidados", { evento_id });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    toast(`${r.inserted} confirmado(s) → Base (${r.pulados} já existiam).`);
+    loadBase();
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+async function baseToPipeline(id) {
+  const evento_id = baseEventoSel();
+  if (!evento_id) { alert("Selecione o evento de destino."); return; }
+  try {
+    const r = await postJson("/api/intelligence?type=evt_contato_to_pipeline", { id, evento_id });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    toast("Contato → pipeline (Alvo).");
+    loadBase();
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+// Referida no pipeline (B): leva um patrocinador Perdido/Associado p/ a Base (funil de associado).
+async function contatoFromPatrocinador(patrId) {
+  const p = (state.eventoData?.patrocinadores || []).find((x) => String(x.id) === String(patrId));
+  if (!p) return;
+  const rel = p.estagio === "Associado" ? "Associado" : "Prospect associado";
+  try {
+    const r = await postJson("/api/intelligence?type=evt_contato_save", {
+      nome: p.contato || p.nome, empresa: p.nome, company_id: p.company_id || null,
+      origem_evento_id: state.currentEventoId, rel
+    });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    toast(`${p.nome} → Base (${rel}).`);
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+function toast(msg) { // F-EVT7: toast leve auto-contido (sem tocar no index.html)
+  let el = document.getElementById("lince-toast");
+  if (!el) {
+    el = document.createElement("div"); el.id = "lince-toast";
+    el.style.cssText = "position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--blue-bright,#2b6cb0);color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.4);transition:opacity .3s;max-width:80vw";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg; el.style.opacity = "1"; clearTimeout(el._t); el._t = setTimeout(() => { el.style.opacity = "0"; }, 2200);
 }
 
 async function openEvento(id) {
@@ -1882,6 +2022,7 @@ function renderEventoDetail(d) {
   const ev = d.evento || {};
   const tab = state.eventoTab || "checklist";
   const tabs = [
+    ["pauta", "Pauta"],
     ["checklist", `Checklist (${(d.itens || []).length})`],
     ["programacao", `Programação (${(d.programacao || []).length})`],
     ["painelistas", `Painelistas (${(d.painelistas || []).length})`],
@@ -1895,14 +2036,65 @@ function renderEventoDetail(d) {
         <button type="button" class="entity-pill" data-evento-back>&larr; Eventos</button>
         <button type="button" class="entity-pill" data-evento-export title="Baixa um Markdown do evento p/ o Claude Design">Exportar (.md)</button>
       </div>
-      <strong>${escapeHtml(ev.nome || "Evento")}</strong>
+      <div class="entity-row" style="gap:8px;flex-wrap:wrap;align-items:baseline"><strong>${escapeHtml(ev.nome || "Evento")}</strong>${evtCountdown(ev.data_evento)}</div>
       <span class="card-sub">${ev.data_evento ? escapeHtml(String(ev.data_evento).slice(0, 10)) : "sem data"}${ev.local ? " · " + escapeHtml(ev.local) : ""} · ${escapeHtml(ev.status || "")}</span>
       <div class="dossier-tabs">${tabs.map(([id2, lbl]) => `<button type="button" class="dossier-tab ${tab === id2 ? "active" : ""}" data-evento-tab="${id2}">${lbl}</button>`).join("")}</div>
     </article>
     <div id="evento-tab-content">${renderEventoTab(d, tab)}</div>`;
 }
 
+// F-EVT7 (C): countdown + auto-dating por offset + agenda (a view da reunião).
+function evtIsoDate(s) { if (!s) return null; const dt = new Date(String(s).slice(0, 10) + "T12:00:00"); return Number.isNaN(dt.getTime()) ? null : dt; }
+function evtCountdown(dataEvento) {
+  const ev = evtIsoDate(dataEvento);
+  if (!ev) return "";
+  const dias = Math.round((ev.getTime() - Date.now()) / 86400000);
+  if (dias > 0) return `<span class="entity-pill" style="background:var(--blue-bright,#2b6cb0);color:#fff">faltam ${dias} dia${dias === 1 ? "" : "s"}</span>`;
+  if (dias === 0) return `<span class="entity-pill" style="background:var(--amber,#e0a500);color:#0A1424">é hoje</span>`;
+  return `<span class="entity-pill" style="opacity:.7">há ${Math.abs(dias)} dia(s)</span>`;
+}
+// Prazo EFETIVO de um item: prazo fixado à mão, senão data_evento + offset (D-x). (auto-dating)
+function evtItemPrazo(it, dataEvento) {
+  const v = it.valores || {};
+  if (v.prazo) return String(v.prazo).slice(0, 10);
+  if (v.offset != null && v.offset !== "" && dataEvento) { const dt = evtIsoDate(dataEvento); if (dt) { dt.setDate(dt.getDate() + Number(v.offset)); return dt.toISOString().slice(0, 10); } }
+  return null;
+}
+function evtAgendaItems(d) {
+  const dataEvento = d.evento && d.evento.data_evento, out = [];
+  (d.itens || []).forEach((it) => { const v = it.valores || {}; if (v.status === "feito") return; const dt = evtIsoDate(evtItemPrazo(it, dataEvento)); if (dt) out.push({ dt, kind: "tarefa", txt: v.item || "(item)", who: v.responsavel || v.categoria || "" }); });
+  (d.patrocinadores || []).forEach((p) => { if (!EVT_ESTAGIOS_ATIVOS.has(p.estagio || "Alvo") || !p.proxima_acao || !p.data_acao) return; const dt = evtIsoDate(p.data_acao); if (dt) out.push({ dt, kind: "pipeline", txt: p.proxima_acao + " — " + (p.nome || "empresa"), who: p.porta || "" }); });
+  out.sort((a, z) => a.dt - z.dt);
+  return out;
+}
+function renderEventoPauta(d) {
+  const ev = d.evento || {}, m = d.metricas || {};
+  const agenda = evtAgendaItems(d), now = Date.now();
+  const fmtd = (dt) => dt.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }).replace(".", "");
+  const agendaHtml = agenda.length ? agenda.slice(0, 20).map((it) => {
+    const late = it.dt.getTime() < now;
+    return `<li class="entity-row" style="gap:10px;align-items:baseline;padding:6px 0;border-bottom:1px solid var(--border)"><span style="font-family:monospace;min-width:60px;color:${late ? "var(--red)" : "var(--muted,#8a9)"}">${fmtd(it.dt)}</span><span class="entity-pill" style="font-size:.68rem">${it.kind}</span><span style="flex:1">${escapeHtml(it.txt)}</span>${it.who ? `<span class="card-sub">${escapeHtml(it.who)}</span>` : ""}</li>`;
+  }).join("") : `<li class="card-sub" style="list-style:none">Sem tarefas com prazo nem próximas-ações. Defina a data do evento, prazos no checklist e ações no pipeline.</li>`;
+  const metas = (ev.metadata && ev.metadata.metas) || {};
+  const fechado = m.patrocinio?.fechado_rs || 0, conf = m.convidados?.confirmados || 0;
+  // metas são strings livres (dado do usuário) — parsear p/ NÚMERO antes de qualquer math/format (evita XSS via money(raw) + NaN%).
+  const metaP = Number(String(metas.patrocinio || "").replace(/[^\d]/g, "")) || 0;
+  const metaPub = Number(String(metas.publico || "").replace(/[^\d]/g, "")) || 0;
+  const metaBlock = (metaP || metaPub) ? `<div class="entity-row" style="gap:20px;flex-wrap:wrap;margin-top:8px">
+    ${metaP ? `<div><div class="card-sub">Patrocínio (meta)</div><strong>${money(fechado)}</strong> / ${money(metaP)} <span class="card-sub">${Math.round(fechado / metaP * 100)}%</span></div>` : ""}
+    ${metaPub ? `<div><div class="card-sub">Público (meta)</div><strong>${conf}</strong> / ${metaPub} <span class="card-sub">${Math.round(conf / metaPub * 100)}%</span></div>` : ""}
+  </div>` : "";
+  return `<article class="news-card">
+    <span class="source-meta">Pauta do evento</span>
+    ${metaBlock}
+    <h4 style="margin:12px 0 4px;font-size:.9rem">Funil do pipeline</h4>
+    ${patrFunil(d.patrocinadores || [])}
+    <h4 style="margin:12px 0 4px;font-size:.9rem">Agenda — tarefas do checklist + próximas ações do pipeline</h4>
+    <ul style="list-style:none;margin:0;padding:0">${agendaHtml}</ul>
+  </article>`;
+}
 function renderEventoTab(d, tab) {
+  if (tab === "pauta") return renderEventoPauta(d);
   if (tab === "dados") return renderEventoDados(d);
   if (tab === "programacao") return renderEventoProgramacao(d);
   if (tab === "painelistas") return renderEventoPainelistas(d);
@@ -1915,8 +2107,9 @@ function renderEventoTab(d, tab) {
 const EVT_LISTKEY = { painelista: "painelistas", patrocinador: "patrocinadores", convidado: "convidados", programacao: "programacao" };
 function esubCell(kind, id, field, kindType, val, opts) {
   const a = `data-esub-kind="${kind}" data-esub-id="${escapeHtml(id)}" data-esub-field="${field}"`;
-  if (kindType === "select") return `<select ${a} class="dou-date">${(opts || []).map((o) => `<option value="${o}" ${String(val || "") === o ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  if (kindType === "select") return `<select ${a} class="dou-date">${(opts || []).map((o) => `<option value="${escapeHtml(o)}" ${String(val || "") === o ? "selected" : ""}>${escapeHtml(o || "—")}</option>`).join("")}</select>`;
   if (kindType === "num") return `<input type="number" ${a} class="dou-date" style="width:100px" value="${val == null ? "" : escapeHtml(String(val))}">`;
+  if (kindType === "date") return `<input type="date" ${a} class="dou-date" style="width:132px" value="${escapeHtml(String(val || "").slice(0, 10))}">`;
   return `<input ${a} class="dou-date" style="min-width:110px" value="${escapeHtml(val == null ? "" : String(val))}">`;
 }
 
@@ -1937,14 +2130,46 @@ function renderEventoDados(d) {
     <textarea id="ev-desc" class="dou-date" style="width:100%;min-height:60px;margin-top:6px" placeholder="Descrição">${escapeHtml(ev.descricao || "")}</textarea>
     <textarea id="ev-objetivos" class="dou-date" style="width:100%;min-height:60px;margin-top:6px" placeholder="Objetivos do evento (um por linha)">${escapeHtml((ev.objetivos || []).join("\n"))}</textarea>
     <div class="entity-row" style="margin-top:6px"><button type="button" class="alert-btn primary" id="ev-save">Salvar</button><span id="ev-save-status" style="font-size:.75rem;opacity:.6"></span></div>
+    ${(() => { const md = ev.metadata || {}, ow = md.owners || {}, mt = md.metas || {}; return `<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:8px">
+      <strong style="font-size:.9rem">Donos, metas e links</strong>
+      <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin-top:6px">
+        <input id="ev-own-log" class="dou-date" style="width:150px" placeholder="Dono · Logística" value="${escapeHtml(ow.logistica || "")}">
+        <input id="ev-own-mkt" class="dou-date" style="width:150px" placeholder="Dono · Marketing" value="${escapeHtml(ow.marketing || "")}">
+        <input id="ev-own-cont" class="dou-date" style="width:150px" placeholder="Dono · Conteúdo" value="${escapeHtml(ow.conteudo || "")}">
+        <input id="ev-own-imp" class="dou-date" style="width:150px" placeholder="Dono · Imprensa" value="${escapeHtml(ow.imprensa || "")}">
+      </div>
+      <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin-top:6px">
+        <input id="ev-meta-patr" class="dou-date" style="width:180px" placeholder="Meta de patrocínio (R$)" value="${escapeHtml(mt.patrocinio || "")}">
+        <input id="ev-meta-pub" class="dou-date" style="width:150px" placeholder="Meta de público" value="${escapeHtml(mt.publico || "")}">
+        <input id="ev-rsvp" class="dou-date" style="min-width:180px;flex:1" placeholder="Link do RSVP" value="${escapeHtml(md.rsvp || "")}">
+        <input id="ev-drive" class="dou-date" style="min-width:180px;flex:1" placeholder="Pasta no Drive" value="${escapeHtml(md.drive || "")}">
+      </div>
+      <div class="entity-row" style="margin-top:6px"><button type="button" class="entity-pill" id="ev-meta-save">Salvar info</button><span id="ev-meta-status" class="card-sub"></span></div>
+    </div>`; })()}
   </article>`;
+}
+async function eventoMetaSave() {
+  const st = $("#ev-meta-status"); if (st) st.textContent = "Salvando…";
+  const meta = {
+    owners: { logistica: $("#ev-own-log")?.value || "", marketing: $("#ev-own-mkt")?.value || "", conteudo: $("#ev-own-cont")?.value || "", imprensa: $("#ev-own-imp")?.value || "" },
+    metas: { patrocinio: $("#ev-meta-patr")?.value || "", publico: $("#ev-meta-pub")?.value || "" },
+    rsvp: $("#ev-rsvp")?.value || "", drive: $("#ev-drive")?.value || ""
+  };
+  try {
+    const r = await postJson("/api/intelligence?type=evt_meta_save", { id: state.currentEventoId, meta });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (state.eventoData?.evento) state.eventoData.evento.metadata = r.metadata;
+    if (st) st.textContent = "Salvo.";
+  } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; }
 }
 
 // Destaque de cronograma: prazo vencido/próximo (7d) em item não-concluído.
 function evtRowStyle(it) {
   const v = it.valores || {};
-  if (!v.prazo || v.status === "feito") return "";
-  const due = new Date(String(v.prazo).slice(0, 10)).getTime();
+  if (v.status === "feito") return "";
+  const pr = evtItemPrazo(it, state.eventoData?.evento?.data_evento); // F-EVT7: prazo efetivo (manual OU offset)
+  if (!pr) return "";
+  const due = new Date(pr.slice(0, 10)).getTime();
   if (Number.isNaN(due)) return "";
   if (due <= Date.now()) return "background:rgba(220,80,80,.14)";
   if (due <= Date.now() + 7 * 864e5) return "background:rgba(220,180,0,.12)";
@@ -1955,6 +2180,12 @@ function evtCell(it, c) {
   const v = (it.valores || {})[c.key];
   const a = `data-evt-id="${escapeHtml(it.id)}" data-evt-key="${escapeHtml(c.key)}"`;
   if (c.type === "check") return `<input type="checkbox" ${a} ${v ? "checked" : ""}>`;
+  if (c.key === "prazo") { // F-EVT7: coluna prazo mostra a data derivada do offset (D-x) quando não há data manual
+    const off = (it.valores || {}).offset, de = state.eventoData?.evento?.data_evento;
+    const der = (!v && off != null && off !== "" && de) ? evtItemPrazo(it, de) : null;
+    const hint = der ? ` <span class="d" title="D${off} a partir da data do evento (automático)">D${Number(off) >= 0 ? "+" + off : off}·${escapeHtml(String(der).slice(5))}</span>` : "";
+    return `<input type="date" class="dou-date" style="min-width:130px" ${a} value="${escapeHtml(String(v || "").slice(0, 10))}">${hint}`;
+  }
   if (c.type === "date") return `<input type="date" class="dou-date" style="min-width:130px" ${a} value="${escapeHtml(String(v || "").slice(0, 10))}">`;
   if (c.type === "num") return `<input type="number" class="dou-date" style="width:90px" ${a} value="${escapeHtml(v == null ? "" : String(v))}">`;
   if (c.type === "select") {
@@ -2269,17 +2500,44 @@ async function evtPainLinkSearch() {
 }
 
 // --- Patrocínio ---
+// F-EVT7: disciplina do pipeline. EVT_ESTAGIOS idêntico ao backend (api/intelligence.js).
+const EVT_ESTAGIOS = ["Alvo", "Contatado", "Reuniao", "Proposta", "Fechado", "Associado", "Perdido"];
+const EVT_ESTAGIOS_ATIVOS = new Set(["Alvo", "Contatado", "Reuniao", "Proposta"]);
+const EVT_ESTAGIO_COR = { Alvo: "#5C7089", Contatado: "#8DA0B8", Reuniao: "#e0a500", Proposta: "#E3C766" };
+// status legado derivado do estágio (IDÊNTICO ao backend) — para o re-render local refletir as somas na hora.
+const ESTAGIO_TO_STATUS = { Alvo: "prospect", Contatado: "negociacao", Reuniao: "negociacao", Proposta: "negociacao", Fechado: "fechado", Associado: "recusado", Perdido: "recusado" };
+// Regra da linha morta: estágio ativo SEM próxima-ação+data = âmbar; data_acao vencida = vermelho.
+function patrRowStyle(p) {
+  const est = p.estagio || "Alvo";
+  if (!EVT_ESTAGIOS_ATIVOS.has(est)) return "";
+  if (p.data_acao) { const dt = new Date(String(p.data_acao).slice(0, 10) + "T12:00:00"); if (!Number.isNaN(dt.getTime()) && dt.getTime() < Date.now()) return "box-shadow:inset 3px 0 0 var(--red)"; }
+  if (!p.proxima_acao || !p.data_acao) return "box-shadow:inset 3px 0 0 var(--amber,#e0a500)";
+  return "";
+}
+function patrFunil(pt) {
+  const c = {}; EVT_ESTAGIOS.forEach((e) => (c[e] = 0));
+  pt.forEach((p) => { const e = p.estagio || "Alvo"; if (c[e] != null) c[e]++; });
+  const ativos = ["Alvo", "Contatado", "Reuniao", "Proposta"];
+  const totalA = ativos.reduce((a, e) => a + c[e], 0);
+  const bar = totalA
+    ? `<div style="display:flex;height:22px;border-radius:6px;overflow:hidden;border:1px solid var(--border)">${ativos.map((e) => c[e] ? `<div title="${e}" style="flex:${c[e]};min-width:22px;background:${EVT_ESTAGIO_COR[e]};display:flex;align-items:center;justify-content:center;font-size:11px;color:#0A1424">${c[e]}</div>` : "").join("")}</div>`
+    : `<span class="card-sub">Pipeline sem estágios ativos.</span>`;
+  return `<div style="margin:6px 0">${bar}<div class="card-sub" style="margin-top:4px">${ativos.map((e) => `${e} ${c[e]}`).join(" · ")} · Fechado ${c.Fechado} · Associado ${c.Associado} · Perdido ${c.Perdido}</div></div>`;
+}
 function renderEventoPatrocinadores(d) {
   const pt = d.patrocinadores || [];
   const cotas = (d.evento && d.evento.metadata && d.evento.metadata.cotas) || [];
   const cotaCell = (p) => `<input class="dou-date" list="evt-cota-list" data-esub-kind="patrocinador" data-esub-id="${escapeHtml(p.id)}" data-esub-field="cota" value="${escapeHtml(p.cota || "")}" style="width:100px">`;
-  const rows = pt.map((p) => `<tr>
+  const rows = pt.map((p) => `<tr style="${patrRowStyle(p)}">
     <td>${esubCell("patrocinador", p.id, "nome", "text", p.nome)}</td>
     <td>${cotaCell(p)}</td>
     <td>${esubCell("patrocinador", p.id, "valor", "num", p.valor)}</td>
-    <td>${esubCell("patrocinador", p.id, "status", "select", p.status, ["prospect", "negociacao", "fechado", "recusado"])}</td>
+    <td>${esubCell("patrocinador", p.id, "estagio", "select", p.estagio || "Alvo", EVT_ESTAGIOS)}</td>
+    <td>${esubCell("patrocinador", p.id, "porta", "text", p.porta)}</td>
+    <td>${esubCell("patrocinador", p.id, "proxima_acao", "text", p.proxima_acao)}</td>
+    <td>${esubCell("patrocinador", p.id, "data_acao", "date", p.data_acao)}</td>
     <td>${esubCell("patrocinador", p.id, "beneficios", "text", p.beneficios)}</td>
-    <td>${p.sponsor_score_id ? `<button type="button" class="entity-pill" data-patr-outcome="${escapeHtml(p.id)}" title="registrar desfecho (loop de resultado + supressão)">⟳${p.respondeu ? "✓" : ""}</button> ` : ""}<button type="button" class="entity-pill" data-patr-del="${escapeHtml(p.id)}">×</button></td>
+    <td style="white-space:nowrap">${(p.estagio === "Perdido" || p.estagio === "Associado") ? `<button type="button" class="entity-pill" data-patr-base="${escapeHtml(p.id)}" title="Levar para a Base (funil de associados)">→ Base</button> ` : ""}${p.sponsor_score_id ? `<button type="button" class="entity-pill" data-patr-outcome="${escapeHtml(p.id)}" title="registrar desfecho (loop de resultado + supressão)">⟳${p.respondeu ? "✓" : ""}</button> ` : ""}<button type="button" class="entity-pill" data-patr-del="${escapeHtml(p.id)}">×</button></td>
   </tr>`).join("");
   const fechado = pt.filter((x) => x.status === "fechado").reduce((s, x) => s + (Number(x.valor) || 0), 0);
   const pipeline = pt.reduce((s, x) => s + (Number(x.valor) || 0), 0);
@@ -2291,8 +2549,10 @@ function renderEventoPatrocinadores(d) {
   setTimeout(ensureProspeccao, 0); // F-EVT4: carrega o bloco de Prospecção após montar
   return `<article class="news-card">
     <datalist id="evt-cota-list">${cotas.map((c) => `<option value="${escapeHtml(c.nome)}"></option>`).join("")}</datalist>
-    <span class="source-meta">Patrocínio</span>
-    <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nome</th><th>Cota</th><th>Valor</th><th>Status</th><th>Benefícios</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6">Nenhum patrocinador.</td></tr>`}</tbody></table></div>
+    <span class="source-meta">Patrocínio · pipeline</span>
+    ${patrFunil(pt)}
+    <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Nome</th><th>Cota</th><th>Valor</th><th>Estágio</th><th>Porta</th><th>Próxima ação</th><th>Quando</th><th>Benefícios</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="9">Nenhum patrocinador.</td></tr>`}</tbody></table></div>
+    <p class="card-sub" style="margin:4px 0 0">Linha ativa sem próxima-ação + data fica <span style="color:var(--amber,#e0a500)">âmbar</span>; ação vencida fica <span style="color:var(--red)">vermelha</span>.</p>
     <div class="entity-row" style="justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:6px">
       <div class="entity-row" style="gap:6px;flex-wrap:wrap"><input id="patr-nome" class="dou-date" style="min-width:140px" placeholder="Nome"><input id="patr-cota" class="dou-date" list="evt-cota-list" style="width:100px" placeholder="Cota"><input id="patr-valor" type="number" class="dou-date" style="width:100px" placeholder="Valor"><button type="button" class="entity-pill" id="patr-add">+ patrocinador</button></div>
       <strong>Fechado ${money(fechado)} · Pipeline ${money(pipeline)}</strong>
@@ -2737,6 +2997,15 @@ function wireEvento() {
   if (!view) return;
   $("#evento-create")?.addEventListener("click", eventoCreate);
   view.addEventListener("click", async (e) => {
+    // F-EVT7: toggle Eventos ↔ Base + ações da Base
+    const evv = e.target.closest("[data-eventos-view]");
+    if (evv) { state.eventosView = evv.dataset.eventosView; loadEventos(); return; }
+    if (e.target.closest("#base-add")) { baseAdd(); return; }
+    if (e.target.closest("#base-import-btn")) { const bx = $("#base-import-box"); if (bx) bx.hidden = !bx.hidden; return; }
+    if (e.target.closest("#base-import-do")) { baseImportDo(); return; }
+    if (e.target.closest("#base-from-conv")) { baseFromConvidados(); return; }
+    const bcPipe = e.target.closest("[data-bc-pipe]"); if (bcPipe) { baseToPipeline(bcPipe.dataset.bcPipe); return; }
+    const bcDel = e.target.closest("[data-bc-del]"); if (bcDel) { if (confirm("Remover contato da Base?")) postJson("/api/intelligence?type=evt_contato_remove", { id: bcDel.dataset.bcDel }).then(loadBase).catch(() => {}); return; }
     const del = e.target.closest("[data-evento-del]");
     if (del) { e.stopPropagation(); if (confirm("Excluir este evento e todo o checklist?")) { await postJson("/api/intelligence?type=evt_delete", { id: del.dataset.eventoDel }).catch(() => {}); loadEventos(); } return; }
     const open = e.target.closest("[data-open-evento]");
@@ -2764,6 +3033,7 @@ function wireEvento() {
     const cd = e.target.closest("[data-evento-col-del]");
     if (cd) { eventoDeleteColumn(cd.dataset.eventoColDel); return; }
     if (e.target.closest("#ev-save")) { eventoSaveDados(); return; }
+    if (e.target.closest("#ev-meta-save")) { eventoMetaSave(); return; }
     // F-EVT2: Programação
     if (e.target.closest("#prog-add")) { evtSubSave("programacao", { evento_id: state.currentEventoId, horario: $("#prog-horario")?.value || "", titulo: $("#prog-titulo")?.value || "", tipo: $("#prog-tipo")?.value, painel_ref: $("#prog-painelref")?.value || "", ordem: (state.eventoData?.programacao || []).length }); return; }
     const progDel = e.target.closest("[data-prog-del]");
@@ -2780,11 +3050,13 @@ function wireEvento() {
     const painPick = e.target.closest("[data-pain-pick]");
     if (painPick) { evtSubSave("painelista", { id: state.painLinkId, person_id: painPick.dataset.painPick }); return; }
     // Patrocínio
-    if (e.target.closest("#patr-add")) { evtSubSave("patrocinador", { evento_id: state.currentEventoId, nome: $("#patr-nome")?.value || "", cota: $("#patr-cota")?.value || "", valor: $("#patr-valor")?.value || null }); return; }
+    if (e.target.closest("#patr-add")) { evtSubSave("patrocinador", { evento_id: state.currentEventoId, nome: $("#patr-nome")?.value || "", cota: $("#patr-cota")?.value || "", valor: $("#patr-valor")?.value || null, estagio: "Alvo" }); return; }
     const patrDel = e.target.closest("[data-patr-del]");
     if (patrDel) { evtSubRemove("patrocinador", patrDel.dataset.patrDel); return; }
     const patrOut = e.target.closest("[data-patr-outcome]");
     if (patrOut) { prospOutcome(patrOut.dataset.patrOutcome); return; }
+    const patrBase = e.target.closest("[data-patr-base]");  // F-EVT7: leva um patrocinador Perdido/Associado p/ a Base
+    if (patrBase) { contatoFromPatrocinador(patrBase.dataset.patrBase); return; }
     // Cotas-catálogo
     if (e.target.closest("#cota-add")) {
       const nome = ($("#cota-nome")?.value || "").trim();
@@ -2819,11 +3091,18 @@ function wireEvento() {
     const gDel = e.target.closest("[data-golden-del]"); if (gDel) { postJson("/api/intelligence?type=evt_golden_remove", { id: gDel.dataset.goldenDel }).then(prospInsumosReload).catch(() => {}); return; }
   });
   view.addEventListener("change", (e) => {
+    // F-EVT7: edição inline da Base + filtro de relação
+    const bc = e.target.closest("[data-bc-id]");
+    if (bc) { bcSave(bc.dataset.bcId, { [bc.dataset.bcField]: bc.value }); return; }
+    if (e.target.id === "base-rel") { state.baseRel = e.target.value || null; loadBase(); return; }
     const esub = e.target.closest("[data-esub-id]");
     if (esub) {
       const val = esub.type === "checkbox" ? esub.checked : esub.value;
-      evtSubField(esub.dataset.esubKind, esub.dataset.esubId, { [esub.dataset.esubField]: val });
-      if (esub.tagName === "SELECT") renderEventoDetail(state.eventoData); // F-EVT6: segmento/status muda densidade/contadores — atualiza na hora
+      const patch = { [esub.dataset.esubField]: val };
+      // F-EVT7: estágio deriva o status legado (somas/funil) — espelha no state local p/ o re-render bater com o backend.
+      if (esub.dataset.esubKind === "patrocinador" && esub.dataset.esubField === "estagio") patch.status = ESTAGIO_TO_STATUS[val] || undefined;
+      evtSubField(esub.dataset.esubKind, esub.dataset.esubId, patch);
+      if (esub.tagName === "SELECT") renderEventoDetail(state.eventoData); // F-EVT6: select muda densidade/contadores/somas — atualiza na hora
       return;
     }
     const chk = e.target.closest("[data-evt-check-status]");
@@ -2839,6 +3118,9 @@ function wireEvento() {
     if (mv) { evtMoveArea(mv.dataset.evtMove, mv.value); return; }
     const cell = e.target.closest("[data-evt-id][data-evt-key]");
     if (cell) { evtCellUpdate(cell); }
+  });
+  view.addEventListener("input", (e) => { // F-EVT7: busca ao vivo na Base — só o tbody (mantém foco no input)
+    if (e.target.id === "base-search") { state.baseQ = e.target.value; const tb = $("#base-tbody"); if (tb) tb.innerHTML = renderBaseRows(); }
   });
 }
 

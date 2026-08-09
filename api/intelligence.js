@@ -1074,21 +1074,22 @@ module.exports = async function handler(req, res) {
         { key: "link", label: "Link", type: "url" },
         { key: "obs", label: "Obs", type: "text" }
       ];
+      // [item, categoria, obs?, offset?] — offset (D-x) auto-data o prazo a partir da data do evento (F-EVT7).
       const EVT_SEED = [
-        ["Gerador", "Operacional"], ["Hotel", "Operacional"], ["Passagens", "Operacional"],
-        ["Financeiro", "Financeiro"], ["Credenciamento", "Operacional"], ["Coffee / welcome coffee", "Operacional"],
-        ["Backdrop", "Marketing", "Painel LED: 1.280x512 e 128x512 px"], ["Save the date", "Marketing"], ["Post Instagram", "Marketing"],
-        ["Post LinkedIn", "Marketing"], ["Stories", "Marketing"], ["Release / imprensa", "Marketing"],
-        ["Carta-convite (painelistas)", "Comunicacao", "D-30"], ["Pedido de minibio + foto", "Comunicacao", "apos aceite"],
-        ["Autorizacao de uso de imagem", "Comunicacao", "apos aceite"], ["Abrir RSVP (formulario)", "Comunicacao", "D-21"], ["Lembrete de RSVP", "Comunicacao", "D-7 e D-2"],
-        // F-EVT5: materiais de envio (mensagens do mes). obs = timing sugerido.
-        ["Convite a orgaos/empresas p/ indicarem convidados (ate N)", "Comunicacao", "D-21 · variar por organizacao"],
-        ["Convite + RSVP aos convidados (link do formulario)", "Comunicacao", "D-21"],
-        ["Encaminhar programacao aos convidados", "Comunicacao", "D-3"],
-        ["Solicitar autorizacao de logo no LED/backdrop (patrocinadores)", "Comunicacao", "D-14"],
-        ["Confirmacao final + instrucoes de credenciamento", "Comunicacao", "D-2"],
-        ["Revisar minibios antes de postar", "Marketing", "antes de cada post (QA)"],
-        ["Fechar painelistas/moderadores", "Paineis"], ["Coletar minibios", "Paineis"], ["Programacao preliminar", "Paineis"]
+        ["Gerador", "Operacional", null, -10], ["Hotel", "Operacional", null, -30], ["Passagens", "Operacional", null, -30],
+        ["Financeiro", "Financeiro", null, -30], ["Credenciamento", "Operacional", null, -15], ["Coffee / welcome coffee", "Operacional", null, -10],
+        ["Backdrop", "Marketing", "Painel LED: 1.280x512 e 128x512 px", -7], ["Save the date", "Marketing", null, -20], ["Post Instagram", "Marketing", null, -14],
+        ["Post LinkedIn", "Marketing", null, -14], ["Stories", "Marketing", null, -5], ["Release / imprensa", "Marketing", null, -10],
+        ["Carta-convite (painelistas)", "Comunicacao", null, -30], ["Pedido de minibio + foto", "Comunicacao", "apos aceite", -25],
+        ["Autorizacao de uso de imagem", "Comunicacao", "apos aceite", -25], ["Abrir RSVP (formulario)", "Comunicacao", null, -21], ["Lembrete de RSVP", "Comunicacao", "D-7 e D-2", -7],
+        // F-EVT5: materiais de envio (mensagens do mes).
+        ["Convite a orgaos/empresas p/ indicarem convidados (ate N)", "Comunicacao", "variar por organizacao", -21],
+        ["Convite + RSVP aos convidados (link do formulario)", "Comunicacao", null, -21],
+        ["Encaminhar programacao aos convidados", "Comunicacao", null, -3],
+        ["Solicitar autorizacao de logo no LED/backdrop (patrocinadores)", "Comunicacao", null, -14],
+        ["Confirmacao final + instrucoes de credenciamento", "Comunicacao", null, -2],
+        ["Revisar minibios antes de postar", "Marketing", "antes de cada post (QA)", -12],
+        ["Fechar painelistas/moderadores", "Paineis", null, -35], ["Coletar minibios", "Paineis", null, -25], ["Programacao preliminar", "Paineis", null, -20]
       ];
       const nowIso = new Date().toISOString();
 
@@ -1117,11 +1118,16 @@ module.exports = async function handler(req, res) {
       // F-EVT6: taxonomia de segmento de convidado (densidade de ICP). IDENTICA no front (app.js).
       // "Compradores" (densidade que fecha cota) = Autoridade + Operadores + Regulador/Governo.
       const EVT_SEGMENTOS = ["Autoridade", "Operador publico", "Operador privado/Concessionaria", "Regulador/Governo", "Fornecedor", "Investidor/Financiador", "Consultoria/Juridico", "Associacao/Entidade", "Imprensa/Academia", "Outro"];
+      // F-EVT7: estagios do pipeline de patrocinio (disciplina). IDENTICO no front (app.js EVT_ESTAGIOS).
+      const EVT_ESTAGIOS = ["Alvo", "Contatado", "Reuniao", "Proposta", "Fechado", "Associado", "Perdido"];
+      // status legado (prospect/negociacao/fechado/recusado) DERIVADO do estagio — mantem metricas coerentes.
+      // Associado nao e receita de patrocinio -> 'recusado' (fora da soma de arrecadado).
+      const ESTAGIO_TO_STATUS = { Alvo: "prospect", Contatado: "negociacao", Reuniao: "negociacao", Proposta: "negociacao", Fechado: "fechado", Associado: "recusado", Perdido: "recusado" };
       // F-EVT2: sub-entidades genéricas (whitelist de campos + enums por kind).
       const EVT_SUB = {
         programacao: { table: "evt_programacao", fields: ["evento_id", "ordem", "horario", "titulo", "tipo", "descricao", "painel_ref"], enums: { tipo: ["abertura", "painel", "coffee", "intervalo", "encerramento", "outro"] }, num: [], req: "titulo" },
         painelista: { table: "evt_painelistas", fields: ["evento_id", "painel", "nome", "person_id", "cargo", "empresa", "papel", "minibio", "foto_url", "status", "ordem"], enums: { papel: ["painelista", "moderador"], status: ["confirmado", "pendente", "recusado"] }, num: [], req: "nome" },
-        patrocinador: { table: "evt_patrocinadores", fields: ["evento_id", "nome", "company_id", "cota", "valor", "beneficios", "status", "contato"], enums: { status: ["prospect", "negociacao", "fechado", "recusado"] }, num: ["valor"], req: "nome" },
+        patrocinador: { table: "evt_patrocinadores", fields: ["evento_id", "nome", "company_id", "cota", "valor", "beneficios", "status", "contato", "estagio", "porta", "proxima_acao", "data_acao"], enums: { status: ["prospect", "negociacao", "fechado", "recusado"], estagio: EVT_ESTAGIOS }, nullable: ["estagio"], num: ["valor"], req: "nome" },
         convidado: { table: "evt_convidados", fields: ["evento_id", "nome", "empresa", "email", "instituicao", "status", "segmento"], enums: { status: ["confirmado", "pendente", "recusado"], segmento: EVT_SEGMENTOS }, nullable: ["segmento"], num: [], req: "nome" }
       };
 
@@ -1204,7 +1210,7 @@ module.exports = async function handler(req, res) {
         if (!nome) return res.status(400).json({ ok: false, error: "Informe o nome do evento." });
         const { data: created, error } = await supabase.from("evt_eventos").insert({ ...patch, nome: nome.slice(0, 300), checklist_colunas: EVT_DEFAULT_COLS }).select().maybeSingle();
         if (error) return res.status(500).json({ ok: false, error: error.message });
-        const seedRows = EVT_SEED.map(([item, categoria, obs], i) => ({ evento_id: created.id, ordem: i, valores: { item, categoria, status: "pendente", ...(obs ? { obs } : {}) } }));
+        const seedRows = EVT_SEED.map(([item, categoria, obs, offset], i) => ({ evento_id: created.id, ordem: i, valores: { item, categoria, status: "pendente", ...(obs ? { obs } : {}), ...(offset != null ? { offset } : {}) } }));
         const seedRes = await supabase.from("evt_checklist_itens").insert(seedRows);
         if (seedRes.error) {
           await supabase.from("evt_eventos").delete().eq("id", created.id); // limpa o evento orfao
@@ -1297,6 +1303,10 @@ module.exports = async function handler(req, res) {
           else if (typeof v === "string") v = v.slice(0, 4000);
           row[f] = v;
         }
+        // F-EVT7: estagio e a fonte de verdade do pipeline; deriva o status legado (metricas/somas) p/ nao divergir.
+        if (spec.table === "evt_patrocinadores" && row.estagio) {
+          row.status = ESTAGIO_TO_STATUS[row.estagio] || row.status;
+        }
         if (p.id) {
           delete row.evento_id; // nao muda o pai no update
           row.updated_at = nowIso;
@@ -1373,6 +1383,27 @@ module.exports = async function handler(req, res) {
         const { error } = await supabase.from("evt_eventos").update({ metadata, updated_at: nowIso }).eq("id", id);
         if (error) return res.status(500).json({ ok: false, error: error.message });
         return res.status(200).json({ ok: true, cotas });
+      }
+
+      // F-EVT7 (D): info do evento em metadata (donos por area, metas, RSVP, Drive). Merge sem perder chaves.
+      if (type === "evt_meta_save") {
+        const p = params(req);
+        const id = String(p.id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const meta = (p.meta && typeof p.meta === "object" && !Array.isArray(p.meta)) ? p.meta : {};
+        const s = (x, n) => String(x == null ? "" : x).slice(0, n);
+        const clean = {};
+        if (meta.owners && typeof meta.owners === "object") clean.owners = { logistica: s(meta.owners.logistica, 120), marketing: s(meta.owners.marketing, 120), conteudo: s(meta.owners.conteudo, 120), imprensa: s(meta.owners.imprensa, 120) };
+        if (meta.metas && typeof meta.metas === "object") clean.metas = { patrocinio: s(meta.metas.patrocinio, 40), publico: s(meta.metas.publico, 40) };
+        if (meta.rsvp != null) clean.rsvp = s(meta.rsvp, 400);
+        if (meta.drive != null) clean.drive = s(meta.drive, 400);
+        const { data: cur, error: gErr } = await supabase.from("evt_eventos").select("metadata").eq("id", id).maybeSingle();
+        if (gErr) return res.status(500).json({ ok: false, error: gErr.message });
+        if (!cur) return res.status(404).json({ ok: false, error: "Evento nao encontrado." });
+        const metadata = { ...(cur.metadata || {}), ...clean };
+        const { error } = await supabase.from("evt_eventos").update({ metadata, updated_at: nowIso }).eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, metadata });
       }
 
       // ===== M27: "Score de Patrocinador" (F-EVT4) — prospeccao de patrocinio =====
@@ -1589,7 +1620,7 @@ module.exports = async function handler(req, res) {
         }
         const { data: patr, error: pErr } = await supabase.from("evt_patrocinadores").insert({
           evento_id: s.evento_id, nome: s.nome, company_id: s.company_id, cota, valor,
-          status: "negociacao", sponsor_score_id: s.id, contato
+          status: "negociacao", estagio: "Contatado", sponsor_score_id: s.id, contato  // F-EVT7: entra no pipeline como Contatado
         }).select().maybeSingle();
         if (pErr) return res.status(500).json({ ok: false, error: pErr.message });
         await supabase.from("evt_sponsor_scores").update({ status: "aprovado", screening }).eq("id", id);
@@ -1610,8 +1641,8 @@ module.exports = async function handler(req, res) {
         if (p.respondeu != null) patch.respondeu = !!p.respondeu;
         if (p.motivo != null) patch.motivo = String(p.motivo).slice(0, 1000);
         if (p.valor != null && Number.isFinite(Number(p.valor))) patch.valor = Number(p.valor);
-        if (desfecho === "fechou") { patch.status = "fechado"; patch.respondeu = true; }
-        else if (desfecho === "recusou") { patch.status = "recusado"; patch.respondeu = true; }
+        if (desfecho === "fechou") { patch.status = "fechado"; patch.estagio = "Fechado"; patch.respondeu = true; }  // F-EVT7: estagio junto do status
+        else if (desfecho === "recusou") { patch.status = "recusado"; patch.estagio = "Perdido"; patch.respondeu = true; }
         else if (desfecho === "respondeu") { patch.respondeu = true; }
         const { error: uErr } = await supabase.from("evt_patrocinadores").update(patch).eq("id", patrocinador_id);
         if (uErr) return res.status(500).json({ ok: false, error: uErr.message });
@@ -1750,6 +1781,158 @@ module.exports = async function handler(req, res) {
         }
         const { data: historico } = await supabase.from("evt_sponsor_calibracoes").select("rubric_version, concordancia, n, top_hits, top_n, golden_n, created_at").order("created_at", { ascending: false }).limit(20);
         return res.status(200).json({ ok: true, tiers, golden: { concordancia, n: nGolden, top_hits: topHits, top_n: TOP_N, golden_total: golden.length }, historico: historico || [] });
+      }
+
+      // ===== F-EVT7: Base de contatos CROSS-EVENTO (funil de associados) =====
+      const EVT_REL = ["Contato", "Prospect patrocinio", "Prospect associado", "Patrocinador", "Associado", "Institucional"];
+      const contatoKey = (nome, empresa) => `${String(nome || "").trim().toLowerCase()}|${String(empresa || "").trim().toLowerCase()}`;
+      const loadContatoKeys = async () => {
+        const set = new Set();
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await supabase.from("evt_contatos").select("nome, empresa").range(from, from + 999);
+          if (error) throw new Error(error.message);
+          for (const c of data || []) set.add(contatoKey(c.nome, c.empresa));
+          if (!data || data.length < 1000) break;
+        }
+        return set;
+      };
+
+      if (type === "evt_contato_list") {
+        const p = params(req);
+        const q = String(p.q || "").trim().toLowerCase();
+        const rel = p.rel && EVT_REL.includes(p.rel) ? p.rel : null;
+        let query = supabase.from("evt_contatos").select("*").order("updated_at", { ascending: false }).limit(2000);
+        if (rel) query = query.eq("rel", rel);
+        const { data, error } = await query;
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        let items = data || [];
+        if (q) items = items.filter((c) => (c.nome || "").toLowerCase().includes(q) || (c.empresa || "").toLowerCase().includes(q));
+        return res.status(200).json({ ok: true, items, total: (data || []).length });
+      }
+      if (type === "evt_contato_save") {
+        const p = params(req);
+        // PATCH parcial: só grava os campos ENVIADOS (a Base edita 1 campo por vez). Nao reconstruir a linha.
+        const LIM = { nome: 200, empresa: 200, cargo: 200, setor: 120, email: 200, telefone: 60, cota_assoc: 40, obs: 1000 };
+        const row = {};
+        for (const f of ["nome", "empresa", "cargo", "setor", "email", "telefone", "cota_assoc", "obs"]) {
+          if (p[f] === undefined) continue;
+          let v = p[f]; v = v == null ? null : String(v).trim(); if (v === "") v = null;
+          row[f] = v == null ? null : v.slice(0, LIM[f]);
+        }
+        if (p.company_id !== undefined) row.company_id = p.company_id || null;
+        if (p.origem_evento_id !== undefined) row.origem_evento_id = p.origem_evento_id || null;
+        if (p.rel !== undefined) row.rel = EVT_REL.includes(p.rel) ? p.rel : "Contato";
+        const dupMsg = "Já existe um contato com esse nome + empresa.";
+        if (p.id) {
+          if (!Object.keys(row).length) return res.status(400).json({ ok: false, error: "Nada para atualizar." });
+          row.updated_at = nowIso;
+          const { data, error } = await supabase.from("evt_contatos").update(row).eq("id", String(p.id)).select().maybeSingle();
+          if (error) return res.status(error.code === "23505" ? 409 : 500).json({ ok: false, error: error.code === "23505" ? dupMsg : error.message });
+          if (!data) return res.status(404).json({ ok: false, error: "Contato nao encontrado." });
+          return res.status(200).json({ ok: true, contato: data });
+        }
+        if (!row.nome) return res.status(400).json({ ok: false, error: "Informe o nome" });
+        if (row.rel === undefined) row.rel = "Contato";
+        const { data, error } = await supabase.from("evt_contatos").insert(row).select().maybeSingle();
+        if (error) return res.status(error.code === "23505" ? 409 : 500).json({ ok: false, error: error.code === "23505" ? dupMsg : error.message });
+        return res.status(200).json({ ok: true, contato: data });
+      }
+      if (type === "evt_contato_remove") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { error } = await supabase.from("evt_contatos").delete().eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true });
+      }
+      if (type === "evt_contato_import") {
+        const p = params(req);
+        const origem = p.origem_evento_id || null;
+        const rows = [], seen = new Set();
+        for (const raw of String(p.texto || "").split(/\r?\n/).slice(0, 1000)) {
+          const line = raw.replace(/[✅✔☑⏱❌✖️]/g, "").trim();
+          if (!line) continue;
+          const parts = line.split(/\s+[–—-]\s+/);
+          const nome = (parts[0] || "").trim().slice(0, 200);
+          if (!nome) continue;
+          const empresa = (parts[1] || "").trim().slice(0, 200) || null;
+          const k = contatoKey(nome, empresa);
+          if (seen.has(k)) continue; seen.add(k);
+          rows.push({ nome, empresa, origem_evento_id: origem, rel: "Contato" });
+        }
+        if (!rows.length) return res.status(400).json({ ok: false, error: "Nenhum nome reconhecido (uma linha por contato: Nome – Empresa)." });
+        let have; try { have = await loadContatoKeys(); } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+        const fresh = rows.filter((r) => !have.has(contatoKey(r.nome, r.empresa)));
+        if (fresh.length) { const { error } = await supabase.from("evt_contatos").insert(fresh); if (error) return res.status(500).json({ ok: false, error: error.message }); }
+        return res.status(200).json({ ok: true, inserted: fresh.length, pulados: rows.length - fresh.length });
+      }
+      if (type === "evt_contato_from_convidados") {
+        const evento_id = String(params(req).evento_id || "").trim();
+        if (!evento_id) return res.status(400).json({ ok: false, error: "Informe evento_id" });
+        const conv = [];
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await supabase.from("evt_convidados").select("nome, empresa, segmento").eq("evento_id", evento_id).eq("status", "confirmado").range(from, from + 999);
+          if (error) return res.status(500).json({ ok: false, error: error.message });
+          conv.push(...(data || []));
+          if (!data || data.length < 1000) break;
+        }
+        if (!conv.length) return res.status(200).json({ ok: true, inserted: 0, pulados: 0 });
+        let have; try { have = await loadContatoKeys(); } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+        const seen = new Set(), fresh = [];
+        for (const c of conv) {
+          const k = contatoKey(c.nome, c.empresa);
+          if (seen.has(k) || have.has(k)) continue; seen.add(k);
+          fresh.push({ nome: String(c.nome).slice(0, 200), empresa: c.empresa ? String(c.empresa).slice(0, 200) : null, setor: c.segmento || null, origem_evento_id: evento_id, rel: "Contato" });
+        }
+        if (fresh.length) { const { error } = await supabase.from("evt_contatos").insert(fresh); if (error) return res.status(500).json({ ok: false, error: error.message }); }
+        return res.status(200).json({ ok: true, inserted: fresh.length, pulados: conv.length - fresh.length });
+      }
+      if (type === "evt_contato_to_pipeline") {
+        const p = params(req);
+        const id = String(p.id || "").trim();
+        const evento_id = String(p.evento_id || "").trim();
+        if (!id || !evento_id) return res.status(400).json({ ok: false, error: "Informe id e evento_id" });
+        const { data: c, error } = await supabase.from("evt_contatos").select("*").eq("id", id).maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        if (!c) return res.status(404).json({ ok: false, error: "Contato nao encontrado." });
+        const { data: patr, error: pErr } = await supabase.from("evt_patrocinadores").insert({
+          evento_id, nome: (c.empresa || c.nome).slice(0, 300), company_id: c.company_id || null,
+          contato: (c.nome + (c.cargo ? ` — ${c.cargo}` : "")).slice(0, 300), estagio: "Alvo", status: "prospect"
+        }).select().maybeSingle();
+        if (pErr) return res.status(500).json({ ok: false, error: pErr.message });
+        // rel-flip é best-effort (o patrocinador já foi criado); surface como warn se falhar (não engolir).
+        let warn = null;
+        if (c.rel === "Contato") { const { error: relErr } = await supabase.from("evt_contatos").update({ rel: "Prospect patrocinio", updated_at: nowIso }).eq("id", id); if (relErr) warn = `contato criado no pipeline, mas falhou marcar como Prospect: ${relErr.message}`; }
+        return res.status(200).json({ ok: true, patrocinador: patr, warn });
+      }
+
+      // F-EVT7 (C): PAUTA cross-evento — tarefas do checklist (prazo/offset) + proximas-acoes do
+      // pipeline (data_acao), de todos os eventos ativos, ordenadas (proximas + vencidas).
+      if (type === "evt_pauta") {
+        const evById = {};
+        for (let from = 0; ; from += 1000) { // pagina p/ nao truncar acima de 1000 eventos
+          const { data: evs, error: evErr } = await supabase.from("evt_eventos").select("id, nome, data_evento, status").range(from, from + 999);
+          if (evErr) return res.status(500).json({ ok: false, error: evErr.message });
+          for (const e of evs || []) if (e.status !== "cancelado" && e.status !== "realizado") evById[e.id] = e;
+          if (!evs || evs.length < 1000) break;
+        }
+        const derive = (v, dataEvento) => {
+          if (v && v.prazo) return String(v.prazo).slice(0, 10);
+          if (v && v.offset != null && v.offset !== "" && dataEvento) { const dt = new Date(String(dataEvento).slice(0, 10) + "T12:00:00"); if (!Number.isNaN(dt.getTime())) { dt.setUTCDate(dt.getUTCDate() + Number(v.offset)); return dt.toISOString().slice(0, 10); } }
+          return null;
+        };
+        const out = [];
+        await evtScanAll("evt_checklist_itens", "evento_id, valores", (it) => {
+          const e = evById[it.evento_id]; if (!e) return;
+          const v = it.valores || {}; if (v.status === "feito") return;
+          const pr = derive(v, e.data_evento); if (pr) out.push({ date: pr, kind: "tarefa", txt: v.item || "(item)", who: v.responsavel || "", evento: e.nome, evento_id: it.evento_id });
+        });
+        await evtScanAll("evt_patrocinadores", "evento_id, nome, estagio, proxima_acao, data_acao, porta", (p) => {
+          const e = evById[p.evento_id]; if (!e) return;
+          if (!["Alvo", "Contatado", "Reuniao", "Proposta"].includes(p.estagio || "Alvo") || !p.data_acao) return;
+          out.push({ date: String(p.data_acao).slice(0, 10), kind: "pipeline", txt: (p.proxima_acao || "ação") + " — " + (p.nome || "empresa"), who: p.porta || "", evento: e.nome, evento_id: p.evento_id });
+        });
+        out.sort((a, z) => (a.date < z.date ? -1 : a.date > z.date ? 1 : 0));
+        return res.status(200).json({ ok: true, items: out.slice(0, 40) });
       }
 
       return res.status(400).json({ ok: false, error: `Tipo evt_ invalido: ${type}` });
