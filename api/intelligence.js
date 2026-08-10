@@ -1938,6 +1938,213 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ ok: false, error: `Tipo evt_ invalido: ${type}` });
     }
 
+    // ===== M30: Modulo "Financeiro" (F-FIN1) — Balancete a partir do extrato — types fin_* =====
+    if (type.startsWith("fin_")) {
+      res.setHeader("Cache-Control", "no-store");
+      const finNow = new Date().toISOString();
+      const FIN_LANC_FIELDS = { conta: 120, lancamento: 200, detalhe: 300, descricao: 2000, estabelecimento: 200 };
+
+      if (type === "fin_list") {
+        const { data, error } = await supabase.from("fin_balancetes").select("id, competencia, titulo, status, created_at").order("competencia", { ascending: false }).limit(500);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        // agrega contagem/total de despesas por balancete (paginado, sem N+1)
+        const agg = {};
+        for (let from = 0; ; from += 1000) {
+          const { data: ls, error: lErr } = await supabase.from("fin_lancamentos").select("balancete_id, tipo, contabiliza, valor").order("id", { ascending: true }).range(from, from + 999);
+          if (lErr) return res.status(500).json({ ok: false, error: lErr.message });
+          for (const l of ls || []) { const a = (agg[l.balancete_id] = agg[l.balancete_id] || { n: 0, despesas: 0 }); a.n++; if (l.tipo === "debito" && l.contabiliza) a.despesas += Number(l.valor) || 0; }
+          if (!ls || ls.length < 1000) break;
+        }
+        const items = (data || []).map((b) => ({ ...b, n_lancamentos: (agg[b.id] || {}).n || 0, total_despesas: (agg[b.id] || {}).despesas || 0 }));
+        return res.status(200).json({ ok: true, items });
+      }
+
+      if (type === "fin_get") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { data: bal, error } = await supabase.from("fin_balancetes").select("*").eq("id", id).maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        if (!bal) return res.status(404).json({ ok: false, error: "Balancete nao encontrado." });
+        const { data: lancs, error: lErr } = await supabase.from("fin_lancamentos").select("*").eq("balancete_id", id).order("ordem", { ascending: true }).order("data", { ascending: true, nullsFirst: false }).order("created_at", { ascending: true });
+        if (lErr) return res.status(500).json({ ok: false, error: lErr.message });
+        // F-FIN1 (D): signed URLs curtas das NFs (bucket privado). Best-effort — se falhar, segue sem.
+        const lancamentos = lancs || [];
+        const comNf = lancamentos.filter((l) => l.nf_path);
+        if (comNf.length) {
+          try {
+            const paths = comNf.map((l) => l.nf_path);
+            const { data: signed } = await supabase.storage.from("financeiro-nf").createSignedUrls(paths, 3600);
+            const byPath = {};
+            for (const s of signed || []) if (s && s.path && s.signedUrl) byPath[s.path] = s.signedUrl;
+            for (const l of comNf) l.nf_url = byPath[l.nf_path] || null;
+          } catch (e) { /* sem signed url -> o front so mostra que ha NF */ }
+        }
+        return res.status(200).json({ ok: true, balancete: bal, lancamentos });
+      }
+
+      if (type === "fin_save") {
+        const p = params(req);
+        const patch = { updated_at: finNow };
+        if (p.competencia !== undefined) patch.competencia = String(p.competencia).slice(0, 20);
+        if (p.titulo !== undefined) patch.titulo = p.titulo ? String(p.titulo).slice(0, 300) : null;
+        if (p.status && ["aberto", "fechado"].includes(p.status)) patch.status = p.status;
+        if (p.id) {
+          if (p.metadata && typeof p.metadata === "object" && !Array.isArray(p.metadata)) {
+            const { data: cur, error: cErr } = await supabase.from("fin_balancetes").select("metadata").eq("id", String(p.id)).maybeSingle();
+            if (cErr) return res.status(500).json({ ok: false, error: cErr.message }); // sem isso, um erro de leitura viraria overwrite total do metadata
+            patch.metadata = { ...((cur && cur.metadata) || {}), ...p.metadata }; // merge sem perder chaves
+          }
+          const { data, error } = await supabase.from("fin_balancetes").update(patch).eq("id", String(p.id)).select().maybeSingle();
+          if (error) return res.status(500).json({ ok: false, error: error.message });
+          if (!data) return res.status(404).json({ ok: false, error: "Balancete nao encontrado." });
+          return res.status(200).json({ ok: true, balancete: data });
+        }
+        if (!patch.competencia) return res.status(400).json({ ok: false, error: "Informe a competencia (YYYY-MM)." });
+        const { data, error } = await supabase.from("fin_balancetes").insert(patch).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, balancete: data });
+      }
+
+      if (type === "fin_delete") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        // F-FIN1: limpa as NFs do Storage ANTES (o cascade apaga as linhas mas nao os arquivos) — LGPD.
+        const paths = [];
+        for (let from = 0; ; from += 1000) {
+          const { data: nfs, error: nErr } = await supabase.from("fin_lancamentos").select("nf_path").eq("balancete_id", id).not("nf_path", "is", null).order("id", { ascending: true }).range(from, from + 999);
+          if (nErr) return res.status(500).json({ ok: false, error: nErr.message });
+          for (const l of nfs || []) if (l.nf_path) paths.push(l.nf_path);
+          if (!nfs || nfs.length < 1000) break;
+        }
+        if (paths.length) await supabase.storage.from("financeiro-nf").remove(paths).catch(() => {});
+        const { error } = await supabase.from("fin_balancetes").delete().eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true });
+      }
+
+      if (type === "fin_lancamento_add") {
+        const p = params(req);
+        const balancete_id = String(p.balancete_id || "").trim();
+        if (!balancete_id) return res.status(400).json({ ok: false, error: "Informe balancete_id" });
+        const { data: last } = await supabase.from("fin_lancamentos").select("ordem").eq("balancete_id", balancete_id).order("ordem", { ascending: false }).limit(1).maybeSingle();
+        const ordem = ((last && last.ordem) != null ? last.ordem : -1) + 1;
+        const row = { balancete_id, ordem, conta: p.conta ? String(p.conta).slice(0, 120) : "Banco do Brasil", tipo: "debito", contabiliza: true };
+        const { data, error } = await supabase.from("fin_lancamentos").insert(row).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true, lancamento: data });
+      }
+
+      if (type === "fin_lancamento_save") {
+        const p = params(req);
+        const id = String(p.id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const row = {};
+        for (const f of Object.keys(FIN_LANC_FIELDS)) { if (p[f] === undefined) continue; let v = p[f]; v = v == null ? null : String(v).trim(); row[f] = v === "" ? null : v.slice(0, FIN_LANC_FIELDS[f]); }
+        if (p.data !== undefined) row.data = p.data ? String(p.data).slice(0, 10) : null;
+        if (p.valor !== undefined) row.valor = (p.valor == null || p.valor === "") ? null : (Number.isFinite(Number(p.valor)) ? Number(p.valor) : null);
+        if (p.tipo !== undefined && ["debito", "credito"].includes(p.tipo)) { row.tipo = p.tipo; row.contabiliza = p.tipo === "credito" ? false : true; } // credito nunca contabiliza
+        if (p.contabiliza !== undefined) row.contabiliza = !!p.contabiliza; // override manual (ex.: debito interno que nao conta)
+        if (!Object.keys(row).length) return res.status(400).json({ ok: false, error: "Nada para atualizar." });
+        row.updated_at = finNow;
+        const { data, error } = await supabase.from("fin_lancamentos").update(row).eq("id", id).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        if (!data) return res.status(404).json({ ok: false, error: "Lancamento nao encontrado." });
+        return res.status(200).json({ ok: true, lancamento: data });
+      }
+
+      if (type === "fin_lancamento_remove") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { data: l, error: gErr } = await supabase.from("fin_lancamentos").select("nf_path").eq("id", id).maybeSingle();
+        if (gErr) return res.status(500).json({ ok: false, error: gErr.message });
+        if (l && l.nf_path) await supabase.storage.from("financeiro-nf").remove([l.nf_path]).catch(() => {}); // NF junto — LGPD
+        const { error } = await supabase.from("fin_lancamentos").delete().eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true });
+      }
+
+      // F-FIN1 (C): parser regex do extrato do BANCO DO BRASIL (texto colado, SEM IA).
+      // Linha "VALOR (±) DATA TIPO" + (opcional) linha seguinte de detalhe "DD/MM HH:MM DESTINATARIO".
+      if (type === "fin_extrato_import") {
+        const p = params(req);
+        const balancete_id = String(p.balancete_id || "").trim();
+        const conta = p.conta ? String(p.conta).slice(0, 120) : "Banco do Brasil";
+        if (!balancete_id) return res.status(400).json({ ok: false, error: "Informe balancete_id" });
+        const lines = String(p.texto || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+        const valRe = /^([\d.]+,\d{2})\s*\(([-+])\)\s*(\d{2})\/(\d{2})\/(\d{4})\s+(.+)$/;
+        const detRe = /^\d{2}\/\d{2}\s+\d{2}:\d{2}\s+(.+)$/;
+        const parsed = []; let saldoAnterior = null;
+        for (let i = 0; i < lines.length; i++) {
+          const m = lines[i].match(valRe);
+          if (!m) continue;
+          const valor = Number(m[1].replace(/\./g, "").replace(",", "."));
+          const tipo = m[2] === "-" ? "debito" : "credito";
+          const data = `${m[5]}-${m[4]}-${m[3]}`;
+          const lancamento = m[6].trim();
+          let detalhe = null;
+          if (i + 1 < lines.length && !valRe.test(lines[i + 1])) { const dm = lines[i + 1].match(detRe); detalhe = (dm ? dm[1] : lines[i + 1]).trim().slice(0, 300); i++; }
+          if (/saldo anterior/i.test(lancamento)) { saldoAnterior = valor; continue; }
+          if (/^s\s*a\s*l\s*d\s*o$/i.test(lancamento.replace(/\s+/g, " ").trim())) continue;
+          parsed.push({ data, lancamento: lancamento.slice(0, 200), detalhe, valor, tipo });
+        }
+        if (!parsed.length) return res.status(400).json({ ok: false, error: "Nenhum lançamento reconhecido (confira o formato Banco do Brasil)." });
+        const key = (l) => `${l.data}|${l.valor}|${String(l.detalhe || "").toLowerCase()}`;
+        const existing = new Set();
+        for (let from = 0; ; from += 1000) {
+          const { data: ex, error } = await supabase.from("fin_lancamentos").select("data, valor, detalhe").eq("balancete_id", balancete_id).order("id", { ascending: true }).range(from, from + 999);
+          if (error) return res.status(500).json({ ok: false, error: error.message });
+          for (const e of ex || []) existing.add(key({ data: e.data, valor: Number(e.valor), detalhe: e.detalhe }));
+          if (!ex || ex.length < 1000) break;
+        }
+        const { data: last } = await supabase.from("fin_lancamentos").select("ordem").eq("balancete_id", balancete_id).order("ordem", { ascending: false }).limit(1).maybeSingle();
+        let ordem = (last && last.ordem) != null ? last.ordem : -1;
+        const fresh = parsed.filter((l) => !existing.has(key(l))).map((l) => ({ balancete_id, conta, ordem: ++ordem, data: l.data, lancamento: l.lancamento, detalhe: l.detalhe, valor: l.valor, tipo: l.tipo, contabiliza: l.tipo !== "credito" }));
+        if (fresh.length) { const { error } = await supabase.from("fin_lancamentos").insert(fresh); if (error) return res.status(500).json({ ok: false, error: error.message }); }
+        if (saldoAnterior != null) {
+          const { data: cur, error: cErr } = await supabase.from("fin_balancetes").select("metadata").eq("id", balancete_id).maybeSingle();
+          if (cErr) return res.status(500).json({ ok: false, error: cErr.message }); // sem isso, leitura falha -> overwrite total do metadata
+          const md = (cur && cur.metadata) || {}; const saldos = { ...(md.saldos || {}) }; saldos[conta] = { ...(saldos[conta] || {}), anterior: saldoAnterior };
+          const { error: uErr } = await supabase.from("fin_balancetes").update({ metadata: { ...md, saldos }, updated_at: finNow }).eq("id", balancete_id);
+          if (uErr) return res.status(500).json({ ok: false, error: uErr.message });
+        }
+        return res.status(200).json({ ok: true, inserted: fresh.length, pulados: parsed.length - fresh.length, saldo_anterior: saldoAnterior });
+      }
+
+      // F-FIN1 (D): upload da NF no bucket PRIVADO via service-role. base64 (limite ~4MB).
+      if (type === "fin_nf_upload") {
+        const p = params(req);
+        const id = String(p.id || "").trim();
+        const base64 = String(p.base64 || "");
+        if (!id || !base64) return res.status(400).json({ ok: false, error: "Informe id e o arquivo" });
+        const bytes = Math.floor(base64.length * 3 / 4);
+        if (bytes > 4 * 1024 * 1024) return res.status(413).json({ ok: false, error: "Arquivo muito grande (máx 4MB). Comprima a NF." });
+        const { data: l, error: gErr } = await supabase.from("fin_lancamentos").select("balancete_id, nf_path").eq("id", id).maybeSingle();
+        if (gErr) return res.status(500).json({ ok: false, error: gErr.message });
+        if (!l) return res.status(404).json({ ok: false, error: "Lancamento nao encontrado." });
+        const safe = String(p.filename || "nf").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-60) || "nf";
+        const path = `${l.balancete_id}/${id}-${safe}`;
+        const buffer = Buffer.from(base64, "base64");
+        const { error: upErr } = await supabase.storage.from("financeiro-nf").upload(path, buffer, { contentType: p.mime || "application/octet-stream", upsert: true });
+        if (upErr) return res.status(500).json({ ok: false, error: `upload: ${upErr.message}` });
+        if (l.nf_path && l.nf_path !== path) await supabase.storage.from("financeiro-nf").remove([l.nf_path]).catch(() => {}); // troca de arquivo -> apaga o antigo
+        const { error: uErr } = await supabase.from("fin_lancamentos").update({ nf_path: path, updated_at: finNow }).eq("id", id);
+        if (uErr) return res.status(500).json({ ok: false, error: uErr.message });
+        return res.status(200).json({ ok: true, nf_path: path });
+      }
+      if (type === "fin_nf_remove") {
+        const id = String(params(req).id || "").trim();
+        if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const { data: l, error: gErr } = await supabase.from("fin_lancamentos").select("nf_path").eq("id", id).maybeSingle();
+        if (gErr) return res.status(500).json({ ok: false, error: gErr.message }); // sem isso, falha de leitura pularia o delete do Storage e ainda limparia nf_path (orfa)
+        if (l && l.nf_path) { const { error: rmErr } = await supabase.storage.from("financeiro-nf").remove([l.nf_path]); if (rmErr) return res.status(500).json({ ok: false, error: rmErr.message }); }
+        const { error } = await supabase.from("fin_lancamentos").update({ nf_path: null, updated_at: finNow }).eq("id", id);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        return res.status(200).json({ ok: true });
+      }
+
+      return res.status(400).json({ ok: false, error: `Tipo fin_ invalido: ${type}` });
+    }
+
     // Participacoes societarias locais de uma empresa (base receita_socio).
     if (type === "holdings") {
       const cnpj = onlyDigits(req.query.cnpj);

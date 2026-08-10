@@ -479,6 +479,7 @@ function setView(view) {
     legislativo: ["Radar legislativo (M12)", "Legislativo"],
     paineis: ["Monitoramento por painel (M21)", "Painéis"],
     evento: ["Gestão de eventos (M25)", "Eventos"],
+    financeiro: ["Financeiro (M30)", "Balancete"],
     radar: ["Risco & Oportunidade (M13)", "Radar"],
     gerador: ["Composição comercial (M14)", "Gerador de Dossiê"],
     person: ["Screening de pessoa", "Consulta Pessoa"]
@@ -496,6 +497,7 @@ function setView(view) {
   if (view === "legislativo") loadLegislativo();
   if (view === "paineis") loadPaineis();
   if (view === "evento") loadEventos();
+  if (view === "financeiro") loadFinanceiro();
   if (view === "radar") loadRadar();
   if (view === "gerador") loadGerador();
   $("#view-kicker").textContent = kicker;
@@ -3122,6 +3124,340 @@ function wireEvento() {
   view.addEventListener("input", (e) => { // F-EVT7: busca ao vivo na Base — só o tbody (mantém foco no input)
     if (e.target.id === "base-search") { state.baseQ = e.target.value; const tb = $("#base-tbody"); if (tb) tb.innerHTML = renderBaseRows(); }
   });
+}
+
+// ══════════════════ F-FIN1: Financeiro — Balancete ══════════════════════
+// Importa o extrato bancário → formata no padrão do Balancete → numera despesas
+// (crédito NÃO contabiliza) → carta justificativa + NF por despesa → gera o documento.
+// LGPD: dado financeiro + nomes de PIX vivem só no app; o documento é BAIXADO (nunca no git).
+let financeiroWired = false;
+const FIN_CONTAS = ["Banco do Brasil", "BTG", "BTG poupança", "BTG cartão"];
+
+async function loadFinanceiro() {
+  wireFinanceiro();
+  const grid = $("#financeiro-grid"), detail = $("#financeiro-detail");
+  if (!grid) return;
+  state.currentBalanceteId = null;
+  if (detail) { detail.hidden = true; detail.innerHTML = ""; }
+  grid.hidden = false;
+  grid.innerHTML = emptyCard("Balancete", "Carregando…");
+  try {
+    const r = await requestJson("/api/intelligence?type=fin_list");
+    const items = r?.items || [];
+    if (!items.length) { grid.innerHTML = emptyCard("Balancete", "Nenhum balancete ainda. Clique em “+ Novo balancete”."); return; }
+    grid.innerHTML = items.map((b) => `<article class="news-card target-card selectable" data-open-balancete="${escapeHtml(b.id)}">
+      <div class="card-body">
+        <div class="card-head"><div>
+          <strong>${escapeHtml(b.titulo || ("Balancete " + (b.competencia || "")))}</strong>
+          <span class="card-sub">${escapeHtml(b.competencia || "")}</span>
+        </div></div>
+        <div class="entity-row" style="flex-wrap:wrap">
+          <span class="entity-pill">${escapeHtml(b.status || "aberto")}</span>
+          <span class="entity-pill">${b.n_lancamentos || 0} lançamentos</span>
+          <span class="entity-pill">despesas ${money(b.total_despesas || 0)}</span>
+          <button type="button" class="entity-pill" data-balancete-del="${escapeHtml(b.id)}">Excluir</button>
+        </div>
+      </div>
+      ${cardFoot("var(--blue)", b.status || "Balancete", "IRIS//FINANCEIRO")}
+    </article>`).join("");
+  } catch (e) { grid.innerHTML = emptyCard("Balancete", `Falha: ${e.message}`); }
+}
+async function finBalanceteCreate() {
+  const competencia = prompt("Competência do balancete (AAAA-MM, ex.: 2026-03):");
+  if (competencia == null) return;
+  if (!/^\d{4}-\d{2}$/.test(competencia.trim())) { alert("Formato: AAAA-MM (ex.: 2026-03)"); return; }
+  try {
+    const r = await postJson("/api/intelligence?type=fin_save", { competencia: competencia.trim() });
+    if (r?.ok && r.balancete) { await loadFinanceiro(); openBalancete(r.balancete.id); } else alert(r?.error || "erro");
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+async function openBalancete(id) {
+  const grid = $("#financeiro-grid"), detail = $("#financeiro-detail");
+  if (!detail) return;
+  state.currentBalanceteId = id;
+  if (grid) grid.hidden = true;
+  detail.hidden = false;
+  detail.innerHTML = emptyCard("Balancete", "Abrindo…");
+  try {
+    const d = await requestJson(`/api/intelligence?type=fin_get&id=${encodeURIComponent(id)}`);
+    if (!d?.ok) throw new Error(d?.error || "erro");
+    state.balanceteData = d;
+    renderBalanceteDetail(d);
+  } catch (e) { detail.innerHTML = emptyCard("Balancete", `Falha: ${e.message}`); }
+}
+// Nº DOC derivado: sequência sobre débitos CONTABILIZADOS, na ordem de exibição (ordem/data).
+function finNumbering(lancs) {
+  const map = {}; let n = 0;
+  for (const l of lancs || []) if (l.tipo === "debito" && l.contabiliza) map[l.id] = ++n;
+  return map;
+}
+function finCell(l, field, val, kind, opts) {
+  const a = `data-fl-id="${escapeHtml(l.id)}" data-fl-field="${field}"`;
+  if (kind === "select") return `<select ${a} class="dou-date">${(opts || []).map((o) => `<option value="${escapeHtml(o)}" ${String(val || "") === o ? "selected" : ""}>${escapeHtml(o || "—")}</option>`).join("")}</select>`;
+  if (kind === "date") return `<input type="date" ${a} class="dou-date" style="width:132px" value="${escapeHtml(String(val || "").slice(0, 10))}">`;
+  if (kind === "num") return `<input type="number" step="0.01" ${a} class="dou-date" style="width:110px" value="${val == null ? "" : escapeHtml(String(val))}">`;
+  return `<input ${a} class="dou-date" style="min-width:110px" value="${escapeHtml(val == null ? "" : String(val))}">`;
+}
+function renderBalanceteDetail(d) {
+  const detail = $("#financeiro-detail");
+  if (!detail || !d) return;
+  const bal = d.balancete || {}, lancs = d.lancamentos || [];
+  const num = finNumbering(lancs);
+  const contas = [...new Set(lancs.map((l) => l.conta || "Banco do Brasil"))];
+  if (!contas.length) contas.push("Banco do Brasil");
+  const totalDespesas = lancs.filter((l) => l.tipo === "debito" && l.contabiliza).reduce((s, l) => s + (Number(l.valor) || 0), 0);
+  const secaoConta = (conta) => {
+    const ls = lancs.filter((l) => (l.conta || "Banco do Brasil") === conta);
+    const desp = ls.filter((l) => l.tipo === "debito" && l.contabiliza).reduce((s, l) => s + (Number(l.valor) || 0), 0);
+    const rows = ls.map((l) => {
+      const isCred = l.tipo === "credito";
+      return `<tr style="${isCred ? "opacity:.55" : ""}">
+        <td>${finCell(l, "data", l.data, "date")}</td>
+        <td>${finCell(l, "lancamento", l.lancamento, "text")}</td>
+        <td>${finCell(l, "detalhe", l.detalhe, "text")}</td>
+        <td>${finCell(l, "descricao", l.descricao, "text")}</td>
+        <td>${finCell(l, "valor", l.valor, "num")}</td>
+        <td>${finCell(l, "tipo", l.tipo, "select", ["debito", "credito"])}</td>
+        <td style="text-align:center">${num[l.id] || (isCred ? "—" : "·")}</td>
+        <td style="white-space:nowrap">${l.nf_url ? `<a href="${escapeHtml(l.nf_url)}" target="_blank" rel="noopener" class="entity-pill">NF ↗</a>` : (l.nf_path ? `<span class="entity-pill" style="opacity:.6">NF</span>` : "")}<label class="entity-pill" style="cursor:pointer;font-size:.7rem" title="anexar NF">+NF<input type="file" accept="image/*,application/pdf" data-fl-nf="${escapeHtml(l.id)}" hidden></label>${l.nf_path ? ` <button type="button" class="entity-pill" data-fl-nfdel="${escapeHtml(l.id)}" style="font-size:.7rem">×NF</button>` : ""}</td>
+        <td><button type="button" class="entity-pill" data-fl-del="${escapeHtml(l.id)}">×</button></td>
+      </tr>`;
+    }).join("");
+    return `<div style="margin-top:10px">
+      <strong style="font-size:.9rem">${escapeHtml(conta)}</strong> <span class="card-sub">· despesas ${money(desp)}</span>
+      <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Lançamento</th><th>Detalhe</th><th>Descrição (finalidade)</th><th>Valor</th><th>Tipo</th><th>Nº DOC</th><th>NF</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="9" class="card-sub">Sem lançamentos. Importe o extrato ou adicione uma linha.</td></tr>`}</tbody></table></div>
+      <div class="entity-row" style="gap:6px;margin-top:4px"><button type="button" class="entity-pill" data-fl-add="${escapeHtml(conta)}">+ lançamento</button></div>
+    </div>`;
+  };
+  detail.innerHTML = `<article class="news-card">
+    <div class="entity-row" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
+      <button type="button" class="entity-pill" data-balancete-back>&larr; Balancetes</button>
+      <div class="entity-row" style="gap:6px;flex-wrap:wrap">
+        <button type="button" class="entity-pill" id="fin-import-btn">Importar extrato</button>
+        <button type="button" class="entity-pill" id="fin-config-btn">Config / assinaturas</button>
+        <button type="button" class="entity-pill" id="fin-doc-btn">Gerar documento</button>
+      </div>
+    </div>
+    <strong>${escapeHtml(bal.titulo || ("Balancete " + (bal.competencia || "")))}</strong>
+    <span class="card-sub">${escapeHtml(bal.competencia || "")} · ${escapeHtml(bal.status || "aberto")}</span>
+    <div id="fin-import-box" hidden style="margin:8px 0;border:1px solid var(--border);border-radius:6px;padding:8px">
+      <div class="entity-row" style="gap:6px;flex-wrap:wrap"><span class="card-sub">Cole o texto do extrato (Banco do Brasil) e escolha a conta:</span>
+        <select id="fin-import-conta" class="dou-date">${FIN_CONTAS.map((c) => `<option>${escapeHtml(c)}</option>`).join("")}</select></div>
+      <textarea id="fin-import-text" class="dou-date" style="width:100%;min-height:120px;margin-top:6px" placeholder="Cole aqui os lançamentos do extrato…"></textarea>
+      <div class="entity-row" style="gap:6px;margin-top:6px"><button type="button" class="entity-pill" id="fin-import-do">Importar</button><span id="fin-import-status" class="card-sub"></span></div>
+      <p class="card-sub" style="margin:4px 0 0">Parser do formato Banco do Brasil (regex, sem IA) — confira e corrija na tabela o que sair errado.</p>
+    </div>
+    <div id="fin-config-box" hidden style="margin:8px 0"></div>
+    ${contas.map(secaoConta).join("")}
+    <div class="entity-row" style="justify-content:flex-end;margin-top:10px"><strong>TOTAL DESPESAS ${money(totalDespesas)}</strong></div>
+  </article>`;
+}
+async function finLancSave(id, patch) {
+  const l = (state.balanceteData?.lancamentos || []).find((x) => String(x.id) === String(id));
+  if (l) Object.assign(l, patch);
+  // tipo=credito -> contabiliza false (espelha o backend p/ o re-render bater)
+  if (patch.tipo && l) { l.contabiliza = patch.tipo === "credito" ? false : true; }
+  try {
+    const r = await postJson("/api/intelligence?type=fin_lancamento_save", { id, ...patch });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    // re-render quando o campo afeta soma/estilo/ordem (senão os totais da grid ficam defasados do documento)
+    if (patch.tipo || patch.valor !== undefined || patch.data !== undefined || "contabiliza" in patch) renderBalanceteDetail(state.balanceteData);
+  } catch (e) { alert(`Falha ao salvar: ${e.message}`); openBalancete(state.currentBalanceteId); }
+}
+async function finLancAdd(conta) {
+  try {
+    const r = await postJson("/api/intelligence?type=fin_lancamento_add", { balancete_id: state.currentBalanceteId, conta });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    openBalancete(state.currentBalanceteId);
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+function wireFinanceiro() {
+  if (financeiroWired) return; financeiroWired = true;
+  const view = $("#view-financeiro");
+  if (!view) return;
+  $("#financeiro-create")?.addEventListener("click", finBalanceteCreate);
+  view.addEventListener("click", async (e) => {
+    const open = e.target.closest("[data-open-balancete]"); if (open) { openBalancete(open.dataset.openBalancete); return; }
+    const bdel = e.target.closest("[data-balancete-del]");
+    if (bdel) { e.stopPropagation(); if (confirm("Excluir este balancete e todos os lançamentos?")) { await postJson("/api/intelligence?type=fin_delete", { id: bdel.dataset.balanceteDel }).catch(() => {}); loadFinanceiro(); } return; }
+    if (e.target.closest("[data-balancete-back]")) { loadFinanceiro(); return; }
+    if (e.target.closest("#fin-import-btn")) { const b = $("#fin-import-box"); if (b) b.hidden = !b.hidden; return; }
+    if (e.target.closest("#fin-import-do")) { finImportExtrato(); return; }
+    if (e.target.closest("#fin-config-btn")) { finToggleConfig(); return; }
+    if (e.target.closest("#fin-doc-btn")) { finGerarDoc(); return; }
+    if (e.target.closest("#fin-config-save")) { finConfigSave(); return; }
+    const add = e.target.closest("[data-fl-add]"); if (add) { finLancAdd(add.dataset.flAdd); return; }
+    const fdel = e.target.closest("[data-fl-del]"); if (fdel) { if (confirm("Remover lançamento?")) postJson("/api/intelligence?type=fin_lancamento_remove", { id: fdel.dataset.flDel }).then(() => openBalancete(state.currentBalanceteId)).catch(() => {}); return; }
+    const nfdel = e.target.closest("[data-fl-nfdel]"); if (nfdel) { if (confirm("Remover a NF?")) postJson("/api/intelligence?type=fin_nf_remove", { id: nfdel.dataset.flNfdel }).then(() => openBalancete(state.currentBalanceteId)).catch((err) => alert(err.message)); return; }
+  });
+  view.addEventListener("change", (e) => {
+    const cell = e.target.closest("[data-fl-id]");
+    if (cell) { finLancSave(cell.dataset.flId, { [cell.dataset.flField]: cell.type === "checkbox" ? cell.checked : cell.value }); return; }
+    const nf = e.target.closest("[data-fl-nf]");
+    if (nf && nf.files && nf.files[0]) { finNfUpload(nf.dataset.flNf, nf.files[0]); nf.value = ""; return; }
+  });
+}
+// C: importar extrato (parser regex do BB, no backend).
+async function finImportExtrato() {
+  const texto = $("#fin-import-text")?.value || "", conta = $("#fin-import-conta")?.value || "Banco do Brasil", st = $("#fin-import-status");
+  if (!texto.trim()) return;
+  if (st) st.textContent = "Importando…";
+  try {
+    const r = await postJson("/api/intelligence?type=fin_extrato_import", { balancete_id: state.currentBalanceteId, conta, texto });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (st) st.textContent = `${r.inserted} lançamento(s), ${r.pulados} já existiam.`;
+    openBalancete(state.currentBalanceteId);
+  } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; }
+}
+// D: upload da NF (Supabase Storage via backend service-role).
+async function finNfUpload(lancId, file) {
+  if (file.size > 4 * 1024 * 1024) { alert("Arquivo muito grande (máx 4MB). Comprima a NF."); return; }
+  toast("Enviando NF…");
+  try {
+    const base64 = await fileToBase64(file);
+    const r = await postJson("/api/intelligence?type=fin_nf_upload", { id: lancId, base64, filename: file.name, mime: file.type });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    toast("NF anexada.");
+    openBalancete(state.currentBalanceteId);
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
+// E: config (org + assinaturas) — editável na metadata; nomes de pessoas ficam AQUI, não no código.
+const FIN_ORG_DEFAULT = { nome: "Instituto de Regulação, Inovação e Sustentabilidade – IRIS", cnpj: "", endereco: "" };
+function finOrg(bal) { return { ...FIN_ORG_DEFAULT, ...((bal.metadata && bal.metadata.org) || {}) }; }
+function finAssin(bal) { return (bal.metadata && bal.metadata.assinaturas) || {}; }
+function finToggleConfig() {
+  const box = $("#fin-config-box");
+  if (!box) return;
+  if (!box.hidden) { box.hidden = true; return; }
+  box.hidden = false;
+  const bal = state.balanceteData?.balancete || {}, org = finOrg(bal), a = finAssin(bal);
+  const inp = (id, ph, val) => `<input id="${id}" class="dou-date" style="min-width:200px;flex:1" placeholder="${escapeHtml(ph)}" value="${escapeHtml(val || "")}">`;
+  box.innerHTML = `<div style="border:1px solid var(--border);border-radius:6px;padding:8px">
+    <strong style="font-size:.9rem">Config do balancete (organização e assinaturas)</strong>
+    <div class="card-sub">Os nomes das pessoas ficam só aqui (não no código) e entram no documento gerado.</div>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap;margin-top:6px">${inp("fin-org-nome", "Organização", org.nome)}${inp("fin-org-cnpj", "CNPJ", org.cnpj)}${inp("fin-org-end", "Endereço", org.endereco)}</div>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap;margin-top:6px">${inp("fin-a-fin", "Diretor Financeiro (nome)", a.diretor_financeiro)}${inp("fin-a-cont", "Contador (nome)", a.contador)}${inp("fin-a-crc", "CRC do contador", a.contador_crc)}</div>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap;margin-top:6px">${inp("fin-a-cpres", "Conselho Fiscal — presidente", a.conselho_presidente)}${inp("fin-a-c1", "Conselho Fiscal — membro", a.conselho1)}${inp("fin-a-c2", "Conselho Fiscal — membro", a.conselho2)}</div>
+    <div class="entity-row" style="gap:6px;margin-top:6px">${inp("fin-titulo", "Título do balancete (opcional)", bal.titulo)}<button type="button" class="entity-pill" id="fin-config-save">Salvar config</button><span id="fin-config-status" class="card-sub"></span></div>
+  </div>`;
+}
+async function finConfigSave() {
+  const st = $("#fin-config-status"); if (st) st.textContent = "Salvando…";
+  const meta = {
+    org: { nome: $("#fin-org-nome")?.value || "", cnpj: $("#fin-org-cnpj")?.value || "", endereco: $("#fin-org-end")?.value || "" },
+    assinaturas: { diretor_financeiro: $("#fin-a-fin")?.value || "", contador: $("#fin-a-cont")?.value || "", contador_crc: $("#fin-a-crc")?.value || "", conselho_presidente: $("#fin-a-cpres")?.value || "", conselho1: $("#fin-a-c1")?.value || "", conselho2: $("#fin-a-c2")?.value || "" }
+  };
+  try {
+    const r = await postJson("/api/intelligence?type=fin_save", { id: state.currentBalanceteId, metadata: meta, titulo: $("#fin-titulo")?.value || "" });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (state.balanceteData) state.balanceteData.balancete = r.balancete;
+    if (st) st.textContent = "Salvo.";
+  } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; }
+}
+// pt-BR: valor por extenso (reais/centavos) para a carta.
+function valorPorExtenso(v) {
+  const total = Math.round((Number(v) || 0) * 100), reais = Math.floor(total / 100), cent = total % 100;
+  const U = ["zero", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "doze", "treze", "quatorze", "quinze", "dezesseis", "dezessete", "dezoito", "dezenove"];
+  const D = ["", "", "vinte", "trinta", "quarenta", "cinquenta", "sessenta", "setenta", "oitenta", "noventa"];
+  const C = ["", "cento", "duzentos", "trezentos", "quatrocentos", "quinhentos", "seiscentos", "setecentos", "oitocentos", "novecentos"];
+  const ate999 = (n) => {
+    if (n === 0) return "";
+    if (n === 100) return "cem";
+    const c = Math.floor(n / 100), r = n % 100, out = [];
+    if (c) out.push(C[c]);
+    if (r > 0 && r < 20) out.push(U[r]);
+    else if (r >= 20) { const d = Math.floor(r / 10), un = r % 10; out.push(D[d] + (un ? " e " + U[un] : "")); }
+    return out.join(" e ");
+  };
+  const extenso = (n) => {
+    if (n === 0) return "zero";
+    const mi = Math.floor(n / 1000000), mil = Math.floor((n % 1000000) / 1000), r = n % 1000, parts = [];
+    if (mi) parts.push(ate999(mi) + (mi === 1 ? " milhão" : " milhões"));
+    if (mil) parts.push(mil === 1 ? "mil" : ate999(mil) + " mil");
+    if (r) parts.push(ate999(r));
+    let s = parts.join(", ");
+    if (parts.length > 1 && (r === 0 || r < 100 || r % 100 === 0)) s = s.replace(/, ([^,]*)$/, " e $1");
+    return s;
+  };
+  const de = (reais >= 1000000 && reais % 1000000 === 0) ? "de " : ""; // "um milhão DE reais" (só p/ milhões/bilhões exatos)
+  return extenso(reais) + " " + de + (reais === 1 ? "real" : "reais") + (cent ? " e " + extenso(cent) + " " + (cent === 1 ? "centavo" : "centavos") : "");
+}
+function finDataFmt(d) { return d ? new Date(String(d).slice(0, 10) + "T12:00:00").toLocaleDateString("pt-BR") : "___"; }
+function cartaJustificativaTexto(desp, org) {
+  const estab = desp.estabelecimento || desp.detalhe || "";
+  const fin = desp.descricao || "[preencher a finalidade]";
+  return [
+    `${org.nome}${org.cnpj ? ` (CNPJ: ${org.cnpj})` : ""} vem, por meio desta, apresentar a justificativa referente à despesa: ${fin}, ocorrida em ${finDataFmt(desp.data)}${estab ? `, junto a ${estab}` : ""}, no valor de ${money(desp.valor || 0)} (${valorPorExtenso(desp.valor || 0)}).`,
+    `A despesa mostrou-se necessária ao desenvolvimento das atividades institucionais do Instituto, observando os princípios de economicidade, pertinência, razoabilidade e transparência.`
+  ];
+}
+// F: gerar o documento (markdown baixado + HTML no padrão p/ imprimir PDF). Nunca no git.
+function finGerarDoc() {
+  const d = state.balanceteData;
+  if (!d) return;
+  const bal = d.balancete || {}, lancs = d.lancamentos || [], org = finOrg(bal), a = finAssin(bal);
+  const num = finNumbering(lancs);
+  const contas = [...new Set(lancs.map((l) => l.conta || "Banco do Brasil"))];
+  const saldos = (bal.metadata && bal.metadata.saldos) || {};
+  const despesas = lancs.filter((l) => l.tipo === "debito" && l.contabiliza).map((l) => ({ ...l, num: num[l.id] }));
+  const totalDespesas = despesas.reduce((s, l) => s + (Number(l.valor) || 0), 0);
+  const comp = bal.competencia || "";
+  // ---- markdown ----
+  const cell = (s) => String(s == null ? "" : s).replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ").trim();
+  const L = [`# Balancete (${comp})`, "", `**${org.nome}**${org.cnpj ? ` · CNPJ ${org.cnpj}` : ""}`, ""];
+  for (const conta of contas) {
+    const ls = lancs.filter((l) => (l.conta || "Banco do Brasil") === conta);
+    L.push(`## ${conta}`, "");
+    const saMd = Number((saldos[conta] || {}).anterior);
+    if (Number.isFinite(saMd)) L.push(`Saldo anterior: ${money(saMd)}`, "");
+    L.push("| Data | Lançamento | Detalhe | Descrição | Valor | Tipo | Nº DOC |", "| --- | --- | --- | --- | --- | ---: | ---: |");
+    for (const l of ls) L.push(`| ${cell(finDataFmt(l.data))} | ${cell(l.lancamento)} | ${cell(l.detalhe)} | ${cell(l.descricao)} | ${money(l.valor || 0)} | ${l.tipo} | ${num[l.id] || (l.tipo === "credito" ? "—" : "")} |`);
+    const desp = ls.filter((l) => l.tipo === "debito" && l.contabiliza).reduce((s, l) => s + (Number(l.valor) || 0), 0);
+    L.push("", `**TOTAL DESPESAS ${conta}: ${money(desp)}**`, "");
+  }
+  L.push("---", "", `**TOTAL DESPESAS: ${money(totalDespesas)}**`, "", "## Assinaturas", "",
+    `${a.diretor_financeiro || "____________________"} — Diretor Financeiro`,
+    `${a.contador || "____________________"} — ${a.contador_crc ? "CRC " + a.contador_crc : "Contabilidade"}`,
+    `Visto — Conselho Fiscal: ${[a.conselho_presidente, a.conselho1, a.conselho2].filter(Boolean).join(", ") || "____________________"}`, "");
+  for (const desp of despesas) {
+    L.push("---", "", `### ANEXO Nº${String(desp.num).padStart(2, "0")} — Carta de justificativa`, "");
+    for (const par of cartaJustificativaTexto(desp, org)) L.push(par, "");
+    if (desp.nf_url) L.push(`Nota Fiscal: ${desp.nf_url}`, "");
+  }
+  const slug = `balancete-${comp || "sem-data"}`;
+  downloadText(`${slug}.md`, L.join("\n"));
+  // ---- HTML no padrão → imprimir ----
+  const esc = escapeHtml;
+  const th = "border:1px solid #345;padding:4px 6px;font-size:9pt;text-transform:uppercase;letter-spacing:.05em;background:#eef2f7;text-align:left";
+  const td = "border:1px solid #ccd;padding:3px 6px;font-size:9.5pt";
+  let html = `<div style="font-family:Georgia,serif;color:#111">
+    <div style="text-align:center;padding:120px 0 60px"><div style="font-size:28pt;letter-spacing:.2em;color:#1a2b4a">IRIS</div><div style="font-size:20pt;margin-top:24px">Balancete (${esc(comp)})</div></div>`;
+  for (const conta of contas) {
+    const ls = lancs.filter((l) => (l.conta || "Banco do Brasil") === conta);
+    const sa = Number((saldos[conta] || {}).anterior); // coage p/ número (metadata é livre) — evita money(string crua) no HTML
+    html += `<div style="page-break-before:always;padding-top:8px"><div style="border-bottom:2px solid #3355aa;padding-bottom:6px;margin-bottom:8px"><span style="font-size:9pt;letter-spacing:.1em;color:#555">EXTRATO BANCÁRIO · CONTA</span><br><strong style="font-size:16pt">${esc(conta)}</strong></div>`;
+    if (Number.isFinite(sa)) html += `<p style="font-size:10pt"><strong>Saldo anterior:</strong> ${money(sa)}</p>`;
+    html += `<table style="border-collapse:collapse;width:100%"><thead><tr><th style="${th}">Data</th><th style="${th}">Lançamento</th><th style="${th}">Detalhe</th><th style="${th}">Descrição</th><th style="${th};text-align:right">Valor</th><th style="${th}">Tipo</th><th style="${th};text-align:right">Nº DOC</th></tr></thead><tbody>`;
+    for (const l of ls) html += `<tr${l.tipo === "credito" ? ' style="color:#888"' : ""}><td style="${td}">${esc(finDataFmt(l.data))}</td><td style="${td}">${esc(l.lancamento)}</td><td style="${td}">${esc(l.detalhe)}</td><td style="${td}">${esc(l.descricao)}</td><td style="${td};text-align:right">${money(l.valor || 0)}</td><td style="${td}">${esc(l.tipo)}</td><td style="${td};text-align:right">${num[l.id] || (l.tipo === "credito" ? "—" : "")}</td></tr>`;
+    const desp = ls.filter((l) => l.tipo === "debito" && l.contabiliza).reduce((s, l) => s + (Number(l.valor) || 0), 0);
+    html += `</tbody></table><p style="text-align:right;font-size:11pt;margin-top:6px"><strong>TOTAL DESPESAS: ${money(desp)}</strong></p></div>`;
+  }
+  html += `<div style="page-break-before:always;padding-top:40px;text-align:center"><h2 style="letter-spacing:.1em">ASSINATURAS</h2>
+    <div style="margin-top:60px">____________________<br><strong>${esc(a.diretor_financeiro || "")}</strong><br><span style="font-size:9pt">Diretor Financeiro — ${esc(org.nome)}</span></div>
+    <div style="margin-top:50px">____________________<br><strong>${esc(a.contador || "")}</strong><br><span style="font-size:9pt">${esc(a.contador_crc ? "CRC " + a.contador_crc : "Contabilidade")}</span></div>
+    <div style="margin-top:40px;font-size:9pt">VISTO — Conselho Fiscal</div>
+    ${[a.conselho_presidente, a.conselho1, a.conselho2].filter(Boolean).map((n) => `<div style="margin-top:36px">____________________<br><strong>${esc(n)}</strong><br><span style="font-size:9pt">Conselho Fiscal</span></div>`).join("")}
+  </div>`;
+  for (const desp of despesas) {
+    html += `<div style="page-break-before:always;padding-top:20px"><div style="text-align:center;font-weight:bold">ANEXO Nº${String(desp.num).padStart(2, "0")}</div><div style="text-align:center;font-size:10pt;margin-bottom:16px">CARTA DE JUSTIFICATIVA DE DESPESAS</div>
+      <p style="font-size:10pt"><strong>${esc(org.nome)}</strong>${org.cnpj ? `<br>CNPJ: ${esc(org.cnpj)}` : ""}${org.endereco ? `<br>Endereço: ${esc(org.endereco)}` : ""}</p>
+      ${cartaJustificativaTexto(desp, org).map((par) => `<p style="font-size:10.5pt;text-align:justify">${esc(par)}</p>`).join("")}
+      <p style="margin-top:30px">Atenciosamente,<br>${esc(org.nome)}<br>${esc(a.diretor_financeiro || "Diretor Financeiro")}</p>
+      ${desp.nf_url ? (/\.(png|jpe?g|gif|webp)(\?|$)/i.test(desp.nf_url) || (desp.nf_mime || "").startsWith("image/") ? `<div style="text-align:center;margin-top:16px"><img src="${esc(desp.nf_url)}" style="max-width:90%;max-height:520px;border:1px solid #ccc"></div>` : `<p style="margin-top:12px;font-size:9pt">Nota Fiscal anexa: <a href="${esc(desp.nf_url)}">${esc(desp.nf_url)}</a></p>`) : `<p style="margin-top:12px;font-size:9pt;color:#a00">NF pendente.</p>`}
+    </div>`;
+  }
+  html += `</div>`;
+  runPrint(html);
 }
 
 // ══════════════════ Painéis curados (M21 — NOMOS F1) ══════════════════════
