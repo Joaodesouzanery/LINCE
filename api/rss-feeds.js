@@ -248,25 +248,42 @@ module.exports = async function handler(req, res) {
            .forEach(c => results.push({ agency: ag.acronym, agency_name: ag.name, ...c }));
     }));
     results.sort((a,b) => new Date(b.date||0)-new Date(a.date||0));
+    const deduped = dedupItems(results); // F-INT1: mesmo edital em 2 feeds/agencias nao repete
 
     // Fallback DOU: se o RSS das agencias nao retornou nada (feeds gov.br
     // frequentemente quebrados), busca consultas/pautas nos atos do DOU ja
     // ingeridos. Garante que a aba nunca fique vazia com dado confiavel.
-    if (!results.length) {
+    if (!deduped.length) {
       const acronyms = new Set(agencies.map((a) => a.acronym));
       const dou = await douFallback(supabase, type, acronyms.size ? acronyms : null);
       if (dou.length) {
         return res.status(200).json({ ok:true, type, sector: sector || null, sectors: Object.keys(SECTOR_THEMES),
-          source:"DOU (fallback)", fetchedAt:new Date().toISOString(), items:dou });
+          source:"DOU (fallback)", fetchedAt:new Date().toISOString(), items:dedupItems(dou) });
       }
     }
 
     return res.status(200).json({ ok:true, type, sector: sector || null, sectors: Object.keys(SECTOR_THEMES),
-      source:"RSS Agencias", fetchedAt:new Date().toISOString(), items:results });
+      source:"RSS Agencias", fetchedAt:new Date().toISOString(), items:deduped });
   } catch(error) {
     return res.status(502).json({ ok:false, error:error.message });
   }
 };
+
+// F-INT1 (F4): chave de dedup compartilhada entre Consultas/Agenda/Agenda Regulatoria —
+// o MESMO ato aparecia repetido (RSS + DOU, ou em 2 lanes) sem sinal.
+function dedupKey(title, date) {
+  const t = String(title || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+  // data NORMALIZADA (RSS vem em RFC822, DOU em ISO — slice cru nao casava); agencia FORA
+  // da chave (o mesmo edital via 2 agencias/fontes e duplicata de verdade).
+  const d = new Date(date || "");
+  const iso = Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+  return `${t}|${iso}`;
+}
+function dedupItems(items) {
+  const seen = new Set(); const out = [];
+  for (const i of items) { const k = dedupKey(i.title, i.date); if (seen.has(k)) continue; seen.add(k); out.push(i); }
+  return out;
+}
 
 // Termos sem acento (ilike e sensivel a acento): casam titulos do DOU com ou
 // sem acentuacao. Ex.: "reuni" -> "reuniao"/"reunião"; "audi" -> "audiencia".

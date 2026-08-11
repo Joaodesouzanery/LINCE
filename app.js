@@ -4202,13 +4202,18 @@ async function saveMonitorFromForm(event) {
     // jamais casava com o texto do DOU — monitor por CNPJ era decorativo).
     const digits = onlyDigits(pattern);
     const cpfCnpj = (digits.length === 11 || digits.length === 14) ? digits : null;
-    await postJson("/api/intelligence?type=monitor_save", {
+    const saved = await postJson("/api/intelligence?type=monitor_save", {
       kind,
       label: label || pattern,
       pattern,
       ...(cpfCnpj ? { cpf_cnpj: cpfCnpj } : {}),
       active: $("#mon-active")?.checked ?? true
     });
+    // F-INT1 (F4): o backfill de 90d roda no save — mostra o resultado (ou a falha).
+    const bfMsg = saved?.backfill_error
+      ? `Monitor criado, mas o backfill falhou: ${saved.backfill_error}`
+      : (saved?.backfill_hits ? `✓ Monitor criado — ${saved.backfill_hits} ocorrência(s) encontradas nos últimos 90 dias.` : null);
+    if (bfMsg) $("#monitors-list")?.insertAdjacentHTML("afterbegin", `<div class="activity-alert${saved?.backfill_error ? "" : " info"}"><span class="alert-icon">${saved?.backfill_error ? "⚠" : "✓"}</span><span style="font-size:.78rem">${escapeHtml(bfMsg)}</span></div>`);
     event.target.reset();
     const active = $("#mon-active");
     if (active) active.checked = true;
@@ -5965,9 +5970,16 @@ async function loadDataHealth() {
       fresh.textContent = d.last_ingest ? `DOU ${d.last_ingest}${stale != null ? ` · ${stale}d` : ""}` : "sem ingestão";
       fresh.className = "status-pill " + (stale != null && stale > 3 ? "status-key" : "status-ok");
     }
-    gapsEl.innerHTML = (d.gaps || []).length
+    // F-INT1 (F4): frescor POR FONTE — o que envelhece em silêncio agora aparece.
+    // erro de leitura ≠ "nunca rodou" (diagnósticos diferentes).
+    const freshRows = (d.freshness || []).map((f) => `<li style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;font-size:.78rem">
+      <span>${f.stale ? "🔴" : "🟢"} ${escapeHtml(f.source)}</span>
+      <span style="opacity:.7">${f.error ? "⚠ erro na leitura" : (f.last ? `${escapeHtml(String(f.last).slice(0, 10))} · ${f.days_stale}d` : "nunca rodou")}</span>
+    </li>`).join("");
+    const freshBlock = freshRows ? `<div style="margin-top:8px"><strong style="font-size:.8rem">Frescor por fonte</strong><ul style="list-style:none;margin:4px 0 0;padding:0">${freshRows}</ul></div>` : "";
+    gapsEl.innerHTML = ((d.gaps || []).length
       ? `<ul class="dh-gap-list">${d.gaps.map((g) => `<li>⚠ ${escapeHtml(g)}</li>`).join("")}</ul>`
-      : `<p class="dh-ok">✓ Sem lacunas críticas.</p>`;
+      : `<p class="dh-ok">✓ Sem lacunas críticas.</p>`) + freshBlock;
   } catch (e) {
     if (gapsEl) gapsEl.innerHTML = emptyCard("Saúde dos dados", `Falha: ${e.message}`);
   }

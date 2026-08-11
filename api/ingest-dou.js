@@ -39,6 +39,7 @@ module.exports = async function handler(req, res) {
     }
 
     const records = await collectDou(date, agencies);
+    if (records.discarded) console.log(`[ingest-dou ${date}] ${records.discarded}/${records.totalXml} atos sem match de agencia (descartados)`);
 
     let inserted = 0;
     let skipped = 0;

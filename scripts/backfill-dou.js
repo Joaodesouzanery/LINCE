@@ -6,7 +6,7 @@ require("dotenv").config();
 const { getSupabase } = require("../lib/supabase");
 const { collectDou, login, AuthError } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");
-const { processPeopleFromDoc } = require("../lib/ingest");
+const { processPeopleFromDoc, loadActiveMonitors, matchMonitorsForDoc, flushMonitorAlerts } = require("../lib/ingest");
 
 // Sessao INLABS compartilhada: loga uma vez e reusa o cookie. O cookie expira
 // em 30 min (Max-Age=1800), entao re-loga periodicamente. Evita o rate-limit
@@ -39,8 +39,8 @@ function dateRange(from, to) {
   return dates;
 }
 
-async function ingestDate(supabase, date, agencies) {
-  let inserted = 0, skipped = 0, directors = 0;
+async function ingestDate(supabase, date, agencies, monitors) {
+  let inserted = 0, skipped = 0, directors = 0, monitorHitsN = 0;
   let records;
   try {
     const cookie = await getCookie();
@@ -54,12 +54,12 @@ async function ingestDate(supabase, date, agencies) {
         records = await collectDou(date, agencies, { cookie });
       } catch (e2) {
         console.error(`  [${date}] ERRO após re-login: ${e2.message}`);
-        return { inserted, skipped, directors };
+        return { inserted, skipped, directors, monitorHits: monitorHitsN };
       }
     } else {
       _cookie = null;
       console.error(`  [${date}] ERRO collectDou: ${e.message}`);
-      return { inserted, skipped, directors };
+      return { inserted, skipped, directors, monitorHits: monitorHitsN };
     }
   }
 
@@ -109,8 +109,23 @@ async function ingestDate(supabase, date, agencies) {
       });
       if (result.people) directors += result.people;
     }
+
+    // F-INT1 (F4): o backfill agora tambem avalia os MONITORES (antes o historico
+    // inteiro gerava zero alertas de monitor).
+    if (monitors && monitors.length) {
+      const hits = matchMonitorsForDoc(monitors, {
+        docId: doc.id, title: r.title, text: r.extracted_text, agencyId: r.agency_id,
+        agencyAcronym: r.agency_acronym, publishedAt: r.published_at, aiEntities: ai.entities
+      });
+      if (hits.length) {
+        const counts = new Map();
+        for (const h of hits) counts.set(h.monitorId, (counts.get(h.monitorId) || 0) + 1);
+        await flushMonitorAlerts(supabase, hits.map((h) => h.alert), counts).catch(() => {});
+        monitorHitsN += hits.length;
+      }
+    }
   }
-  return { inserted, skipped, directors };
+  return { inserted, skipped, directors, monitorHits: monitorHitsN };
 }
 
 async function main() {
@@ -125,19 +140,21 @@ async function main() {
     .eq("sector", "regulatory");
 
   const dates = dateRange(fromDate, toDate);
+  const monitors = await loadActiveMonitors(supabase); // F-INT1 (F4): monitores no backfill
   console.log(`Backfill DOU: ${dates.length} dias uteis (${fromDate} → ${toDate})`);
-  console.log(`Agencias: ${(agencies || []).map((a) => a.acronym).join(", ")}\n`);
+  console.log(`Agencias: ${(agencies || []).map((a) => a.acronym).join(", ")} | monitores ativos: ${monitors.length}\n`);
 
-  let totalInserted = 0, totalSkipped = 0, totalDirectors = 0;
+  let totalInserted = 0, totalSkipped = 0, totalDirectors = 0, totalMonitorHits = 0;
 
   for (let i = 0; i < dates.length; i++) {
     const date = dates[i];
     process.stdout.write(`[${i + 1}/${dates.length}] ${date} ... `);
-    const r = await ingestDate(supabase, date, agencies || []);
+    const r = await ingestDate(supabase, date, agencies || [], monitors);
     totalInserted += r.inserted;
     totalSkipped += r.skipped;
     totalDirectors += r.directors;
-    console.log(`+${r.inserted} novos, ${r.skipped} ja existiam${r.directors ? `, ${r.directors} diretores` : ""}`);
+    totalMonitorHits += r.monitorHits || 0;
+    console.log(`+${r.inserted} novos, ${r.skipped} ja existiam${r.directors ? `, ${r.directors} diretores` : ""}${r.monitorHits ? `, ${r.monitorHits} alerta(s) de monitor` : ""}`);
 
     // Fail-fast: se a 1ª data útil não inseriu nem achou nada, algo está errado
     // (login/download). Avisa para rodar com DOU_DEBUG=1 em vez de iterar 116 datas mudo.

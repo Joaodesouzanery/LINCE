@@ -4,6 +4,33 @@
 require("dotenv").config();
 const { getSupabase } = require("../lib/supabase");
 const { fetchAllContractsByOrgao } = require("../lib/pncp");
+const { loadActiveMonitors, matchMonitorsForDoc, bumpMonitorHits } = require("../lib/ingest");
+
+// F-INT1 (F4): monitores tambem vigiam CONTRATOS novos (antes: so DOU). Dedup por
+// (monitor, pncp_id) via checagem previa — alerts nao tem unique p/ fonte sem documento.
+async function alertMonitorsForContract(supabase, monitors, ag, c) {
+  if (!monitors.length) return 0;
+  const hits = matchMonitorsForDoc(monitors, {
+    docId: null, title: c.object || "", text: `${c.object || ""} ${c.supplier_name || ""} ${c.supplier_cnpj || ""}`,
+    agencyId: ag.id, agencyAcronym: ag.acronym, publishedAt: c.signed_at
+  });
+  let n = 0;
+  const counts = new Map();
+  for (const h of hits) {
+    const { data: dup, error: dupErr } = await supabase.from("alerts").select("id")
+      .eq("alert_type", "monitor").eq("target_id", h.monitorId)
+      .eq("metadata->>pncp_id", String(c.pncp_id)).limit(1).maybeSingle();
+    if (dupErr) { console.error(`  alerta monitor ${c.pncp_id}: dedup falhou (${dupErr.message}) — pulando p/ nao duplicar`); continue; }
+    if (dup) continue;
+    const alert = { ...h.alert, title: `Monitor (contrato): ${h.alert.title.replace(/^Monitor: /, "")}`,
+      body: `Contrato PNCP ${ag.acronym}: ${(c.object || "").slice(0, 160)} — ${c.supplier_name || c.supplier_cnpj || ""}`.slice(0, 200),
+      metadata: { ...h.alert.metadata, source: "pncp", pncp_id: c.pncp_id, value: c.value } };
+    const { error } = await supabase.from("alerts").insert(alert);
+    if (!error) { n++; counts.set(h.monitorId, (counts.get(h.monitorId) || 0) + 1); }
+  }
+  if (counts.size) await bumpMonitorHits(supabase, counts).catch(() => {}); // hit_count coerente com o fluxo DOU
+  return n;
+}
 
 async function main() {
   const supabase = getSupabase();
@@ -16,7 +43,8 @@ async function main() {
     .select("id, acronym, collection_rules")
     .eq("sector", "regulatory");
 
-  let inserted = 0, skipped = 0, noCnpj = [];
+  let inserted = 0, skipped = 0, monitorAlerts = 0, noCnpj = [];
+  const monitors = await loadActiveMonitors(supabase);
   for (const ag of agencies || []) {
     const cnpj = ag.collection_rules?.cnpj;
     if (!cnpj) { noCnpj.push(ag.acronym); continue; }
@@ -52,9 +80,11 @@ async function main() {
           confidence_score: 1, metadata: { kind: "contract", pncp_id: c.pncp_id, value: c.value }
         });
       }
+
+      monitorAlerts += await alertMonitorsForContract(supabase, monitors, ag, c).catch((e) => { console.error(`  alerta monitor (contrato ${c.pncp_id}): ${e.message}`); return 0; });
     }
   }
-  console.log(`\nConcluido: ${inserted} contratos inseridos, ${skipped} ja existiam.`);
+  console.log(`\nConcluido: ${inserted} contratos inseridos, ${skipped} ja existiam, ${monitorAlerts} alerta(s) de monitor.`);
   if (noCnpj.length) console.log(`Sem CNPJ (rode db:agencies-cnpj): ${noCnpj.join(", ")}`);
 }
 

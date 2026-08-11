@@ -371,6 +371,33 @@ module.exports = async function handler(req, res) {
       const lastIngest = last?.[0]?.published_at || null;
       const daysStale = lastIngest ? Math.floor((Date.now() - new Date(lastIngest + "T12:00:00Z")) / 86400000) : null;
 
+      // F-INT1 (F4): FRESCOR POR FONTE — antes so o DOU tinha indicador; PNCP parado ha
+      // meses era indistinguivel de PNCP de ontem. max(created_at) por tabela.
+      // Erro de leitura != tabela vazia: 'erro' e um estado proprio (nao vira "nunca").
+      const lastOf = async (table, col) => {
+        try {
+          const { data, error } = await supabase.from(table).select(col).order(col, { ascending: false, nullsFirst: false }).limit(1);
+          if (error) return { last: null, error: error.message };
+          return { last: data?.[0]?.[col] || null, error: null };
+        } catch (e) { return { last: null, error: e.message }; }
+      };
+      const staleDays = (ts) => ts ? Math.floor((Date.now() - new Date(ts)) / 86400000) : null;
+      const [fContratos, fProposicoes, fEventosLeg, fDoacoes, fBens, fAgenda] = await Promise.all([
+        lastOf("contracts", "created_at"), lastOf("proposicoes", "last_seen"), lastOf("legislative_eventos", "created_at"),
+        lastOf("campaign_donations", "created_at"), lastOf("assets", "created_at"), lastOf("regulatory_agenda", "created_at")
+      ]);
+      // expected_days: null = fonte MANUAL (TSE — dumps locais, sem cron): nunca fica "stale",
+      // so "nunca rodou". As demais tem cron e atrasam de verdade.
+      const freshness = [
+        { source: "DOU", last: lastIngest, days_stale: daysStale, expected_days: 1, error: null },
+        { source: "Contratos PNCP", ...fContratos, days_stale: staleDays(fContratos.last), expected_days: 2 },
+        { source: "Proposições", ...fProposicoes, days_stale: staleDays(fProposicoes.last), expected_days: 8 },
+        { source: "Eventos/pauta Câmara", ...fEventosLeg, days_stale: staleDays(fEventosLeg.last), expected_days: 2 },
+        { source: "Doações TSE (manual)", ...fDoacoes, days_stale: staleDays(fDoacoes.last), expected_days: null },
+        { source: "Bens TSE (manual)", ...fBens, days_stale: staleDays(fBens.last), expected_days: null },
+        { source: "Agenda regulatória", ...fAgenda, days_stale: staleDays(fAgenda.last), expected_days: 8 }
+      ].map((f) => ({ ...f, stale: !!f.error || (f.expected_days == null ? f.last == null : (f.days_stale == null || f.days_stale > f.expected_days)) }));
+
       const gaps = [];
       if (!process.env.ANTHROPIC_API_KEY) gaps.push(`IA desligada: ${raw ?? "?"} atos sem resumo (adicione ANTHROPIC_API_KEY).`);
       if (party_links === 0) gaps.push("0 vinculos partidarios — rode load:tse-filiacao.");
@@ -382,7 +409,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({
         ok: true, type: "data_health",
         counts: { documents, raw, people, companies, contracts, mandates, relationships, party_links, assets, monitors, open_alerts, proposicoes, deliberations, regulatory_agenda },
-        last_ingest: lastIngest, days_stale: daysStale,
+        last_ingest: lastIngest, days_stale: daysStale, freshness,
         env: {
           anthropic: !!process.env.ANTHROPIC_API_KEY, inlabs: !!process.env.INLABS_EMAIL,
           portal_transparencia: !!process.env.PORTAL_TRANSPARENCIA_API_KEY, cron_secret: !!process.env.CRON_SECRET,
@@ -779,7 +806,38 @@ module.exports = async function handler(req, res) {
       }
       if (result.error) return res.status(500).json({ ok: false, error: result.error.message });
       if (!result.data) return res.status(404).json({ ok: false, error: "Monitor nao encontrado." });
-      return res.status(200).json({ ok: true, monitor: result.data });
+
+      // F-INT1 (F4): BACKFILL — testa o monitor recem-criado/editado contra os atos dos
+      // ultimos 90d (antes: monitor novo so valia a partir do proximo cron; "Nunca disparou"
+      // parecia ausencia de fato). Best-effort, cap de 400 atos mais recentes.
+      let backfillHits = 0, backfillError = null;
+      if (result.data.active !== false) {
+        try {
+          const { matchMonitorsForDoc, flushMonitorAlerts } = require("../lib/ingest");
+          const since90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+          const mon = [result.data];
+          const allHits = [];
+          for (let from = 0; from < 400; from += 100) {
+            const { data: docs, error: dErr } = await supabase.from("documents")
+              .select("id, title, extracted_text, agency_id, published_at, metadata, agencies(acronym)")
+              .eq("source_name", "DOU").gte("published_at", since90)
+              .order("published_at", { ascending: false }).order("id", { ascending: false })
+              .range(from, from + 99);
+            if (dErr) throw new Error(dErr.message);
+            for (const d of docs || []) {
+              const hits = matchMonitorsForDoc(mon, {
+                docId: d.id, title: d.title, text: d.extracted_text, agencyId: d.agency_id,
+                agencyAcronym: d.agencies?.acronym, publishedAt: d.published_at, aiEntities: d.metadata?.ai_entities
+              });
+              for (const h of hits) allHits.push(h.alert);
+            }
+            if (!docs || docs.length < 100) break;
+          }
+          // flushMonitorAlerts retorna so os INSERTS reais (re-save nao infla hit_count).
+          if (allHits.length) backfillHits = await flushMonitorAlerts(supabase, allHits, null);
+        } catch (e) { backfillError = e.message; } // best-effort: o monitor ja foi salvo — mas a falha e VISIVEL
+      }
+      return res.status(200).json({ ok: true, monitor: result.data, backfill_hits: backfillHits, backfill_error: backfillError });
     }
 
     if (type === "monitor_toggle") {

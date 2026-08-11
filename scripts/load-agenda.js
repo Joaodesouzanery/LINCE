@@ -42,7 +42,7 @@ async function main() {
   }
   console.log(`Atos de agenda encontrados: ${acts.length}`);
 
-  let inserted = 0, actsWithThemes = 0;
+  let inserted = 0, actsWithThemes = 0, transitions = 0, removed = 0;
   for (const act of acts.slice(0, limit)) {
     let themes = [], biennium = null;
     if (hasKey) {
@@ -56,19 +56,70 @@ async function main() {
     actsWithThemes++;
     console.log(`  ${act.title?.slice(0, 60)} -> ${themes.length} tema(s)${biennium ? ` [${biennium}]` : ""}`);
     if (dryRun) continue;
-    // Re-executavel: limpa os temas antigos deste ato e reinsere.
-    await supabase.from("regulatory_agenda").delete().eq("source_document_id", act.id);
-    const rows = themes.map((t) => ({
-      agency_id: act.agency_id, biennium, theme_title: t.theme_title, status: t.status || null, area: t.area || null,
-      source_document_id: act.id, source_url: act.source_url
-    }));
-    const { error } = await supabase.from("regulatory_agenda").insert(rows);
-    if (error) { console.error(`   x ${act.id}: ${error.message}`); continue; }
-    inserted += rows.length;
+    // F-INT1 (F4): UPSERT com HISTORICO de status (antes: delete+insert destruia a
+    // transicao de estado do tema — o dado mais valioso: "saiu de planejado p/ em consulta").
+    const { data: existing, error: exErr } = await supabase.from("regulatory_agenda")
+      .select("id, theme_title, status, metadata").eq("source_document_id", act.id);
+    if (exErr) { console.error(`   x ${act.id}: ${exErr.message}`); continue; }
+    // byTitle: primeira linha por titulo; extras = duplicatas pre-existentes (limpaveis se sem historico).
+    const byTitle = new Map(); const extraRows = [];
+    for (const r of existing || []) {
+      const k = String(r.theme_title).trim().toLowerCase();
+      if (byTitle.has(k)) extraRows.push(r); else byTitle.set(k, r);
+    }
+    const seenTitles = new Set();
+    const nowIso = new Date().toISOString();
+    for (const t of themes) {
+      const key = String(t.theme_title).trim().toLowerCase();
+      if (seenTitles.has(key)) continue; // dedup INTRA-ATO: extrator repetiu o mesmo titulo
+      seenTitles.add(key);
+      const cur = byTitle.get(key);
+      if (!cur) {
+        const { error } = await supabase.from("regulatory_agenda").insert({
+          agency_id: act.agency_id, biennium, theme_title: t.theme_title, status: t.status || null, area: t.area || null,
+          source_document_id: act.id, source_url: act.source_url, metadata: { last_extracted_at: nowIso }
+        });
+        if (error) { console.error(`   x tema "${t.theme_title.slice(0, 40)}": ${error.message}`); continue; }
+        inserted++;
+      } else if ((t.status || null) !== (cur.status || null)) {
+        // TRANSICAO de status -> registra no historico e atualiza.
+        const hist = [...(((cur.metadata || {}).status_history) || []), { from: cur.status || null, to: t.status || null, at: nowIso }];
+        const { error } = await supabase.from("regulatory_agenda")
+          .update({ status: t.status || null, area: t.area || cur.area || null, metadata: { ...(cur.metadata || {}), status_history: hist, last_extracted_at: nowIso } })
+          .eq("id", cur.id);
+        if (error) { console.error(`   x transicao "${t.theme_title.slice(0, 40)}": ${error.message}`); continue; }
+        console.log(`   ~ "${t.theme_title.slice(0, 50)}": ${cur.status || "—"} -> ${t.status || "—"}`);
+        transitions++;
+      } else {
+        await supabase.from("regulatory_agenda").update({ metadata: { ...(cur.metadata || {}), last_extracted_at: nowIso } }).eq("id", cur.id);
+      }
+    }
+    // Temas que sumiram do ato: remove SO os sem historico (provavel ruido de parser),
+    // e SO quando a extracao parece completa (>=70% dos existentes) — extracao parcial/
+    // flaky nao pode apagar tema valido.
+    const extractionPlausible = !existing?.length || themes.length >= Math.ceil(existing.length * 0.7);
+    if (extractionPlausible) {
+      for (const [key, cur] of byTitle) {
+        if (seenTitles.has(key)) continue;
+        const hasHist = (((cur.metadata || {}).status_history) || []).length > 0;
+        if (hasHist) { console.log(`   ! tema sumiu do ato mas tem historico — mantido: "${String(cur.theme_title).slice(0, 50)}"`); continue; }
+        await supabase.from("regulatory_agenda").delete().eq("id", cur.id);
+        removed++;
+      }
+    } else {
+      console.log(`   ! extracao parcial (${themes.length}/${existing.length}) — sweep de remocao pulado`);
+    }
+    // Duplicatas pre-existentes do mesmo titulo: limpa as extras sem historico.
+    for (const r of extraRows) {
+      const hasHist = (((r.metadata || {}).status_history) || []).length > 0;
+      if (hasHist) continue;
+      await supabase.from("regulatory_agenda").delete().eq("id", r.id);
+      removed++;
+    }
   }
 
   console.log(`\n=== load:agenda concluido ===`);
-  console.log(`Atos: ${acts.length} | com temas: ${actsWithThemes} | temas inseridos: ${inserted}${dryRun ? " (dry-run)" : ""}`);
+  console.log(`Atos: ${acts.length} | com temas: ${actsWithThemes} | novos: ${inserted} | transicoes de status: ${transitions} | removidos (ruido): ${removed}${dryRun ? " (dry-run)" : ""}`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

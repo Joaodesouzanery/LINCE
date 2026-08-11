@@ -34,9 +34,49 @@ async function main() {
   }));
   console.log(`\nProposicoes unicas: ${rows.length}${dryRun ? " (dry-run)" : ""}`);
   if (dryRun || !rows.length) return;
+
+  // F-INT1 (F4): identifica as NOVAS antes do upsert (p/ avaliar monitores so nelas).
+  const ids = rows.map((r) => r.id);
+  const existing = new Set();
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data } = await supabase.from("proposicoes").select("id").in("id", ids.slice(i, i + 200));
+    for (const e of data || []) existing.add(e.id);
+  }
+  const novas = rows.filter((r) => !existing.has(r.id));
+
   const { error } = await supabase.from("proposicoes").upsert(rows, { onConflict: "id" });
   if (error) { console.error("Erro:", error.message); process.exit(1); }
-  console.log(`Upsert OK: ${rows.length} proposicoes.`);
+  console.log(`Upsert OK: ${rows.length} proposicoes (${novas.length} novas).`);
+
+  // F-INT1 (F4): monitores tambem vigiam PROPOSICOES novas (antes: so DOU).
+  // Dedup por (monitor, proposicao_id) via checagem previa.
+  if (novas.length) {
+    const { loadActiveMonitors, matchMonitorsForDoc, bumpMonitorHits } = require("../lib/ingest");
+    const monitors = await loadActiveMonitors(supabase);
+    let alerts = 0;
+    const counts = new Map();
+    for (const prop of novas) {
+      if (!monitors.length) break;
+      const hits = matchMonitorsForDoc(monitors, {
+        docId: null, title: prop.titulo || "", text: `${prop.titulo || ""} ${prop.ementa || ""} ${prop.autor || ""}`,
+        agencyId: null, publishedAt: null
+      });
+      for (const h of hits) {
+        const { data: dup, error: dupErr } = await supabase.from("alerts").select("id")
+          .eq("alert_type", "monitor").eq("target_id", h.monitorId)
+          .eq("metadata->>proposicao_id", String(prop.id)).limit(1).maybeSingle();
+        if (dupErr) { console.error(`  monitor prop ${prop.id}: dedup falhou (${dupErr.message}) — pulando`); continue; }
+        if (dup) continue;
+        const alert = { ...h.alert, title: `Monitor (proposição): ${h.alert.title.replace(/^Monitor: /, "")}`,
+          body: `${prop.titulo || prop.id}: ${(prop.ementa || "").slice(0, 160)}`.slice(0, 200),
+          metadata: { ...h.alert.metadata, source: "legislativo", proposicao_id: prop.id, url: prop.url } };
+        const { error: aErr } = await supabase.from("alerts").insert(alert);
+        if (!aErr) { alerts++; counts.set(h.monitorId, (counts.get(h.monitorId) || 0) + 1); }
+      }
+    }
+    if (counts.size) await bumpMonitorHits(supabase, counts).catch(() => {});
+    if (alerts) console.log(`${alerts} alerta(s) de monitor sobre proposicoes novas.`);
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
