@@ -2086,6 +2086,36 @@ module.exports = async function handler(req, res) {
         if (fresh.length) { const { error } = await supabase.from("evt_contatos").insert(fresh); if (error) return res.status(500).json({ ok: false, error: error.message }); }
         return res.status(200).json({ ok: true, inserted: fresh.length, pulados: rows.length - fresh.length });
       }
+      // D-xlsx (F-EVT7): import de linhas JA NORMALIZADAS pelo front (planilha parseada
+      // no navegador via SheetJS — o backend nunca recebe binario). Mesmo dedup do
+      // import por texto; campos com os mesmos limites do evt_contato_save.
+      if (type === "evt_contato_import_rows") {
+        const p = params(req);
+        const origem = p.origem_evento_id || null;
+        const input = Array.isArray(p.rows) ? p.rows.slice(0, 1000) : [];
+        if (!input.length) return res.status(400).json({ ok: false, error: "Envie rows: [{nome, empresa, ...}]" });
+        const LIM = { nome: 200, empresa: 200, cargo: 200, setor: 120, email: 200, telefone: 60, cota_assoc: 40, obs: 1000 };
+        const seen = new Set(); const rows = []; let invalidos = 0; let dupInternas = 0;
+        for (const r of input) {
+          if (!r || typeof r !== "object") { invalidos++; continue; }
+          const nome = String(r.nome || "").trim().slice(0, LIM.nome);
+          if (!nome) { invalidos++; continue; }
+          const row = { nome, origem_evento_id: origem, rel: EVT_REL.includes(r.rel) ? r.rel : "Contato" };
+          for (const f of ["empresa", "cargo", "setor", "email", "telefone", "cota_assoc", "obs"]) {
+            const v = String(r[f] == null ? "" : r[f]).trim();
+            if (v) row[f] = v.slice(0, LIM[f]);
+          }
+          const k = contatoKey(row.nome, row.empresa || null);
+          if (seen.has(k)) { dupInternas++; continue; } // linha repetida DENTRO do arquivo conta como pulada
+          seen.add(k);
+          rows.push(row);
+        }
+        if (!rows.length) return res.status(400).json({ ok: false, error: "Nenhuma linha valida (todas sem nome?)." });
+        let have; try { have = await loadContatoKeys(); } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+        const fresh = rows.filter((r) => !have.has(contatoKey(r.nome, r.empresa || null)));
+        if (fresh.length) { const { error } = await supabase.from("evt_contatos").insert(fresh); if (error) return res.status(500).json({ ok: false, error: error.message }); }
+        return res.status(200).json({ ok: true, inserted: fresh.length, pulados: rows.length - fresh.length + dupInternas, invalidos });
+      }
       if (type === "evt_contato_from_convidados") {
         const evento_id = String(params(req).evento_id || "").trim();
         if (!evento_id) return res.status(400).json({ ok: false, error: "Informe evento_id" });
@@ -2164,17 +2194,33 @@ module.exports = async function handler(req, res) {
       res.setHeader("Cache-Control", "no-store");
       const finNow = new Date().toISOString();
       const FIN_LANC_FIELDS = { conta: 120, lancamento: 200, detalhe: 300, descricao: 2000, estabelecimento: 200 };
+      // F-FIN2 (2c.14): "fechado" e imposto AQUI, nao so na UI. balId direto ou via lancamento.
+      const finGuardAberto = async ({ balancete_id, lancamento_id }) => {
+        let balId = balancete_id;
+        if (!balId && lancamento_id) {
+          const { data: l } = await supabase.from("fin_lancamentos").select("balancete_id").eq("id", lancamento_id).maybeSingle();
+          balId = l?.balancete_id;
+        }
+        if (!balId) return null; // sem como resolver -> deixa o handler validar o resto
+        const { data: b } = await supabase.from("fin_balancetes").select("status").eq("id", balId).maybeSingle();
+        return b?.status === "fechado" ? "Balancete fechado — reabra para editar." : null;
+      };
 
       if (type === "fin_list") {
         const { data, error } = await supabase.from("fin_balancetes").select("id, competencia, titulo, status, created_at").order("competencia", { ascending: false }).limit(500);
         if (error) return res.status(500).json({ ok: false, error: error.message });
-        // agrega contagem/total de despesas por balancete (paginado, sem N+1)
+        // F-FIN2 (2d): agrega restrito aos balancetes LISTADOS (antes varria a tabela
+        // inteira de lancamentos — custo crescia com a historia, nao com a lista).
         const agg = {};
-        for (let from = 0; ; from += 1000) {
-          const { data: ls, error: lErr } = await supabase.from("fin_lancamentos").select("balancete_id, tipo, contabiliza, valor").order("id", { ascending: true }).range(from, from + 999);
-          if (lErr) return res.status(500).json({ ok: false, error: lErr.message });
-          for (const l of ls || []) { const a = (agg[l.balancete_id] = agg[l.balancete_id] || { n: 0, despesas: 0 }); a.n++; if (l.tipo === "debito" && l.contabiliza) a.despesas += Number(l.valor) || 0; }
-          if (!ls || ls.length < 1000) break;
+        const ids = (data || []).map((b) => b.id);
+        for (let i = 0; i < ids.length; i += 100) {
+          const chunk = ids.slice(i, i + 100);
+          for (let from = 0; ; from += 1000) {
+            const { data: ls, error: lErr } = await supabase.from("fin_lancamentos").select("balancete_id, tipo, contabiliza, valor").in("balancete_id", chunk).order("id", { ascending: true }).range(from, from + 999);
+            if (lErr) return res.status(500).json({ ok: false, error: lErr.message });
+            for (const l of ls || []) { const a = (agg[l.balancete_id] = agg[l.balancete_id] || { n: 0, despesas: 0 }); a.n++; if (l.tipo === "debito" && l.contabiliza) a.despesas += Number(l.valor) || 0; }
+            if (!ls || ls.length < 1000) break;
+          }
         }
         const items = (data || []).map((b) => ({ ...b, n_lancamentos: (agg[b.id] || {}).n || 0, total_despesas: (agg[b.id] || {}).despesas || 0 }));
         return res.status(200).json({ ok: true, items });
@@ -2221,6 +2267,18 @@ module.exports = async function handler(req, res) {
           return res.status(200).json({ ok: true, balancete: data });
         }
         if (!patch.competencia) return res.status(400).json({ ok: false, error: "Informe a competencia (YYYY-MM)." });
+        // F-FIN2 (2b.7): balancete novo HERDA org/assinaturas do mais recente QUE TENHA
+        // config (um mes criado e nunca configurado nao pode quebrar a corrente).
+        const { data: prevList, error: prevErr } = await supabase.from("fin_balancetes").select("metadata")
+          .order("competencia", { ascending: false }).limit(12);
+        if (prevErr) console.error("fin heranca config:", prevErr.message);
+        const prev = (prevList || []).find((b) => b.metadata && (b.metadata.org || b.metadata.assinaturas));
+        if (prev) {
+          patch.metadata = {
+            ...(prev.metadata.org ? { org: prev.metadata.org } : {}),
+            ...(prev.metadata.assinaturas ? { assinaturas: prev.metadata.assinaturas } : {})
+          };
+        }
         const { data, error } = await supabase.from("fin_balancetes").insert(patch).select().maybeSingle();
         if (error) return res.status(500).json({ ok: false, error: error.message });
         return res.status(200).json({ ok: true, balancete: data });
@@ -2247,6 +2305,8 @@ module.exports = async function handler(req, res) {
         const p = params(req);
         const balancete_id = String(p.balancete_id || "").trim();
         if (!balancete_id) return res.status(400).json({ ok: false, error: "Informe balancete_id" });
+        const guard = await finGuardAberto({ balancete_id });
+        if (guard) return res.status(409).json({ ok: false, error: guard });
         const { data: last } = await supabase.from("fin_lancamentos").select("ordem").eq("balancete_id", balancete_id).order("ordem", { ascending: false }).limit(1).maybeSingle();
         const ordem = ((last && last.ordem) != null ? last.ordem : -1) + 1;
         const row = { balancete_id, ordem, conta: p.conta ? String(p.conta).slice(0, 120) : "Banco do Brasil", tipo: "debito", contabiliza: true };
@@ -2259,6 +2319,8 @@ module.exports = async function handler(req, res) {
         const p = params(req);
         const id = String(p.id || "").trim();
         if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const guard = await finGuardAberto({ lancamento_id: id });
+        if (guard) return res.status(409).json({ ok: false, error: guard });
         const row = {};
         for (const f of Object.keys(FIN_LANC_FIELDS)) { if (p[f] === undefined) continue; let v = p[f]; v = v == null ? null : String(v).trim(); row[f] = v === "" ? null : v.slice(0, FIN_LANC_FIELDS[f]); }
         if (p.data !== undefined) row.data = p.data ? String(p.data).slice(0, 10) : null;
@@ -2276,6 +2338,8 @@ module.exports = async function handler(req, res) {
       if (type === "fin_lancamento_remove") {
         const id = String(params(req).id || "").trim();
         if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const guardRm = await finGuardAberto({ lancamento_id: id });
+        if (guardRm) return res.status(409).json({ ok: false, error: guardRm });
         const { data: l, error: gErr } = await supabase.from("fin_lancamentos").select("nf_path").eq("id", id).maybeSingle();
         if (gErr) return res.status(500).json({ ok: false, error: gErr.message });
         if (l && l.nf_path) await supabase.storage.from("financeiro-nf").remove([l.nf_path]).catch(() => {}); // NF junto — LGPD
@@ -2291,10 +2355,12 @@ module.exports = async function handler(req, res) {
         const balancete_id = String(p.balancete_id || "").trim();
         const conta = p.conta ? String(p.conta).slice(0, 120) : "Banco do Brasil";
         if (!balancete_id) return res.status(400).json({ ok: false, error: "Informe balancete_id" });
+        const guardImp = await finGuardAberto({ balancete_id });
+        if (guardImp) return res.status(409).json({ ok: false, error: guardImp });
         const lines = String(p.texto || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
         const valRe = /^([\d.]+,\d{2})\s*\(([-+])\)\s*(\d{2})\/(\d{2})\/(\d{4})\s+(.+)$/;
         const detRe = /^\d{2}\/\d{2}\s+\d{2}:\d{2}\s+(.+)$/;
-        const parsed = []; let saldoAnterior = null;
+        const parsed = []; let saldoAnterior = null; let saldoFinal = null;
         for (let i = 0; i < lines.length; i++) {
           const m = lines[i].match(valRe);
           if (!m) continue;
@@ -2304,31 +2370,113 @@ module.exports = async function handler(req, res) {
           const lancamento = m[6].trim();
           let detalhe = null;
           if (i + 1 < lines.length && !valRe.test(lines[i + 1])) { const dm = lines[i + 1].match(detRe); detalhe = (dm ? dm[1] : lines[i + 1]).trim().slice(0, 300); i++; }
-          if (/saldo anterior/i.test(lancamento)) { saldoAnterior = valor; continue; }
-          if (/^s\s*a\s*l\s*d\s*o$/i.test(lancamento.replace(/\s+/g, " ").trim())) continue;
+          // Linhas de saldo carregam o SINAL em m[2] — conta no cheque especial e negativa;
+          // descartar o sinal quebrava a conferencia (falso "diverge" ou falso "confere").
+          const valorAssinado = m[2] === "-" ? -valor : valor;
+          if (/saldo anterior/i.test(lancamento)) { saldoAnterior = valorAssinado; continue; }
+          // F-FIN2 (2a.1): a linha "SALDO" (final) era descartada — agora e a CONFERENCIA:
+          // anterior + creditos − debitos deve bater com ela (o front mostra ✓/⚠).
+          if (/^s\s*a\s*l\s*d\s*o$/i.test(lancamento.replace(/\s+/g, " ").trim())) { saldoFinal = valorAssinado; continue; }
           parsed.push({ data, lancamento: lancamento.slice(0, 200), detalhe, valor, tipo });
         }
         if (!parsed.length) return res.status(400).json({ ok: false, error: "Nenhum lançamento reconhecido (confira o formato Banco do Brasil)." });
-        const key = (l) => `${l.data}|${l.valor}|${String(l.detalhe || "").toLowerCase()}`;
+
+        // F-FIN2 (2a.2): conta lancamentos com data FORA da competencia do balancete
+        // (aviso, sem bloqueio — extrato do BB pode ter lancamento do dia 1º seguinte).
+        const { data: balRow, error: balErr } = await supabase.from("fin_balancetes").select("competencia, metadata").eq("id", balancete_id).maybeSingle();
+        if (balErr) return res.status(500).json({ ok: false, error: balErr.message });
+        if (!balRow) return res.status(404).json({ ok: false, error: "Balancete nao encontrado." });
+        const comp = String(balRow.competencia || "").slice(0, 7);
+
+        // F-FIN2 (2a.3): dedup com o LANCAMENTO na chave (antes: data|valor|detalhe —
+        // duas despesas legitimas iguais sem detalhe sumiam em silencio) + lista dos pulados.
+        const key = (l) => `${l.data}|${l.valor}|${String(l.lancamento || "").toLowerCase()}|${String(l.detalhe || "").toLowerCase()}`;
         const existing = new Set();
         for (let from = 0; ; from += 1000) {
-          const { data: ex, error } = await supabase.from("fin_lancamentos").select("data, valor, detalhe").eq("balancete_id", balancete_id).order("id", { ascending: true }).range(from, from + 999);
+          const { data: ex, error } = await supabase.from("fin_lancamentos").select("data, valor, lancamento, detalhe").eq("balancete_id", balancete_id).order("id", { ascending: true }).range(from, from + 999);
           if (error) return res.status(500).json({ ok: false, error: error.message });
-          for (const e of ex || []) existing.add(key({ data: e.data, valor: Number(e.valor), detalhe: e.detalhe }));
+          for (const e of ex || []) existing.add(key({ data: e.data, valor: Number(e.valor), lancamento: e.lancamento, detalhe: e.detalhe }));
           if (!ex || ex.length < 1000) break;
         }
         const { data: last } = await supabase.from("fin_lancamentos").select("ordem").eq("balancete_id", balancete_id).order("ordem", { ascending: false }).limit(1).maybeSingle();
         let ordem = (last && last.ordem) != null ? last.ordem : -1;
-        const fresh = parsed.filter((l) => !existing.has(key(l))).map((l) => ({ balancete_id, conta, ordem: ++ordem, data: l.data, lancamento: l.lancamento, detalhe: l.detalhe, valor: l.valor, tipo: l.tipo, contabiliza: l.tipo !== "credito" }));
+        const pulados = [];
+        const freshParsed = parsed.filter((l) => { if (existing.has(key(l))) { pulados.push({ data: l.data, valor: l.valor, lancamento: l.lancamento }); return false; } return true; });
+        const fresh = freshParsed.map((l) => ({ balancete_id, conta, ordem: ++ordem, data: l.data, lancamento: l.lancamento, detalhe: l.detalhe, valor: l.valor, tipo: l.tipo, contabiliza: l.tipo !== "credito" }));
+        // fora_competencia sobre o que REALMENTE entra (duplicados re-colados nao contam de novo)
+        const foraCompetencia = comp ? fresh.filter((l) => !l.data.startsWith(comp)).length : 0;
+
+        // F-FIN2 (2b.6): MEMORIA entre meses — copia descricao/estabelecimento do
+        // DEBITO mais recente de OUTRO balancete com o mesmo detalhe (fornecedor
+        // recorrente: mesma finalidade todo mes). So debito->debito (um Pix RECEBIDO
+        // do fornecedor nao pode emprestar finalidade de despesa). Best-effort.
+        let autoPreenchidos = 0;
+        const detalhes = [...new Set(fresh.filter((l) => l.tipo === "debito").map((l) => l.detalhe).filter(Boolean))];
+        if (detalhes.length) {
+          // chunks de 40: detalhe tem ate 300 chars — .in() gigante estoura a URL do PostgREST
+          const memoria = new Map();
+          for (let iC = 0; iC < detalhes.length; iC += 40) {
+            const { data: hist, error: histErr } = await supabase.from("fin_lancamentos")
+              .select("detalhe, descricao, estabelecimento, data")
+              .neq("balancete_id", balancete_id).eq("tipo", "debito").in("detalhe", detalhes.slice(iC, iC + 40))
+              .not("descricao", "is", null)
+              .order("data", { ascending: false, nullsFirst: false }).limit(1000);
+            if (histErr) { console.error("fin memoria:", histErr.message); continue; }
+            for (const h of hist || []) { const k = String(h.detalhe); if (!memoria.has(k)) memoria.set(k, h); }
+          }
+          for (const l of fresh) {
+            if (l.tipo !== "debito") continue;
+            const mem = l.detalhe && memoria.get(l.detalhe);
+            if (!mem) continue;
+            let filled = false;
+            if (!l.descricao && mem.descricao) { l.descricao = mem.descricao; filled = true; }
+            if (!l.estabelecimento && mem.estabelecimento) { l.estabelecimento = mem.estabelecimento; filled = true; }
+            if (filled) autoPreenchidos++;
+          }
+        }
+
         if (fresh.length) { const { error } = await supabase.from("fin_lancamentos").insert(fresh); if (error) return res.status(500).json({ ok: false, error: error.message }); }
-        if (saldoAnterior != null) {
-          const { data: cur, error: cErr } = await supabase.from("fin_balancetes").select("metadata").eq("id", balancete_id).maybeSingle();
-          if (cErr) return res.status(500).json({ ok: false, error: cErr.message }); // sem isso, leitura falha -> overwrite total do metadata
-          const md = (cur && cur.metadata) || {}; const saldos = { ...(md.saldos || {}) }; saldos[conta] = { ...(saldos[conta] || {}), anterior: saldoAnterior };
+
+        // F-FIN2 (2a.4): re-numera a ORDEM do BALANCETE INTEIRO (conta, depois data) —
+        // o Nº DOC deriva da ordem global do fin_get; renumerar so a conta importada
+        // colidia ordens entre contas e intercalava a numeracao do documento.
+        // Desempate por ORDEM antiga (monotônica na insercao — created_at empata num
+        // insert em lote) e id. ABORTA se alguma pagina falhar (renumerar subconjunto
+        // parcial e pior que manter a ordem atual).
+        {
+          const rows = []; let pageErr = false;
+          for (let from = 0; ; from += 1000) {
+            const { data: ls, error } = await supabase.from("fin_lancamentos").select("id, conta, data, ordem").eq("balancete_id", balancete_id).order("id", { ascending: true }).range(from, from + 999);
+            if (error) { pageErr = true; break; }
+            rows.push(...(ls || []));
+            if (!ls || ls.length < 1000) break;
+          }
+          if (!pageErr && rows.length) {
+            rows.sort((a, b) =>
+              String(a.conta || "").localeCompare(String(b.conta || "")) ||
+              String(a.data || "9999").localeCompare(String(b.data || "9999")) ||
+              ((a.ordem ?? 0) - (b.ordem ?? 0)) || String(a.id).localeCompare(String(b.id)));
+            // UPDATE em LOTE via upsert por id (uma request; ON CONFLICT so toca 'ordem').
+            const changed = rows.map((r, iR) => ({ id: r.id, balancete_id, ordem: iR })).filter((r, iR) => rows[iR].ordem !== iR);
+            if (changed.length) {
+              const { error: upErr } = await supabase.from("fin_lancamentos").upsert(changed, { onConflict: "id" });
+              if (upErr) console.error("fin renumeracao:", upErr.message);
+            }
+          }
+        }
+
+        // Saldos da conta no metadata (anterior + final do extrato p/ a conferencia).
+        if (saldoAnterior != null || saldoFinal != null) {
+          const md = balRow.metadata || {}; const saldos = { ...(md.saldos || {}) };
+          saldos[conta] = { ...(saldos[conta] || {}), ...(saldoAnterior != null ? { anterior: saldoAnterior } : {}), ...(saldoFinal != null ? { final: saldoFinal } : {}) };
           const { error: uErr } = await supabase.from("fin_balancetes").update({ metadata: { ...md, saldos }, updated_at: finNow }).eq("id", balancete_id);
           if (uErr) return res.status(500).json({ ok: false, error: uErr.message });
         }
-        return res.status(200).json({ ok: true, inserted: fresh.length, pulados: parsed.length - fresh.length, saldo_anterior: saldoAnterior });
+        return res.status(200).json({
+          ok: true, inserted: fresh.length, pulados: pulados.length, pulados_lista: pulados.slice(0, 20),
+          fora_competencia: foraCompetencia, auto_preenchidos: autoPreenchidos,
+          saldo_anterior: saldoAnterior, saldo_final: saldoFinal
+        });
       }
 
       // F-FIN1 (D): upload da NF no bucket PRIVADO via service-role. base64 (limite ~4MB).
@@ -2342,6 +2490,8 @@ module.exports = async function handler(req, res) {
         const { data: l, error: gErr } = await supabase.from("fin_lancamentos").select("balancete_id, nf_path").eq("id", id).maybeSingle();
         if (gErr) return res.status(500).json({ ok: false, error: gErr.message });
         if (!l) return res.status(404).json({ ok: false, error: "Lancamento nao encontrado." });
+        const guardNf = await finGuardAberto({ balancete_id: l.balancete_id });
+        if (guardNf) return res.status(409).json({ ok: false, error: guardNf });
         const safe = String(p.filename || "nf").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-60) || "nf";
         const path = `${l.balancete_id}/${id}-${safe}`;
         const buffer = Buffer.from(base64, "base64");
@@ -2355,6 +2505,8 @@ module.exports = async function handler(req, res) {
       if (type === "fin_nf_remove") {
         const id = String(params(req).id || "").trim();
         if (!id) return res.status(400).json({ ok: false, error: "Informe id" });
+        const guardNfRm = await finGuardAberto({ lancamento_id: id });
+        if (guardNfRm) return res.status(409).json({ ok: false, error: guardNfRm });
         const { data: l, error: gErr } = await supabase.from("fin_lancamentos").select("nf_path").eq("id", id).maybeSingle();
         if (gErr) return res.status(500).json({ ok: false, error: gErr.message }); // sem isso, falha de leitura pularia o delete do Storage e ainda limparia nf_path (orfa)
         if (l && l.nf_path) { const { error: rmErr } = await supabase.storage.from("financeiro-nf").remove([l.nf_path]); if (rmErr) return res.status(500).json({ ok: false, error: rmErr.message }); }

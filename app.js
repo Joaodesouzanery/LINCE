@@ -2030,6 +2030,9 @@ function renderBaseInto(grid) {
       ${relFilter}
       <button type="button" class="entity-pill" id="base-add">+ contato</button>
       <button type="button" class="entity-pill" id="base-import-btn">importar lista</button>
+      <button type="button" class="entity-pill" id="base-xlsx-import-btn" title="Importar planilha .xlsx/.csv (colunas: Nome, Empresa, Cargo, Setor, E-mail, Telefone, Relação, Cota)">importar xlsx</button>
+      <input id="base-xlsx-file" type="file" accept=".xlsx,.xls,.csv" hidden>
+      <button type="button" class="entity-pill" id="base-xlsx-export-btn" title="Baixar a Base como planilha">exportar xlsx</button>
       <span style="border-left:1px solid var(--border);padding-left:8px;font-size:.8rem">Evento: <select id="base-evento" class="dou-date">${eventoOpts}</select></span>
       <button type="button" class="entity-pill" id="base-from-conv" title="Traz os convidados CONFIRMADOS do evento selecionado para a Base (origem)">confirmados → Base</button>
     </div>
@@ -2144,7 +2147,10 @@ function renderEventoDetail(d) {
     <article class="news-card">
       <div class="entity-row" style="justify-content:space-between">
         <button type="button" class="entity-pill" data-evento-back>&larr; Eventos</button>
-        <button type="button" class="entity-pill" data-evento-export title="Baixa um Markdown do evento p/ o Claude Design">Exportar (.md)</button>
+        <span style="display:flex;gap:6px">
+          <button type="button" class="entity-pill" data-evento-export title="Baixa um Markdown do evento p/ o Claude Design">Exportar (.md)</button>
+          <button type="button" class="entity-pill" data-evento-export-xlsx title="Planilha multi-abas: checklist, programação, painelistas, patrocínio, convidados">Exportar (.xlsx)</button>
+        </span>
       </div>
       <div class="entity-row" style="gap:8px;flex-wrap:wrap;align-items:baseline"><strong>${escapeHtml(ev.nome || "Evento")}</strong>${evtCountdown(ev.data_evento)}</div>
       <span class="card-sub">${ev.data_evento ? escapeHtml(String(ev.data_evento).slice(0, 10)) : "sem data"}${ev.local ? " · " + escapeHtml(ev.local) : ""} · ${escapeHtml(ev.status || "")}</span>
@@ -3090,6 +3096,148 @@ function exportEventoMd() {
   downloadText(`${slug}.md`, L.join("\n"));
 }
 
+// ══ D-xlsx (F-EVT7): import/export de planilha — SheetJS VENDORIZADO (vendor/xlsx.full.min.js).
+// Parse e geração 100% no navegador; só linhas normalizadas vão ao backend.
+function xlsxOk() {
+  if (typeof XLSX !== "undefined") return true;
+  alert("Biblioteca de planilha não carregou (vendor/xlsx.full.min.js). Recarregue a página.");
+  return false;
+}
+
+// Export da Base de contatos (mesmas colunas da tabela).
+function baseXlsxExport() {
+  if (!xlsxOk()) return;
+  const b = state.base || { contatos: [], eventos: [] };
+  const origemNome = (id) => { const e = (b.eventos || []).find((x) => x.id === id); return e ? e.nome : ""; };
+  const rows = (b.contatos || []).map((c) => ({
+    Nome: c.nome || "", Empresa: c.empresa || "", Cargo: c.cargo || "", Setor: c.setor || "",
+    "E-mail": c.email || "", Telefone: c.telefone || "", "Relação": c.rel || "",
+    "Cota assoc.": c.cota_assoc || "", Origem: origemNome(c.origem_evento_id), Obs: c.obs || ""
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Base de contatos");
+  const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  downloadBlob(`base-contatos-${new Date().toISOString().slice(0, 10)}.xlsx`, new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+}
+
+// Cabeçalhos tolerantes (case/acento-insensitive) -> campos de evt_contatos.
+const BASE_XLSX_HEADERS = {
+  nome: "nome", contato: "nome",
+  empresa: "empresa", organizacao: "empresa", instituicao: "empresa",
+  cargo: "cargo", funcao: "cargo",
+  setor: "setor", segmento: "setor",
+  email: "email", "e-mail": "email", "e mail": "email",
+  telefone: "telefone", celular: "telefone", fone: "telefone", whatsapp: "telefone",
+  relacao: "rel", rel: "rel",
+  cota: "cota_assoc", "cota assoc": "cota_assoc", "cota assoc.": "cota_assoc", "cota associado": "cota_assoc",
+  obs: "obs", observacao: "obs", observacoes: "obs", nota: "obs"
+};
+const normHeader = (h) => String(h || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
+
+async function baseXlsxImport(file) {
+  // Feedback via TOAST: o span #base-import-status vive num box hidden (fluxo de
+  // colar texto) e o loadBase() re-renderiza o grid — mensagem lá seria invisível.
+  const st = { set textContent(v) { if (v) toast(v); } };
+  if (!file || !xlsxOk()) return;
+  try {
+    if (st) st.textContent = "Lendo planilha…";
+    const wb = XLSX.read(await file.arrayBuffer());
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    if (!sheet) throw new Error("planilha vazia");
+    const raw = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+    if (!raw.length) throw new Error("nenhuma linha de dados na 1ª aba");
+    // Mapeia cabeçalhos; LGPD: coluna de CPF é DESCARTADA com aviso (nunca persistimos CPF).
+    const headerMap = {}; let cpfDropped = false; const unknown = new Set();
+    for (const h of Object.keys(raw[0])) {
+      const n = normHeader(h);
+      if (/^cpf/.test(n)) { cpfDropped = true; continue; }
+      if (BASE_XLSX_HEADERS[n]) headerMap[h] = BASE_XLSX_HEADERS[n];
+      else unknown.add(h);
+    }
+    if (!Object.values(headerMap).includes("nome")) throw new Error('não achei a coluna "Nome" na 1ª aba');
+    const rows = raw.map((r) => {
+      const o = {};
+      for (const [h, field] of Object.entries(headerMap)) {
+        const v = String(r[h] == null ? "" : r[h]).trim();
+        if (v) o[field] = v;
+      }
+      return o;
+    }).filter((o) => o.nome);
+    if (!rows.length) throw new Error("nenhuma linha com Nome preenchido");
+    if (rows.length > 1000) throw new Error(`${rows.length} linhas — o limite por import é 1000; divida a planilha`);
+    const avisos = [
+      cpfDropped ? "coluna CPF descartada (LGPD)" : "",
+      unknown.size ? `colunas ignoradas: ${[...unknown].slice(0, 4).join(", ")}${unknown.size > 4 ? "…" : ""}` : ""
+    ].filter(Boolean).join(" · ");
+    const amostra = rows.slice(0, 3).map((r) => r.nome + (r.empresa ? ` – ${r.empresa}` : "")).join("; ");
+    if (!confirm(`Importar ${rows.length} contato(s) para a Base?\n\nEx.: ${amostra}${avisos ? `\n\n⚠ ${avisos}` : ""}`)) { if (st) st.textContent = "Import cancelado."; return; }
+    if (st) st.textContent = `Importando ${rows.length}…`;
+    const r = await postJson("/api/intelligence?type=evt_contato_import_rows", { rows, origem_evento_id: baseEventoSel() || null });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    const okMsg = `${r.inserted} adicionado(s), ${r.pulados} já existiam${r.invalidos ? `, ${r.invalidos} inválido(s)` : ""}.${avisos ? ` (${avisos})` : ""}`;
+    await loadBase();
+    toast(okMsg); // depois do re-render, senão a mensagem morre com o innerHTML
+  } catch (e) { toast(`Falha no xlsx: ${e.message}`); }
+}
+
+// Export do EVENTO completo em xlsx multi-abas (mesmo dataset do export .md).
+function eventoXlsxExport() {
+  if (!xlsxOk()) return;
+  const d = state.eventoData;
+  if (!d) return;
+  const ev = d.evento || {};
+  const wb = XLSX.utils.book_new();
+  const add = (nome, rows) => { if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), nome.slice(0, 31)); };
+
+  // Checklist: colunas dinâmicas, agrupado por área (coluna Área explícita no xlsx).
+  const cols = (d.colunas || []).filter((c) => c.key !== "categoria");
+  const byArea = new Map();
+  for (const it of d.itens || []) { const a = (it.valores || {}).categoria || ""; if (!byArea.has(a)) byArea.set(a, []); byArea.get(a).push(it); }
+  const checklistRows = [];
+  for (const area of evtAreaOrder(d.colunas, d.itens)) {
+    for (const it of byArea.get(area) || []) {
+      const row = { "Área": area || "Sem área" };
+      const usedLabels = new Set(["Área"]);
+      for (const c of cols) {
+        let v = (it.valores || {})[c.key];
+        if (c.type === "check") v = v ? "sim" : "";
+        // labels duplicados sobrescreveriam a célula anterior — desambigua com a key
+        let lbl = c.label || c.key;
+        if (usedLabels.has(lbl)) lbl = `${lbl} (${c.key})`;
+        usedLabels.add(lbl);
+        row[lbl] = v == null ? "" : String(v);
+      }
+      checklistRows.push(row);
+    }
+  }
+  add("Checklist", checklistRows);
+
+  const byPainel = new Map();
+  for (const pl of d.painelistas || []) { const k = String(pl.painel || "").trim(); if (!byPainel.has(k)) byPainel.set(k, []); byPainel.get(k).push(pl); }
+  add("Programação", (d.programacao || []).map((b) => ({
+    "Horário": b.horario || "", Bloco: b.titulo || "", Tipo: b.tipo || "",
+    Painelistas: (b.tipo === "painel" && b.painel_ref) ? (byPainel.get(String(b.painel_ref).trim()) || []).map((p) => p.nome).join(", ") : ""
+  })));
+  add("Painelistas", (d.painelistas || []).map((p) => ({
+    Painel: p.painel || "", Nome: p.nome || "", Cargo: p.cargo || "", Empresa: p.empresa || "",
+    Papel: p.papel || "", Status: p.status || ""
+  })));
+  add("Patrocínio", (d.patrocinadores || []).map((p) => ({
+    Patrocinador: p.nome || "", Cota: p.cota || "", Valor: p.valor != null ? Number(p.valor) : "",
+    Status: p.status || "", "Estágio": p.estagio || "", Porta: p.porta || "",
+    "Próxima ação": p.proxima_acao || "", "Data ação": String(p.data_acao || "").slice(0, 10), Contato: p.contato || ""
+  })));
+  add("Convidados", (d.convidados || []).map((c) => ({
+    Nome: c.nome || "", Empresa: c.empresa || "", "Instituição": c.instituicao || "",
+    Segmento: c.segmento || "", "E-mail": c.email || "", Status: c.status || ""
+  })));
+
+  if (!wb.SheetNames.length) { alert("Evento sem dados para exportar."); return; }
+  const slug = String(ev.nome || "evento").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "evento";
+  const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  downloadBlob(`${slug}.xlsx`, new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+}
+
 // F-EVT3: cotas-catálogo (em evento.metadata.cotas).
 function eventoCotas() { return (state.eventoData?.evento?.metadata?.cotas) || []; }
 async function eventoCotasSave(cotas) {
@@ -3113,6 +3261,9 @@ function wireEvento() {
     if (e.target.closest("#base-add")) { baseAdd(); return; }
     if (e.target.closest("#base-import-btn")) { const bx = $("#base-import-box"); if (bx) bx.hidden = !bx.hidden; return; }
     if (e.target.closest("#base-import-do")) { baseImportDo(); return; }
+    // D-xlsx: import/export da Base em planilha
+    if (e.target.closest("#base-xlsx-import-btn")) { $("#base-xlsx-file")?.click(); return; }
+    if (e.target.closest("#base-xlsx-export-btn")) { baseXlsxExport(); return; }
     if (e.target.closest("#base-from-conv")) { baseFromConvidados(); return; }
     const bcPipe = e.target.closest("[data-bc-pipe]"); if (bcPipe) { baseToPipeline(bcPipe.dataset.bcPipe); return; }
     const bcDel = e.target.closest("[data-bc-del]"); if (bcDel) { if (confirm("Remover contato da Base?")) postJson("/api/intelligence?type=evt_contato_remove", { id: bcDel.dataset.bcDel }).then(loadBase).catch(() => {}); return; }
@@ -3121,6 +3272,7 @@ function wireEvento() {
     const open = e.target.closest("[data-open-evento]");
     if (open) { openEvento(open.dataset.openEvento); return; }
     if (e.target.closest("[data-evento-back]")) { loadEventos(); return; }
+    if (e.target.closest("[data-evento-export-xlsx]")) { eventoXlsxExport(); return; }
     if (e.target.closest("[data-evento-export]")) { exportEventoMd(); return; }
     const tab = e.target.closest("[data-evento-tab]");
     if (tab) { state.eventoTab = tab.dataset.eventoTab; renderEventoDetail(state.eventoData); return; }
@@ -3201,6 +3353,8 @@ function wireEvento() {
     const gDel = e.target.closest("[data-golden-del]"); if (gDel) { postJson("/api/intelligence?type=evt_golden_remove", { id: gDel.dataset.goldenDel }).then(prospInsumosReload).catch(() => {}); return; }
   });
   view.addEventListener("change", (e) => {
+    // D-xlsx: arquivo escolhido -> import da Base (limpa o input p/ permitir reimportar o mesmo arquivo)
+    if (e.target.id === "base-xlsx-file") { const f = e.target.files?.[0]; e.target.value = ""; if (f) baseXlsxImport(f); return; }
     // F-EVT7: edição inline da Base + filtro de relação
     const bc = e.target.closest("[data-bc-id]");
     if (bc) { bcSave(bc.dataset.bcId, { [bc.dataset.bcField]: bc.value }); return; }
@@ -3252,32 +3406,64 @@ async function loadFinanceiro() {
   try {
     const r = await requestJson("/api/intelligence?type=fin_list");
     const items = r?.items || [];
+    state.finList = items; // F-FIN2: usado no aviso de competência duplicada ao criar
     if (!items.length) { grid.innerHTML = emptyCard("Balancete", "Nenhum balancete ainda. Clique em “+ Novo balancete”."); return; }
-    grid.innerHTML = items.map((b) => `<article class="news-card target-card selectable" data-open-balancete="${escapeHtml(b.id)}">
+    const card = (b) => `<article class="news-card target-card selectable" data-open-balancete="${escapeHtml(b.id)}">
       <div class="card-body">
         <div class="card-head"><div>
           <strong>${escapeHtml(b.titulo || ("Balancete " + (b.competencia || "")))}</strong>
           <span class="card-sub">${escapeHtml(b.competencia || "")}</span>
         </div></div>
         <div class="entity-row" style="flex-wrap:wrap">
-          <span class="entity-pill">${escapeHtml(b.status || "aberto")}</span>
+          <span class="entity-pill${b.status === "fechado" ? " score-low" : ""}">${escapeHtml(b.status || "aberto")}</span>
           <span class="entity-pill">${b.n_lancamentos || 0} lançamentos</span>
           <span class="entity-pill">despesas ${money(b.total_despesas || 0)}</span>
           <button type="button" class="entity-pill" data-balancete-del="${escapeHtml(b.id)}">Excluir</button>
         </div>
       </div>
       ${cardFoot("var(--blue)", b.status || "Balancete", "IRIS//FINANCEIRO")}
-    </article>`).join("");
+    </article>`;
+    // F-FIN2 (2d): agrupado por ANO (a lista crescia como cards soltos).
+    const byYear = new Map();
+    for (const b of items) { const y = String(b.competencia || "").slice(0, 4) || "—"; if (!byYear.has(y)) byYear.set(y, []); byYear.get(y).push(b); }
+    grid.innerHTML = [...byYear.entries()].map(([y, list]) =>
+      `<div style="grid-column:1/-1;font-weight:700;opacity:.7;margin-top:6px">${escapeHtml(y)}</div>` + list.map(card).join("")
+    ).join("");
   } catch (e) { grid.innerHTML = emptyCard("Balancete", `Falha: ${e.message}`); }
 }
+// F-FIN2 (2b.8): criação por mini-form (mês corrente por padrão) em vez de prompt().
 async function finBalanceteCreate() {
-  const competencia = prompt("Competência do balancete (AAAA-MM, ex.: 2026-03):");
-  if (competencia == null) return;
-  if (!/^\d{4}-\d{2}$/.test(competencia.trim())) { alert("Formato: AAAA-MM (ex.: 2026-03)"); return; }
+  let grid = $("#financeiro-grid");
+  if (!grid || $("#fin-new-box")) return;
+  // Com um balancete ABERTO o grid está oculto — volta pra lista antes (senão o form some).
+  if (grid.hidden) { await loadFinanceiro(); grid = $("#financeiro-grid"); if (!grid) return; }
+  // Mês LOCAL (toISOString é UTC — em BRT viraria o mês às 21h do último dia).
+  const dNow = new Date();
+  const mesAtual = `${dNow.getFullYear()}-${String(dNow.getMonth() + 1).padStart(2, "0")}`;
+  grid.insertAdjacentHTML("afterbegin", `<article class="news-card" id="fin-new-box" style="grid-column:1/-1">
+    <strong style="font-size:.9rem">Novo balancete</strong>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap;margin-top:6px">
+      <input id="fin-new-comp" type="month" class="dou-date" value="${mesAtual}" placeholder="AAAA-MM">
+      <input id="fin-new-titulo" class="dou-date" style="min-width:200px" placeholder="Título (opcional)">
+      <button type="button" class="entity-pill" id="fin-new-do">Criar</button>
+      <button type="button" class="entity-pill" id="fin-new-cancel">Cancelar</button>
+      <span id="fin-new-status" class="card-sub"></span>
+    </div>
+  </article>`);
+}
+async function finBalanceteCreateDo() {
+  const competencia = ($("#fin-new-comp")?.value || "").trim();
+  const titulo = ($("#fin-new-titulo")?.value || "").trim();
+  const st = $("#fin-new-status");
+  if (!/^\d{4}-\d{2}$/.test(competencia)) { if (st) st.textContent = "Escolha o mês."; return; }
+  // Aviso de duplicata (não há unique no schema — dois "2026-03" confundem o histórico).
+  if ((state.finList || []).some((b) => b.competencia === competencia) &&
+      !confirm(`Já existe um balancete de ${competencia}. Criar OUTRO mesmo assim?`)) return;
+  if (st) st.textContent = "Criando…";
   try {
-    const r = await postJson("/api/intelligence?type=fin_save", { competencia: competencia.trim() });
-    if (r?.ok && r.balancete) { await loadFinanceiro(); openBalancete(r.balancete.id); } else alert(r?.error || "erro");
-  } catch (e) { alert(`Falha: ${e.message}`); }
+    const r = await postJson("/api/intelligence?type=fin_save", { competencia, ...(titulo ? { titulo } : {}) });
+    if (r?.ok && r.balancete) { await loadFinanceiro(); openBalancete(r.balancete.id); } else if (st) st.textContent = r?.error || "erro";
+  } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; }
 }
 async function openBalancete(id) {
   const grid = $("#financeiro-grid"), detail = $("#financeiro-detail");
@@ -3310,44 +3496,80 @@ function renderBalanceteDetail(d) {
   const detail = $("#financeiro-detail");
   if (!detail || !d) return;
   const bal = d.balancete || {}, lancs = d.lancamentos || [];
+  const fechado = bal.status === "fechado"; // F-FIN2 (2c.14): fechado = readonly
+  const ro = fechado ? "disabled" : "";
   const num = finNumbering(lancs);
   const contas = [...new Set(lancs.map((l) => l.conta || "Banco do Brasil"))];
   if (!contas.length) contas.push("Banco do Brasil");
   const totalDespesas = lancs.filter((l) => l.tipo === "debito" && l.contabiliza).reduce((s, l) => s + (Number(l.valor) || 0), 0);
+  const comp = String(bal.competencia || "").slice(0, 7);
+  const saldos = (bal.metadata && bal.metadata.saldos) || {};
+  // F-FIN2 (2a.5): pendências ANTES de gerar o documento (débitos contabilizados).
+  const despAll = lancs.filter((l) => l.tipo === "debito" && l.contabiliza);
+  const semNf = despAll.filter((l) => !l.nf_path).length;
+  const semDesc = despAll.filter((l) => !l.descricao).length;
+  const pendBar = (semNf || semDesc)
+    ? `<div class="activity-alert" style="margin:8px 0"><span class="alert-icon">⚠</span><span style="font-size:.78rem">Pendências: ${semNf ? `<strong>${semNf}</strong> despesa(s) sem NF` : ""}${semNf && semDesc ? " · " : ""}${semDesc ? `<strong>${semDesc}</strong> sem finalidade` : ""} — aparecem incompletas no documento.</span></div>`
+    : (despAll.length ? `<p class="card-sub" style="margin:8px 0">✓ Todas as ${despAll.length} despesas têm NF e finalidade.</p>` : "");
   const secaoConta = (conta) => {
     const ls = lancs.filter((l) => (l.conta || "Banco do Brasil") === conta);
     const desp = ls.filter((l) => l.tipo === "debito" && l.contabiliza).reduce((s, l) => s + (Number(l.valor) || 0), 0);
+    // F-FIN2 (2a.1): CONFERÊNCIA — anterior + créditos − débitos (todos, contabilizados ou não)
+    // deve bater com o saldo final do extrato. Divergência = linha perdida no parse.
+    const sc = saldos[conta] || {};
+    const credT = ls.filter((l) => l.tipo === "credito").reduce((s, l) => s + (Number(l.valor) || 0), 0);
+    const debT = ls.filter((l) => l.tipo === "debito").reduce((s, l) => s + (Number(l.valor) || 0), 0);
+    let confHtml = "";
+    if (Number.isFinite(Number(sc.anterior)) && Number.isFinite(Number(sc.final))) {
+      const calc = Number(sc.anterior) + credT - debT;
+      const diff = Math.round((calc - Number(sc.final)) * 100) / 100;
+      confHtml = Math.abs(diff) < 0.005
+        ? ` <span class="entity-pill score-low" title="anterior + créditos − débitos = saldo final do extrato">✓ saldo confere</span>`
+        : ` <span class="entity-pill score-high" title="calculado ${money(calc)} vs extrato ${money(Number(sc.final))}">⚠ saldo diverge ${money(Math.abs(diff))} — confira linhas perdidas no parse</span>`;
+    } else if (Number.isFinite(Number(sc.anterior))) {
+      confHtml = ` <span class="card-sub">saldo anterior ${money(Number(sc.anterior))} (sem saldo final no extrato p/ conferir)</span>`;
+    } else if (Number.isFinite(Number(sc.final))) {
+      confHtml = ` <span class="card-sub">saldo final ${money(Number(sc.final))} (sem saldo ANTERIOR no extrato — cole o extrato desde o início do mês p/ conferir)</span>`;
+    }
     const rows = ls.map((l) => {
       const isCred = l.tipo === "credito";
-      return `<tr style="${isCred ? "opacity:.55" : ""}">
+      const naoContab = l.tipo === "debito" && !l.contabiliza;
+      // F-FIN2 (2a.2): data fora da competência = destaque laranja.
+      const fora = comp && l.data && !String(l.data).startsWith(comp);
+      const style = [isCred || naoContab ? "opacity:.55" : "", fora ? "background:rgba(230,150,40,.14)" : ""].filter(Boolean).join(";");
+      return `<tr style="${style}"${fora ? ` title="Data fora da competência ${comp}"` : ""}>
         <td>${finCell(l, "data", l.data, "date")}</td>
         <td>${finCell(l, "lancamento", l.lancamento, "text")}</td>
         <td>${finCell(l, "detalhe", l.detalhe, "text")}</td>
+        <td>${finCell(l, "estabelecimento", l.estabelecimento, "text")}</td>
         <td>${finCell(l, "descricao", l.descricao, "text")}</td>
         <td>${finCell(l, "valor", l.valor, "num")}</td>
         <td>${finCell(l, "tipo", l.tipo, "select", ["debito", "credito"])}</td>
+        <td style="text-align:center" title="Conta na soma de despesas? (desmarque p/ transferência interna)"><input type="checkbox" data-fl-id="${escapeHtml(l.id)}" data-fl-field="contabiliza" ${l.contabiliza ? "checked" : ""} ${isCred ? "disabled" : ""} ${ro}></td>
         <td style="text-align:center">${num[l.id] || (isCred ? "—" : "·")}</td>
-        <td style="white-space:nowrap">${l.nf_url ? `<a href="${escapeHtml(l.nf_url)}" target="_blank" rel="noopener" class="entity-pill">NF ↗</a>` : (l.nf_path ? `<span class="entity-pill" style="opacity:.6">NF</span>` : "")}<label class="entity-pill" style="cursor:pointer;font-size:.7rem" title="anexar NF">+NF<input type="file" accept="image/*,application/pdf" data-fl-nf="${escapeHtml(l.id)}" hidden></label>${l.nf_path ? ` <button type="button" class="entity-pill" data-fl-nfdel="${escapeHtml(l.id)}" style="font-size:.7rem">×NF</button>` : ""}</td>
-        <td><button type="button" class="entity-pill" data-fl-del="${escapeHtml(l.id)}">×</button></td>
+        <td style="white-space:nowrap">${l.nf_url ? `<a href="${escapeHtml(l.nf_url)}" target="_blank" rel="noopener" class="entity-pill">NF ↗</a>` : (l.nf_path ? `<span class="entity-pill" style="opacity:.6">NF</span>` : "")}${fechado ? "" : `<label class="entity-pill" style="cursor:pointer;font-size:.7rem" title="anexar NF">+NF<input type="file" accept="image/*,application/pdf" data-fl-nf="${escapeHtml(l.id)}" hidden></label>${l.nf_path ? ` <button type="button" class="entity-pill" data-fl-nfdel="${escapeHtml(l.id)}" style="font-size:.7rem">×NF</button>` : ""}`}</td>
+        <td>${fechado ? "" : `<button type="button" class="entity-pill" data-fl-del="${escapeHtml(l.id)}">×</button>`}</td>
       </tr>`;
     }).join("");
     return `<div style="margin-top:10px">
-      <strong style="font-size:.9rem">${escapeHtml(conta)}</strong> <span class="card-sub">· despesas ${money(desp)}</span>
-      <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Lançamento</th><th>Detalhe</th><th>Descrição (finalidade)</th><th>Valor</th><th>Tipo</th><th>Nº DOC</th><th>NF</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="9" class="card-sub">Sem lançamentos. Importe o extrato ou adicione uma linha.</td></tr>`}</tbody></table></div>
-      <div class="entity-row" style="gap:6px;margin-top:4px"><button type="button" class="entity-pill" data-fl-add="${escapeHtml(conta)}">+ lançamento</button></div>
+      <strong style="font-size:.9rem">${escapeHtml(conta)}</strong> <span class="card-sub">· despesas ${money(desp)}</span>${confHtml}
+      <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Data</th><th>Lançamento</th><th>Detalhe</th><th>Estabelecimento</th><th>Descrição (finalidade)</th><th>Valor</th><th>Tipo</th><th title="conta na soma?">Σ</th><th>Nº DOC</th><th>NF</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="11" class="card-sub">Sem lançamentos. Importe o extrato ou adicione uma linha.</td></tr>`}</tbody></table></div>
+      <div class="entity-row" style="gap:6px;margin-top:4px">${fechado ? "" : `<button type="button" class="entity-pill" data-fl-add="${escapeHtml(conta)}">+ lançamento</button>`}</div>
     </div>`;
   };
   detail.innerHTML = `<article class="news-card">
     <div class="entity-row" style="justify-content:space-between;flex-wrap:wrap;gap:6px">
       <button type="button" class="entity-pill" data-balancete-back>&larr; Balancetes</button>
       <div class="entity-row" style="gap:6px;flex-wrap:wrap">
-        <button type="button" class="entity-pill" id="fin-import-btn">Importar extrato</button>
-        <button type="button" class="entity-pill" id="fin-config-btn">Config / assinaturas</button>
+        ${fechado ? "" : `<button type="button" class="entity-pill" id="fin-import-btn">Importar extrato</button>
+        <button type="button" class="entity-pill" id="fin-config-btn">Config / assinaturas</button>`}
         <button type="button" class="entity-pill" id="fin-doc-btn">Gerar documento</button>
+        <button type="button" class="entity-pill" id="fin-status-btn">${fechado ? "Reabrir" : "Fechar balancete"}</button>
       </div>
     </div>
     <strong>${escapeHtml(bal.titulo || ("Balancete " + (bal.competencia || "")))}</strong>
-    <span class="card-sub">${escapeHtml(bal.competencia || "")} · ${escapeHtml(bal.status || "aberto")}</span>
+    <span class="card-sub">${escapeHtml(bal.competencia || "")} · ${escapeHtml(bal.status || "aberto")}${fechado ? " 🔒 (somente leitura — reabra para editar)" : ""}</span>
+    ${pendBar}
     <div id="fin-import-box" hidden style="margin:8px 0;border:1px solid var(--border);border-radius:6px;padding:8px">
       <div class="entity-row" style="gap:6px;flex-wrap:wrap"><span class="card-sub">Cole o texto do extrato (Banco do Brasil) e escolha a conta:</span>
         <select id="fin-import-conta" class="dou-date">${FIN_CONTAS.map((c) => `<option>${escapeHtml(c)}</option>`).join("")}</select></div>
@@ -3359,6 +3581,8 @@ function renderBalanceteDetail(d) {
     ${contas.map(secaoConta).join("")}
     <div class="entity-row" style="justify-content:flex-end;margin-top:10px"><strong>TOTAL DESPESAS ${money(totalDespesas)}</strong></div>
   </article>`;
+  // Fechado = somente leitura: desabilita TODAS as células editáveis de uma vez.
+  if (fechado) detail.querySelectorAll("[data-fl-id]").forEach((el) => { el.disabled = true; });
 }
 async function finLancSave(id, patch) {
   const l = (state.balanceteData?.lancamentos || []).find((x) => String(x.id) === String(id));
@@ -3394,6 +3618,10 @@ function wireFinanceiro() {
     if (e.target.closest("#fin-config-btn")) { finToggleConfig(); return; }
     if (e.target.closest("#fin-doc-btn")) { finGerarDoc(); return; }
     if (e.target.closest("#fin-config-save")) { finConfigSave(); return; }
+    // F-FIN2: mini-form de criação + fechar/reabrir
+    if (e.target.closest("#fin-new-do")) { finBalanceteCreateDo(); return; }
+    if (e.target.closest("#fin-new-cancel")) { $("#fin-new-box")?.remove(); return; }
+    if (e.target.closest("#fin-status-btn")) { finToggleStatus(); return; }
     const add = e.target.closest("[data-fl-add]"); if (add) { finLancAdd(add.dataset.flAdd); return; }
     const fdel = e.target.closest("[data-fl-del]"); if (fdel) { if (confirm("Remover lançamento?")) postJson("/api/intelligence?type=fin_lancamento_remove", { id: fdel.dataset.flDel }).then(() => openBalancete(state.currentBalanceteId)).catch(() => {}); return; }
     const nfdel = e.target.closest("[data-fl-nfdel]"); if (nfdel) { if (confirm("Remover a NF?")) postJson("/api/intelligence?type=fin_nf_remove", { id: nfdel.dataset.flNfdel }).then(() => openBalancete(state.currentBalanceteId)).catch((err) => alert(err.message)); return; }
@@ -3405,6 +3633,18 @@ function wireFinanceiro() {
     if (nf && nf.files && nf.files[0]) { finNfUpload(nf.dataset.flNf, nf.files[0]); nf.value = ""; return; }
   });
 }
+// F-FIN2 (2c.14): fechar/reabrir o balancete (fechado = readonly).
+async function finToggleStatus() {
+  const bal = state.balanceteData?.balancete;
+  if (!bal) return;
+  const novo = bal.status === "fechado" ? "aberto" : "fechado";
+  if (novo === "fechado" && !confirm("Fechar o balancete? Ele fica somente leitura (dá para reabrir).")) return;
+  try {
+    const r = await postJson("/api/intelligence?type=fin_save", { id: bal.id, status: novo });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    openBalancete(bal.id);
+  } catch (e) { alert(`Falha: ${e.message}`); }
+}
 // C: importar extrato (parser regex do BB, no backend).
 async function finImportExtrato() {
   const texto = $("#fin-import-text")?.value || "", conta = $("#fin-import-conta")?.value || "Banco do Brasil", st = $("#fin-import-status");
@@ -3413,8 +3653,15 @@ async function finImportExtrato() {
   try {
     const r = await postJson("/api/intelligence?type=fin_extrato_import", { balancete_id: state.currentBalanceteId, conta, texto });
     if (!r?.ok) throw new Error(r?.error || "erro");
-    if (st) st.textContent = `${r.inserted} lançamento(s), ${r.pulados} já existiam.`;
-    openBalancete(state.currentBalanceteId);
+    // F-FIN2: resultado detalhado — o que foi pulado, fora da competência e auto-preenchido.
+    const parts = [`${r.inserted} lançamento(s)`];
+    if (r.pulados) parts.push(`${r.pulados} já existiam${(r.pulados_lista || []).length ? ` (${r.pulados_lista.slice(0, 3).map((x) => `${String(x.data).slice(5)} ${money(x.valor)}`).join("; ")}${r.pulados > 3 ? "…" : ""})` : ""}`);
+    if (r.fora_competencia) parts.push(`⚠ ${r.fora_competencia} fora da competência`);
+    if (r.auto_preenchidos) parts.push(`${r.auto_preenchidos} finalidade(s) auto-preenchida(s) de meses anteriores — revise`);
+    const msg = parts.join(" · ") + ".";
+    if (st) st.textContent = msg;
+    await openBalancete(state.currentBalanceteId); // re-render apaga o status — repete como toast
+    toast(msg);
   } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; }
 }
 // D: upload da NF (Supabase Storage via backend service-role).
@@ -3500,10 +3747,37 @@ function cartaJustificativaTexto(desp, org) {
   ];
 }
 // F: gerar o documento (markdown baixado + HTML no padrão p/ imprimir PDF). Nunca no git.
-function finGerarDoc() {
-  const d = state.balanceteData;
+// F-FIN2 (2c): re-busca o balancete NA HORA (signed URLs de NF expiram em 1h — gerar
+// com o estado antigo quebrava as imagens) e embute NF-imagem como dataURL (o PDF
+// impresso não depende mais de URL viva).
+async function finGerarDoc() {
+  let d = state.balanceteData;
   if (!d) return;
+  try {
+    const freshData = await requestJson(`/api/intelligence?type=fin_get&id=${encodeURIComponent(state.currentBalanceteId)}`);
+    if (freshData?.ok) { d = freshData; state.balanceteData = freshData; }
+  } catch { /* segue com o estado carregado */ }
   const bal = d.balancete || {}, lancs = d.lancamentos || [], org = finOrg(bal), a = finAssin(bal);
+  // F-FIN2 (2a.5): soft-gate de pendências — avisa, não bloqueia.
+  {
+    const despChk = lancs.filter((l) => l.tipo === "debito" && l.contabiliza);
+    const pSemNf = despChk.filter((l) => !l.nf_path).length;
+    const pSemDesc = despChk.filter((l) => !l.descricao).length;
+    if ((pSemNf || pSemDesc) && !confirm(`O documento vai sair com pendências:\n${pSemNf ? `· ${pSemNf} despesa(s) sem NF\n` : ""}${pSemDesc ? `· ${pSemDesc} sem finalidade (sai "[preencher a finalidade]")\n` : ""}\nGerar mesmo assim?`)) return;
+  }
+  // NF-imagem -> dataURL (embutida no print; falha ou arquivo grande vira link).
+  // Teto: 2.5MB por imagem e ~12MB no total — um print gigante trava a aba.
+  const nfData = {};
+  let nfBudget = 12 * 1024 * 1024;
+  const imgs = lancs.filter((l) => l.tipo === "debito" && l.contabiliza && l.nf_url && /\.(png|jpe?g|gif|webp)(\?|$)/i.test(l.nf_path || ""));
+  await Promise.all(imgs.map(async (l) => {
+    try {
+      const blob = await (await fetch(l.nf_url)).blob();
+      if (blob.size > 2.5 * 1024 * 1024 || blob.size > nfBudget) return; // cai no link
+      nfBudget -= blob.size;
+      nfData[l.id] = await new Promise((resolve, reject) => { const fr = new FileReader(); fr.onload = () => resolve(fr.result); fr.onerror = reject; fr.readAsDataURL(blob); });
+    } catch { /* mantém o link */ }
+  }));
   const num = finNumbering(lancs);
   const contas = [...new Set(lancs.map((l) => l.conta || "Banco do Brasil"))];
   const saldos = (bal.metadata && bal.metadata.saldos) || {};
@@ -3518,6 +3792,8 @@ function finGerarDoc() {
     L.push(`## ${conta}`, "");
     const saMd = Number((saldos[conta] || {}).anterior);
     if (Number.isFinite(saMd)) L.push(`Saldo anterior: ${money(saMd)}`, "");
+    const sfMd = Number((saldos[conta] || {}).final);
+    if (Number.isFinite(sfMd)) L.push(`Saldo final (extrato): ${money(sfMd)}`, "");
     L.push("| Data | Lançamento | Detalhe | Descrição | Valor | Tipo | Nº DOC |", "| --- | --- | --- | --- | --- | ---: | ---: |");
     for (const l of ls) L.push(`| ${cell(finDataFmt(l.data))} | ${cell(l.lancamento)} | ${cell(l.detalhe)} | ${cell(l.descricao)} | ${money(l.valor || 0)} | ${l.tipo} | ${num[l.id] || (l.tipo === "credito" ? "—" : "")} |`);
     const desp = ls.filter((l) => l.tipo === "debito" && l.contabiliza).reduce((s, l) => s + (Number(l.valor) || 0), 0);
@@ -3530,7 +3806,9 @@ function finGerarDoc() {
   for (const desp of despesas) {
     L.push("---", "", `### ANEXO Nº${String(desp.num).padStart(2, "0")} — Carta de justificativa`, "");
     for (const par of cartaJustificativaTexto(desp, org)) L.push(par, "");
-    if (desp.nf_url) L.push(`Nota Fiscal: ${desp.nf_url}`, "");
+    // F-FIN2 (2c.13): só o NOME do arquivo — a signed URL expira em 1h e não pode
+    // ficar gravada num artefato durável.
+    if (desp.nf_path) L.push(`Nota Fiscal anexada: ${String(desp.nf_path).split("/").pop()}`, "");
   }
   const slug = `balancete-${comp || "sem-data"}`;
   downloadText(`${slug}.md`, L.join("\n"));
@@ -3543,8 +3821,9 @@ function finGerarDoc() {
   for (const conta of contas) {
     const ls = lancs.filter((l) => (l.conta || "Banco do Brasil") === conta);
     const sa = Number((saldos[conta] || {}).anterior); // coage p/ número (metadata é livre) — evita money(string crua) no HTML
+    const sf = Number((saldos[conta] || {}).final);
     html += `<div style="page-break-before:always;padding-top:8px"><div style="border-bottom:2px solid #3355aa;padding-bottom:6px;margin-bottom:8px"><span style="font-size:9pt;letter-spacing:.1em;color:#555">EXTRATO BANCÁRIO · CONTA</span><br><strong style="font-size:16pt">${esc(conta)}</strong></div>`;
-    if (Number.isFinite(sa)) html += `<p style="font-size:10pt"><strong>Saldo anterior:</strong> ${money(sa)}</p>`;
+    if (Number.isFinite(sa)) html += `<p style="font-size:10pt"><strong>Saldo anterior:</strong> ${money(sa)}${Number.isFinite(sf) ? ` · <strong>Saldo final:</strong> ${money(sf)}` : ""}</p>`;
     html += `<table style="border-collapse:collapse;width:100%"><thead><tr><th style="${th}">Data</th><th style="${th}">Lançamento</th><th style="${th}">Detalhe</th><th style="${th}">Descrição</th><th style="${th};text-align:right">Valor</th><th style="${th}">Tipo</th><th style="${th};text-align:right">Nº DOC</th></tr></thead><tbody>`;
     for (const l of ls) html += `<tr${l.tipo === "credito" ? ' style="color:#888"' : ""}><td style="${td}">${esc(finDataFmt(l.data))}</td><td style="${td}">${esc(l.lancamento)}</td><td style="${td}">${esc(l.detalhe)}</td><td style="${td}">${esc(l.descricao)}</td><td style="${td};text-align:right">${money(l.valor || 0)}</td><td style="${td}">${esc(l.tipo)}</td><td style="${td};text-align:right">${num[l.id] || (l.tipo === "credito" ? "—" : "")}</td></tr>`;
     const desp = ls.filter((l) => l.tipo === "debito" && l.contabiliza).reduce((s, l) => s + (Number(l.valor) || 0), 0);
@@ -3561,7 +3840,11 @@ function finGerarDoc() {
       <p style="font-size:10pt"><strong>${esc(org.nome)}</strong>${org.cnpj ? `<br>CNPJ: ${esc(org.cnpj)}` : ""}${org.endereco ? `<br>Endereço: ${esc(org.endereco)}` : ""}</p>
       ${cartaJustificativaTexto(desp, org).map((par) => `<p style="font-size:10.5pt;text-align:justify">${esc(par)}</p>`).join("")}
       <p style="margin-top:30px">Atenciosamente,<br>${esc(org.nome)}<br>${esc(a.diretor_financeiro || "Diretor Financeiro")}</p>
-      ${desp.nf_url ? (/\.(png|jpe?g|gif|webp)(\?|$)/i.test(desp.nf_url) || (desp.nf_mime || "").startsWith("image/") ? `<div style="text-align:center;margin-top:16px"><img src="${esc(desp.nf_url)}" style="max-width:90%;max-height:520px;border:1px solid #ccc"></div>` : `<p style="margin-top:12px;font-size:9pt">Nota Fiscal anexa: <a href="${esc(desp.nf_url)}">${esc(desp.nf_url)}</a></p>`) : `<p style="margin-top:12px;font-size:9pt;color:#a00">NF pendente.</p>`}
+      ${nfData[desp.id]
+        ? `<div style="text-align:center;margin-top:16px"><img src="${esc(nfData[desp.id])}" style="max-width:90%;max-height:520px;border:1px solid #ccc"></div>`
+        : desp.nf_path
+          ? `<p style="margin-top:12px;font-size:9pt">Nota Fiscal anexada digitalmente: ${esc(String(desp.nf_path).split("/").pop())}${desp.nf_url ? ` — <a href="${esc(desp.nf_url)}">abrir</a> <em>(link expira em 1h)</em>` : ""}</p>`
+          : `<p style="margin-top:12px;font-size:9pt;color:#a00">NF pendente.</p>`}
     </div>`;
   }
   html += `</div>`;
@@ -3910,13 +4193,15 @@ async function painelUpdateItem(selectEl, itemId, campo, valor) {
 }
 
 // F3: baixa um arquivo de texto (o relatório .md p/ levar ao Claude Design).
-function downloadText(filename, content) {
-  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function downloadText(filename, content) {
+  downloadBlob(filename, new Blob([content], { type: "text/markdown;charset=utf-8" }));
 }
 
 // F3: exporta o relatório do painel (Markdown) — arte final vai ao Claude Design.

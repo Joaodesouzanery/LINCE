@@ -862,6 +862,10 @@
     <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js" integrity="sha384-uk5Wbjq1+KqUdHO30w7N7GrEGdzBhaJeW9o/ANF6v9+yx3M/cBmoX51C000JNCUf" crossorigin="anonymous"></script>
     <!-- Supabase Auth (login) — UMD via CDN, versão FIXA + SRI. -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.7/dist/umd/supabase.min.js" integrity="sha384-BmlQlKlDvXvKoxkn5OQuUo/aJQCTXeB+Kls6EccBmG4Kf8AXvp89RtO9MtPxP/r5" crossorigin="anonymous"></script>
+    <!-- SheetJS 0.20.3 VENDORIZADO (D-xlsx): o dist do npm/jsDelivr parou na 0.18.5
+         (CVE de prototype pollution); o oficial vive em cdn.sheetjs.com — vendorizar
+         pinna a versão e evita depender de CDN fora do padrão SRI do projeto. -->
+    <script src="./vendor/xlsx.full.min.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
