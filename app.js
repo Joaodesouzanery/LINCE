@@ -138,7 +138,11 @@ const NODE_TYPE_META = {
   deliberation: { color: "#2ea89d", label: "Deliberação" },
   process:      { color: "#c78a3b", label: "Processo" },
   contract:     { color: "#b0b352", label: "Contrato" },
-  donor:        { color: "#d2699e", label: "Doador" }
+  donor:        { color: "#d2699e", label: "Doador" },
+  // F-INT1 (F3): novas camadas do grafo nacional
+  orgao:        { color: "#e08c4c", label: "Comissão/Órgão" },
+  proposicao:   { color: "#c78a3b", label: "Proposição" },
+  document:     { color: "#8a919b", label: "Ato DOU" }
 };
 const nodeColor = (t) => (NODE_TYPE_META[t] || { color: "#6b757d" }).color;
 const nodeTypeLabel = (t) => (NODE_TYPE_META[t] || { label: t }).label;
@@ -154,6 +158,9 @@ const REL_META = {
   Processo: { color: "#c78a3b", style: "solid" },
   relatou: { color: "#2ea89d", style: "solid" }, votou: { color: "#2ea89d", style: "dashed" },
   delibera: { color: "#2ea89d", style: "solid" }, afeta: { color: "#2ea89d", style: "dotted" },
+  // F-INT1 (F3): novas arestas do grafo nacional
+  comissao: { color: "#e08c4c", style: "solid" }, autoria: { color: "#c78a3b", style: "solid" },
+  contrato: { color: "#b0b352", style: "solid" }, mentions: { color: "#8a919b", style: "dotted" },
   // Papeis societarios (estilo Sherlocker): rotulo + cor por papel.
   "Sócio": { color: "#2d72d2", style: "solid" },
   "Administrador": { color: "#32a467", style: "solid" },
@@ -1050,6 +1057,24 @@ function ingestedCompanyEntries(ing) {
     out.push({ source: "Deliberação regulatória", label: `${String(d.title || d.deliberation_number || "Deliberação").slice(0, 90)}`,
       value: `${d.result || "—"}${d.data_reuniao ? " · " + fmtDate(d.data_reuniao) : ""}${d.theme ? " · " + d.theme : ""}` });
   });
+  // F-INT1 (F3): sócios com mandato em regulador (metade inversa da porta giratória).
+  (ing.socios_mandatos || []).slice(0, 8).forEach((m) => {
+    out.push({ source: "Porta giratória (inversa)",
+      label: `⚠ Sócio ${m.nome || "?"} ${m.active ? "dirige" : "dirigiu"} a ${m.agency || "agência"}`,
+      value: `${m.role || "Dirigente"}${m.started_at ? " · desde " + fmtDate(m.started_at) : ""}${m.ended_at ? " · até " + fmtDate(m.ended_at) : ""}` });
+  });
+  // F-INT1 (F3): doações de campanha ONDE A EMPRESA É DOADORA (TSE).
+  const df = ing.doacoes_feitas || {};
+  if ((df.count || 0) > 0) {
+    out.push({ source: "TSE / doações", label: `Doações de campanha feitas: ${money(df.total || 0)} em ${df.count} registro(s)`,
+      value: (df.top || []).slice(0, 5).map((r) => `${r.nome || "?"} (${money(r.total)})`).join(" · ") || "-" });
+  }
+  // F-INT1 (F3): jurisprudência (TCU) ligada à empresa.
+  (ing.jurisprudence || []).slice(0, 5).forEach((j) => {
+    out.push({ source: `${j.court || "TCU"}${j.match === "name" ? " · match por nome" : ""}`,
+      label: `${String(j.title || j.process_number || "Processo").slice(0, 90)}`,
+      value: `${j.process_number || ""}${j.decided_at ? " · " + fmtDate(j.decided_at) : ""}${j.url ? " · " + j.url : ""}` });
+  });
   const sc = ing.screening || {};
   if (sc.flags) {
     const flags = [];
@@ -1486,6 +1511,8 @@ async function openDirectorDossier(id) {
       ${renderDiscursos(d)}
       ${renderFinanciadores(d)}
       ${renderCorporateNetwork(d)}
+      ${renderContratosViaSocio(d)}
+      ${renderDouMentions(d)}
       ${renderPersonPatrimony(d, socios)}`;
     $("#director-back")?.addEventListener("click", () => loadDirectors());
     $("#director-export")?.addEventListener("click", () => exportPersonPdf(d));
@@ -1703,6 +1730,52 @@ function renderCorporateNetwork(d) {
     </article>`;
 }
 
+// F-INT1 (F3): contratos públicos das empresas onde a pessoa é sócia — fecha o
+// circuito sócio → fornecedor do Estado dentro do dossiê.
+function renderContratosViaSocio(d) {
+  const cv = d.contracts_via_socio;
+  if (!cv?.count) return "";
+  return `
+    <article class="news-card">
+      <span class="source-meta">Contratos públicos das empresas (via sócio)</span>
+      <strong>${cv.count} contrato(s) · ${escapeHtml(money(cv.total_value || 0))}</strong>
+      <div style="overflow-x:auto">
+        <table class="data-table">
+          <thead><tr><th>Empresa</th><th>Objeto</th><th>Órgão</th><th>Valor</th><th>Assinado</th></tr></thead>
+          <tbody>${(cv.items || []).map((c) => `
+            <tr>
+              <td>${escapeHtml((c.empresa || "-").slice(0, 40))}</td>
+              <td>${escapeHtml((c.object || "-").slice(0, 60))}</td>
+              <td>${escapeHtml(c.agency || "-")}</td>
+              <td>${c.value != null ? escapeHtml(money(c.value)) : "-"}</td>
+              <td>${escapeHtml(String(c.signed_at || "-").slice(0, 10))}</td>
+            </tr>`).join("")}</tbody>
+        </table>
+      </div>
+      ${cv.truncated ? `<p class="card-sub" style="opacity:.7">⚠ Lista truncada — há mais contratos.</p>` : ""}
+    </article>`;
+}
+
+// F-INT1 (F3): atos do DOU que citam a pessoa (nomeações/exonerações/sanções).
+function renderDouMentions(d) {
+  const items = d.dou_mentions || [];
+  if (!items.length) return "";
+  const TYPE_LABEL = { nomeacao: "Nomeação", exoneracao: "Exoneração", sancao: "Sanção", monitor: "Monitor" };
+  return `
+    <article class="news-card">
+      <span class="source-meta">Atos do DOU que citam</span>
+      <strong>${items.length} ato(s) rastreado(s)</strong>
+      ${items.map((m) => {
+        const url = safeUrl(m.link);
+        return `<p style="margin:4px 0 0;font-size:.78rem">
+          <span class="entity-pill${m.alert_type === "sancao" ? " score-high" : ""}">${escapeHtml(TYPE_LABEL[m.alert_type] || m.alert_type || "ato")}</span>
+          ${escapeHtml((m.title || "").slice(0, 90))} · ${escapeHtml(String(m.published_at || "").slice(0, 10))}${m.agency ? ` · ${escapeHtml(m.agency)}` : ""}
+          ${url ? ` <a href="${escapeHtml(url)}" target="_blank" rel="noopener">abrir ↗</a>` : ""}
+        </p>`;
+      }).join("")}
+    </article>`;
+}
+
 // Selo de risco político (inteligência política estilo Arko). pr pode ser null.
 function renderPoliticalRisk(pr) {
   if (!pr || !pr.ok) return "";
@@ -1758,11 +1831,24 @@ async function loadLegislativo(q) {
   const list = $("#legislativo-list");
   if (!list) return;
   const term = (q || "").trim();
+  const casa = $("#leg-casa")?.value || "both";
+  // F-INT1 (F3): sem termo, abre com o ACERVO persistido (load:proposicoes roda no
+  // Actions) — antes a tela ficava vazia até o usuário buscar.
   if (!term) {
-    list.innerHTML = emptyCard("Legislativo", "Digite um tema (ex.: energia, saneamento) e clique em Buscar.");
+    list.innerHTML = emptyCard("Legislativo", "Carregando acervo de proposições monitoradas...");
+    try {
+      const payload = await requestJson(`/api/rss-feeds?type=proposicoes&casa=${encodeURIComponent(casa)}`);
+      if ((payload.items || []).length) {
+        renderLegislativo(payload.items);
+        list.insertAdjacentHTML("afterbegin", `<p class="card-sub" style="opacity:.7;margin-bottom:8px">Acervo persistido (termos regulatórios monitorados) — busque um tema para consultar ao vivo na Câmara/Senado.</p>`);
+      } else {
+        list.innerHTML = emptyCard("Legislativo", "Acervo vazio — rode load:proposicoes (workflow legislativo) ou busque um tema.");
+      }
+    } catch {
+      list.innerHTML = emptyCard("Legislativo", "Digite um tema (ex.: energia, saneamento) e clique em Buscar.");
+    }
     return;
   }
-  const casa = $("#leg-casa")?.value || "both";
   list.innerHTML = emptyCard("Legislativo", `Buscando "${escapeHtml(term)}" na Câmara e Senado...`);
   try {
     const payload = await requestJson(
@@ -3541,7 +3627,8 @@ function renderPainelDetail(d) {
   if (!detail || !d) return;
   const p = d.painel;
   const tab = state.painelTab || "dados";
-  const tabs = [["dados", "Dados Gerais"], ["proposicoes", `Proposições (${d.counts?.proposicoes || 0})`], ["agenda", `Agenda (${d.counts?.agenda || 0})`], ["noticias", `Notícias (${d.counts?.noticias || 0})`], ["stakeholders", `Stakeholders (${d.counts?.stakeholders || 0})`], ["orgaos", `Órgãos (${d.counts?.orgaos || 0})`]];
+  const intelCount = (d.inteligencia?.anomalias?.length || 0) + (d.inteligencia?.contratos_vencendo?.length || 0) + (d.inteligencia?.consultas?.length || 0) + (d.comissao_pauta?.length || 0);
+  const tabs = [["dados", "Dados Gerais"], ["proposicoes", `Proposições (${d.counts?.proposicoes || 0})`], ["agenda", `Agenda (${d.counts?.agenda || 0})`], ["inteligencia", `Inteligência (${intelCount})`], ["noticias", `Notícias (${d.counts?.noticias || 0})`], ["stakeholders", `Stakeholders (${d.counts?.stakeholders || 0})`], ["orgaos", `Órgãos (${d.counts?.orgaos || 0})`]];
   detail.innerHTML = `
     <article class="news-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
@@ -3559,10 +3646,45 @@ function renderPainelDetail(d) {
 function renderPainelTab(d, tab) {
   if (tab === "proposicoes") return renderPainelProposicoes(d);
   if (tab === "agenda") return renderPainelAgenda(d);
+  if (tab === "inteligencia") return renderPainelInteligencia(d);
   if (tab === "noticias") return renderPainelNoticias(d);
   if (tab === "stakeholders") return renderPainelStakeholders(d);
   if (tab === "orgaos") return renderPainelOrgaos(d);
   return renderPainelDados(d);
+}
+
+// F-INT1 (F3): aba Inteligência do painel — anomalias, contratos a vencer e
+// consultas dos órgãos monitorados + comissão×pauta dos stakeholders.
+function renderPainelInteligencia(d) {
+  const it = d.inteligencia || {};
+  const cp = d.comissao_pauta || [];
+  const blocks = [];
+  if (cp.length) {
+    blocks.push(`<article class="news-card">
+      <span class="source-meta">Comissão × Pauta — o cruzamento mais acionável</span>
+      ${cp.map((x) => `<div class="activity-alert" style="margin-top:6px"><span class="alert-icon">⚠</span><span style="font-size:.78rem"><strong>${escapeHtml(x.nome || "?")}</strong> (${escapeHtml(x.cargo || "membro")} · ${escapeHtml(x.orgao_sigla || "")}) integra o colegiado que aprecia "${escapeHtml((x.prop_titulo || "").slice(0, 70))}"${x.data_inicio ? ` em ${escapeHtml(String(x.data_inicio).slice(0, 10))}` : ""}</span></div>`).join("")}
+    </article>`);
+  }
+  if ((it.anomalias || []).length) {
+    blocks.push(`<article class="news-card">
+      <span class="source-meta">Movimentos anômalos dos órgãos do painel</span>
+      ${it.anomalias.map((a) => `<p style="margin:4px 0 0;font-size:.78rem"><span class="entity-pill score-${a.kind === "pico" ? "high" : "mid"}">${a.kind === "pico" ? "PICO" : "SILÊNCIO"}</span> ${escapeHtml(a.agency)}: ${escapeHtml(a.metric)} ${a.kind === "pico" ? `${escapeHtml(String(a.ratio))}× o padrão` : "zerou esta semana"} (atual ${a.current} · baseline ${a.baseline})</p>`).join("")}
+    </article>`);
+  }
+  if ((it.contratos_vencendo || []).length) {
+    blocks.push(`<article class="news-card">
+      <span class="source-meta">Contratos a vencer (90d) nos órgãos do painel</span>
+      ${it.contratos_vencendo.map((c) => `<p style="margin:4px 0 0;font-size:.78rem"><strong>${escapeHtml(c.agency || "?")}</strong> · ${escapeHtml((c.object || "").slice(0, 80))} — ${c.value != null ? escapeHtml(money(c.value)) : "s/ valor"} · vence ${escapeHtml(String(c.ends_at || "").slice(0, 10))}${c.supplier ? ` · ${escapeHtml(c.supplier.slice(0, 40))}` : ""}</p>`).join("")}
+    </article>`);
+  }
+  if ((it.consultas || []).length) {
+    blocks.push(`<article class="news-card">
+      <span class="source-meta">Consultas/audiências abertas (45d)</span>
+      ${it.consultas.map((c) => { const url = safeUrl(c.link); return `<p style="margin:4px 0 0;font-size:.78rem"><strong>${escapeHtml(c.agency || "?")}</strong> · ${escapeHtml((c.title || "").slice(0, 90))} · ${escapeHtml(String(c.date || "").slice(0, 10))}${url ? ` <a href="${escapeHtml(url)}" target="_blank" rel="noopener">abrir ↗</a>` : ""}</p>`; }).join("")}
+    </article>`);
+  }
+  if (!blocks.length) return emptyCard("Inteligência", "Sem sinais para os órgãos/stakeholders deste painel. Adicione órgãos (aba Órgãos) para ativar anomalias, contratos e consultas.");
+  return blocks.join("");
 }
 
 // F7: aba Notícias — lista curada + curadoria (busca Google News → Fixar; ou colar URL).
@@ -4590,12 +4712,14 @@ function renderGerador(d) {
   if (!dirs.length) {
     dirEl.innerHTML = emptyCard("Decisores", d.target_agencies?.length ? "Sem dirigentes ativos cadastrados nas agências-alvo." : "Defina tema/agências para listar os decisores.");
   } else {
+    // F-INT1 (F3): o person_id já vinha no payload e era descartado — card clicável
+    // abre o dossiê completo do decisor.
     dirEl.innerHTML = dirs.slice(0, 20).map((p) => {
       const meta = [p.agency, p.role].filter(Boolean).join(" · ");
       const links = p.socio_links ? `${p.socio_links} vínculo(s) societário(s)${p.inaptas ? ` · ${p.inaptas} inapta(s)` : ""}` : "sem vínculo societário na base";
       const sev = p.inaptas ? "var(--red)" : p.socio_links ? "var(--yellow)" : "var(--green)";
       return `
-      <article class="news-card">
+      <article class="news-card${p.person_id ? " selectable" : ""}" ${p.person_id ? `data-open-person="${escapeHtml(p.person_id)}"` : ""}>
         <span class="source-meta">${escapeHtml(meta || "Dirigente")}</span>
         <strong>${escapeHtml(p.name || "?")}</strong>
         <p>${escapeHtml(links)}${p.since ? ` · desde ${escapeHtml(p.since)}` : ""}</p>
@@ -4611,12 +4735,22 @@ function renderGerador(d) {
     riskEl.innerHTML = emptyCard("Riscos", "Sem sinais de porta-giratória entre os decisores das agências-alvo.");
   } else {
     riskEl.innerHTML = risks.slice(0, 20).map((r) => `
-      <article class="news-card">
+      <article class="news-card${r.person_id ? " selectable" : ""}" ${r.person_id ? `data-open-person="${escapeHtml(r.person_id)}"` : ""}>
         <span class="source-meta">${escapeHtml([r.agency, r.role].filter(Boolean).join(" · ") || "Risco")}</span>
         <strong>${escapeHtml(r.name || "?")}</strong>
         <p>Sócio(a) de ${r.companies} empresa(s)${r.inaptas ? ` — ${r.inaptas} inapta(s)/baixada(s)` : ""}.</p>
         ${cardFoot(r.severity === "high" ? "var(--red)" : "var(--yellow)", "captura", "LINCE//RISCO")}
       </article>`).join("");
+  }
+
+  // F-INT1 (F3): clique em decisor/risco abre o dossiê da pessoa (mesmo padrão do
+  // radar; suppress evita a corrida documentada com loadDirectors).
+  for (const el of [dirEl, riskEl]) {
+    el?.querySelectorAll("[data-open-person]").forEach((card) => card.addEventListener("click", () => {
+      suppressDirectorsAutoload = true;
+      setView("directors");
+      openDirectorDossier(card.dataset.openPerson);
+    }));
   }
 
   // Memo — oportunidades (reusa o renderer do radar, apontando pro container do Gerador).
@@ -4643,6 +4777,11 @@ function renderCounterpartyHtml(cp) {
     const meta = [s.papel, s.tipo, s.situacao].filter(Boolean).join(" · ");
     return `<li>${escapeHtml(s.nome || "?")} ${meta ? `<span class="ger-muted">${escapeHtml(meta)}</span>` : ""}</li>`;
   }).join("");
+  // F-INT1 (F3): contratos públicos da contraparte (PNCP) — o que ela já vende ao Estado.
+  const cs = cp.contracts_summary || {};
+  const contratos = (cp.contracts || []).slice(0, 6).map((ct) =>
+    `<li>${escapeHtml((ct.object || "Contrato").slice(0, 70))} <span class="ger-muted">${escapeHtml(ct.agency || "?")}${ct.value != null ? ` · ${escapeHtml(money(ct.value))}` : ""}${ct.ends_at ? ` · vence ${escapeHtml(String(ct.ends_at).slice(0, 10))}` : ""}</span></li>`
+  ).join("");
   return `
     <article class="dossier-item">
       <span class="field-source">Cadastro + rede societária + screening</span>
@@ -4650,6 +4789,7 @@ function renderCounterpartyHtml(cp) {
       <p>CNPJ ${escapeHtml(formatCnpj(cp.cnpj))}${c?.cnae ? ` · CNAE ${escapeHtml(c.cnae)}` : ""} · ${cp.socios_count || 0} sócio(s)</p>
       ${flags ? `<ul class="ger-flags">${flags}</ul>` : ""}
       ${socios ? `<div class="ger-sub">Quadro societário</div><ul class="ger-recent">${socios}</ul>` : ""}
+      ${(cs.count || 0) > 0 ? `<div class="ger-sub">Contratos públicos (${cs.count}${cs.truncated ? "+" : ""} · ${escapeHtml(money(cs.total_value || 0))})</div><ul class="ger-recent">${contratos}</ul>` : ""}
     </article>`;
 }
 
@@ -5002,6 +5142,7 @@ function fileToBase64(file) {
 function wireVotacao() {
   $("#votacao-refresh")?.addEventListener("click", () => loadVotacao());
   $("#votacao-agency")?.addEventListener("change", () => loadVotacao());
+  $("#votacao-scope")?.addEventListener("change", () => loadVotacao());
   const up = $("#votacao-upload");
   if (up) up.addEventListener("change", async (e) => {
     const file = e.target.files && e.target.files[0]; if (!file) return;
@@ -5077,18 +5218,31 @@ function renderVotFidelidade(rows) {
 async function loadVotacao() {
   populateVotacaoAgencies();
   if (!_votacaoWired) { wireVotacao(); _votacaoWired = true; }
-  const agency = $("#votacao-agency")?.value?.trim() || "";
+  // F-INT1 (F3): escopo legislativo reusa os MESMOS renderers — o backend
+  // (serveLegVoteMetric) despacha votos_leg_* pelas mesmas funções puras.
+  const leg = $("#votacao-scope")?.value === "legislativo";
+  const agSel = $("#votacao-agency");
+  if (agSel) agSel.style.display = leg ? "none" : ""; // votos nominais não têm agência
+  const agency = !leg && agSel?.value?.trim() || "";
   const q = agency ? `&agency=${encodeURIComponent(agency)}` : "";
-  const url = (t) => `/api/intelligence?type=${t}${q}`;
+  const prefix = leg ? "votos_leg_" : "votos_";
+  const url = (t) => `/api/intelligence?type=${prefix}${t}${q}`;
   const [ov, dist, matrix, fid, cons] = await Promise.all([
-    requestJson(url("votos_overview")).catch(() => null),
-    requestJson(url("votos_distribution")).catch(() => null),
-    requestJson(url("votos_matrix")).catch(() => null),
-    requestJson(url("votos_fidelidade")).catch(() => null),
-    requestJson(url("votos_consenso")).catch(() => null),
+    requestJson(url("overview")).catch(() => null),
+    requestJson(url("distribution")).catch(() => null),
+    requestJson(url("matrix")).catch(() => null),
+    requestJson(url("fidelidade")).catch(() => null),
+    requestJson(url("consenso")).catch(() => null),
   ]);
   const total = ov?.data?.total_deliberacoes || 0;
   $("#votacao-empty")?.toggleAttribute("hidden", total > 0);
+  const emptyEl = $("#votacao-empty p");
+  if (emptyEl && !total) {
+    // Texto por ESCOPO (e restaurado ao voltar — senão a dica do Congresso ficava presa).
+    emptyEl.textContent = leg
+      ? "Sem votações nominais persistidas. Rode load:votacoes-leg (GitHub Actions legislativo ou local) para popular o acervo do Congresso."
+      : "Sem votos ainda. Envie um PDF de deliberação (botão acima) ou rode o auto-coletor. As tabelas/deliberações precisam do roster de diretores (people + mandatos) da agência.";
+  }
   renderVotOverview(ov?.data);
   renderVotDistribution(dist?.data);
   renderVotConsenso(cons?.data);
@@ -5169,6 +5323,12 @@ function mergeNatNetwork(g) {
 async function expandNatNode(nodeId) {
   if (!nodeId) return;
   const [kind] = nodeId.split(":");
+  // Nós SINTÉTICOS (party/donor/orgao/proposicao) não têm expansão no backend —
+  // ?node=proposicao:camara:123 viraria um dump global sem relação com o nó.
+  if (["party", "donor", "orgao", "proposicao"].includes(kind)) {
+    $("#nat-graph-title").textContent = "Este nó é agregado (sem expansão) — expanda as pessoas/empresas ligadas a ele.";
+    return;
+  }
   let g;
   try {
     // ?node=<kind:id> devolve os vinculos diretos do no (relationships + derivados).
@@ -5359,13 +5519,32 @@ async function loadConsultas() {
           <p>${escapeHtml(c.summary || "")}</p>
           <div class="entity-row">
             ${safeUrl(c.link) ? `<a class="entity-pill" href="${escapeHtml(safeUrl(c.link))}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+            <button type="button" class="entity-pill" data-vigiar-title="${escapeHtml((c.title || "").slice(0, 120))}">🔔 Vigiar tema</button>
           </div>
         </div>
         ${cardFoot("var(--green)", "Consulta pública", `RSS//${c.agency || "AGÊNCIA"}`)}
       </article>`).join("");
+    wireVigiarButtons(list);
   } catch (error) {
     list.innerHTML = emptyCard("Consultas", `Erro: ${error.message}`);
   }
+}
+
+// F-INT1 (F3): consulta/pauta → ação — abre a Central de Monitoramento com o
+// formulário pré-preenchido (o usuário ajusta o termo antes de salvar).
+function wireVigiarButtons(container) {
+  container.querySelectorAll("[data-vigiar-title]").forEach((btn) => btn.addEventListener("click", () => {
+    const title = btn.dataset.vigiarTitle || "";
+    setView("monitors");
+    setTimeout(() => {
+      const name = $("#mon-name"), type = $("#mon-type"), pattern = $("#mon-pattern");
+      if (name) name.value = title.slice(0, 80);
+      if (type) type.value = "keyword";
+      // Sugere o miolo do título como termo (sem o boilerplate de "consulta pública").
+      // Sem 'n' solto na classe (comia o "n" de "novo..."); "nº 15/2026" sai como grupo.
+      if (pattern) { pattern.value = title.replace(/consulta p[úu]blica|audi[êe]ncia p[úu]blica|tomada de subs[íi]dios/gi, "").replace(/^[\s\-–—:0-9\/.]*(?:n[º°.]\s*[0-9\/.-]*)?[\s\-–—:0-9\/.]*/i, "").trim().slice(0, 60); pattern.focus(); }
+    }, 80);
+  }));
 }
 
 async function loadAgenda() {
@@ -5389,10 +5568,12 @@ async function loadAgenda() {
           <p>${escapeHtml(c.summary || "")}</p>
           <div class="entity-row">
             ${safeUrl(c.link) ? `<a class="entity-pill" href="${escapeHtml(safeUrl(c.link))}" target="_blank" rel="noreferrer">Abrir</a>` : ""}
+            <button type="button" class="entity-pill" data-vigiar-title="${escapeHtml((c.title || "").slice(0, 120))}">🔔 Vigiar tema</button>
           </div>
         </div>
         ${cardFoot("var(--blue-bright)", "Pauta / reunião", `RSS//${c.agency || "AGÊNCIA"}`)}
       </article>`).join("");
+    wireVigiarButtons(list);
   } catch (error) {
     list.innerHTML = emptyCard("Agenda", `Erro: ${error.message}`);
   }

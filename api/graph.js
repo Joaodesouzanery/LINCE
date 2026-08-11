@@ -8,7 +8,10 @@ const KIND_TABLE = {
   agency: { table: "agencies", label: "name", sub: "acronym" },
   person: { table: "people", label: "full_name", sub: "role" },
   company: { table: "companies", label: "legal_name", sub: "cnpj" },
-  deliberation: { table: "deliberations", label: "title", sub: "theme" }
+  deliberation: { table: "deliberations", label: "title", sub: "theme" },
+  // F-INT1 (F3): atos do DOU entram no grafo via arestas 'mentions' (documento->pessoa).
+  // cols: select restrito — documents carrega extracted_text (pesado demais p/ rotulo).
+  document: { table: "documents", label: "title", sub: "document_type", cols: "id, title, document_type, published_at, source_url" }
 };
 
 const k = (kind, id) => `${kind}:${id}`;
@@ -194,7 +197,7 @@ module.exports = async function handler(req, res) {
 
     // Acumuladores comuns: arestas + ids necessarios por tipo + nos sinteticos (party).
     const edges = [];
-    const need = { agency: new Set(), person: new Set(), company: new Set(), deliberation: new Set() };
+    const need = { agency: new Set(), person: new Set(), company: new Set(), deliberation: new Set(), document: new Set() };
     const synthetic = {}; // id -> node (ex.: party:PT)
     const noteNeed = (kind, id) => { if (need[kind]) need[kind].add(id); };
     const pushEdge = (fromKind, fromId, toKind, toId, relationship, weight, meta) => {
@@ -225,8 +228,11 @@ module.exports = async function handler(req, res) {
       if (a.length >= limit || b.length >= limit) truncatedLayers.relationships = true;
       relRows = [...a, ...b];
     } else {
+      // Panorama: SEM 'mentions' (documento->pessoa) — cada ato citaria N pessoas e os
+      // documentos inundariam o grafo geral. Mencoes aparecem na expansao de no.
       relRows = await safe(supabase.from("relationships")
-        .select("from_kind, from_id, to_kind, to_id, relationship, confidence_score, metadata").order("id").limit(limit), "relationships");
+        .select("from_kind, from_id, to_kind, to_id, relationship, confidence_score, metadata")
+        .neq("relationship", "mentions").order("id").limit(limit), "relationships");
       markTrunc("relationships", relRows);
     }
     const relTruncated = !!truncatedLayers.relationships;
@@ -309,12 +315,66 @@ module.exports = async function handler(req, res) {
         { vote: v.vote_direction, dissent: v.is_dissent });
     }
 
+    // 6) F-INT1 (F3): comissoes/orgaos legislativos -> pessoa --comissao--> orgao
+    //    (no sintetico por sigla, no molde de 'party'). SO no panorama ou na expansao
+    //    de PESSOA — sem esse guard, expandir empresa/agencia despejava ate `limit`
+    //    linhas globais sem relacao com o no.
+    const legislativeLayersOn = !nodeParam || nKind === "person";
+    const memberships = !legislativeLayersOn ? [] : markTrunc("body_memberships", await safe(personFilter(
+      supabase.from("body_memberships").select("person_id, casa, orgao_sigla, orgao_nome, cargo").order("id").limit(limit)
+    ), "body_memberships"));
+    for (const bm of memberships) {
+      if (!bm.person_id || !bm.orgao_sigla) continue;
+      const oid = k("orgao", String(bm.orgao_sigla).toUpperCase().trim());
+      synthetic[oid] = { id: oid, type: "orgao", title: bm.orgao_sigla, subtitle: (bm.orgao_nome || "Órgão legislativo").slice(0, 60) };
+      need.person.add(bm.person_id);
+      edges.push({ from: k("person", bm.person_id), to: oid, relationship: "comissao", weight: 0.9,
+        meta: { cargo: bm.cargo, casa: bm.casa } });
+    }
+
+    // 7) F-INT1 (F3): autoria legislativa -> pessoa --autoria--> proposicao (id TEXT
+    //    'camara:123' -> no sintetico; o join do titulo vem pelo FK real).
+    const autorias = !legislativeLayersOn ? [] : markTrunc("proposicao_autores", await safe(personFilter(
+      supabase.from("proposicao_autores").select("person_id, proposicao_id, tipo, proposicoes(titulo, casa)").not("person_id", "is", null).order("id").limit(limit)
+    ), "proposicao_autores"));
+    for (const au of autorias) {
+      if (!au.person_id || !au.proposicao_id) continue;
+      const prid = k("proposicao", au.proposicao_id);
+      synthetic[prid] = { id: prid, type: "proposicao", title: (au.proposicoes?.titulo || au.proposicao_id).slice(0, 60), subtitle: `Proposição${au.proposicoes?.casa ? ` · ${au.proposicoes.casa}` : ""}` };
+      need.person.add(au.person_id);
+      edges.push({ from: k("person", au.person_id), to: prid, relationship: "autoria", weight: 0.9, meta: { tipo: au.tipo } });
+    }
+
+    // 8) F-INT1 (F3): contratos como ARESTA no modo no (empresa<->agencia; antes so o
+    //    modo aggregate via contratos). Agregado por par p/ nao poluir com N arestas.
+    if (nodeParam && (nKind === "company" || nKind === "agency")) {
+      const cq = supabase.from("contracts").select("supplier_company_id, agency_id, value").order("id").limit(limit);
+      const cts = markTrunc("contracts", await safe(
+        nKind === "company" ? cq.eq("supplier_company_id", nId) : cq.eq("agency_id", nId), "contracts"));
+      const pairAgg = new Map();
+      for (const c of cts) {
+        if (!c.supplier_company_id || !c.agency_id) continue;
+        const pk = `${c.supplier_company_id}|${c.agency_id}`;
+        const cur = pairAgg.get(pk) || { company: c.supplier_company_id, agency: c.agency_id, total: 0, n: 0 };
+        cur.total += Number(c.value) || 0; cur.n++;
+        pairAgg.set(pk, cur);
+      }
+      for (const p of pairAgg.values()) {
+        pushEdge("company", p.company, "agency", p.agency, "contrato", 0.95, { total_value: p.total, contratos: p.n });
+      }
+    }
+
     // Resolve rotulos das entidades reais.
     const labels = { ...synthetic };
     for (const [kind, cfg] of Object.entries(KIND_TABLE)) {
       const ids = [...need[kind]];
       if (!ids.length) continue;
-      const data = await safe(supabase.from(cfg.table).select("*").in("id", ids), `labels:${kind}`);
+      // .in() em CHUNKS de 200: com centenas de ids (documents/people) a URL do
+      // PostgREST estoura o limite e a camada inteira cairia como "partial".
+      const data = [];
+      for (let i = 0; i < ids.length; i += 200) {
+        data.push(...await safe(supabase.from(cfg.table).select(cfg.cols || "*").in("id", ids.slice(i, i + 200)), `labels:${kind}`));
+      }
       for (const row of data) {
         labels[k(kind, row.id)] = {
           id: k(kind, row.id), type: kind,

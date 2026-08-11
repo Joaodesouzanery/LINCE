@@ -25,11 +25,57 @@ module.exports = async function handler(req, res) {
       else ({ data: company } = await supabase.from("companies").select("*").eq("cnpj", cnpj).maybeSingle());
       if (!company) return res.status(404).json({ ok: false, error: "Empresa nao encontrada." });
 
-      const [contractsRes, socioRes, delibsAfeta] = await Promise.all([
+      const [contractsRes, socioRes, delibsAfeta, doacoesRes, jurisIdRes] = await Promise.all([
         supabase.from("contracts").select("*, agencies(acronym, name)").eq("supplier_company_id", company.id).order("signed_at", { ascending: false }),
         supabase.from("relationships").select("*").eq("to_id", company.id).eq("to_kind", "company").eq("relationship", "socio"),
-        supabase.from("deliberations").select("id, deliberation_number, title, theme, result, agency_id, data_reuniao, rapporteur_person_id").eq("affected_company_id", company.id).order("data_reuniao", { ascending: false })
+        supabase.from("deliberations").select("id, deliberation_number, title, theme, result, agency_id, data_reuniao, rapporteur_person_id").eq("affected_company_id", company.id).order("data_reuniao", { ascending: false }),
+        // F-INT1 (F3): doacoes onde a empresa e DOADORA (campaign_donations.donor_document
+        // guarda CNPJ inteiro p/ PJ; companies.cnpj ja e digitos puros — join direto).
+        // PAGINADO como no modo pessoa: doador PJ grande passa de 1000 recibos e o
+        // teto do PostgREST subestimaria o total em silencio.
+        (async () => {
+          if (!company.cnpj) return { data: [] };
+          const all = [];
+          for (let from = 0; from < 10000; from += 1000) {
+            const { data, error } = await supabase.from("campaign_donations")
+              .select("recipient_person_id, recipient_name, amount, reference_year")
+              .eq("donor_document", company.cnpj)
+              .order("reference_year", { ascending: false, nullsFirst: false })
+              .order("id").range(from, from + 999);
+            if (error || !data) break;
+            all.push(...data);
+            if (data.length < 1000) break;
+          }
+          return { data: all };
+        })(),
+        // F-INT1 (F3): jurisprudence (TCU) ligada — por FK quando backfillada.
+        supabase.from("jurisprudence")
+          .select("court, process_number, title, summary, decided_at, url")
+          .eq("related_company_id", company.id)
+          .order("decided_at", { ascending: false }).limit(10)
       ]);
+      // jurisprudence por NOME (as FKs do load-tcu ficam NULL hoje): busca o razao
+      // social no titulo/resumo. Best-effort — nome curto/generico gera ruido, entao
+      // so roda com nome >= 8 chars e o front rotula como "match por nome".
+      let jurisByName = [];
+      // strip de curingas ANTES do gate de tamanho (nome curto cheio de % passava).
+      const legalName = String(company.legal_name || "").replace(/[%_]/g, "").trim();
+      if (legalName.length >= 8) {
+        const term = `%${legalName}%`;
+        const [jt, js] = await Promise.all([
+          supabase.from("jurisprudence").select("court, process_number, title, summary, decided_at, url").ilike("title", term).limit(10),
+          supabase.from("jurisprudence").select("court, process_number, title, summary, decided_at, url").ilike("summary", term).limit(10)
+        ]);
+        jurisByName = [...(jt.data || []), ...(js.data || [])];
+      }
+      const seenJuris = new Set();
+      let jurisprudence = [];
+      for (const j of [...(jurisIdRes.data || []).map((x) => ({ ...x, match: "fk" })), ...jurisByName.map((x) => ({ ...x, match: "name" }))]) {
+        const k = j.process_number || j.url || j.title;
+        if (seenJuris.has(k)) continue; seenJuris.add(k);
+        jurisprudence.push(j);
+      }
+      jurisprudence = jurisprudence.sort((a, b) => String(b.decided_at || "").localeCompare(String(a.decided_at || ""))).slice(0, 10);
       const contracts = contractsRes.data || [];
       const totalValue = contracts.reduce((s, c) => s + (Number(c.value) || 0), 0);
       const agencies = [...new Set(contracts.map((c) => c.agencies?.acronym).filter(Boolean))];
@@ -51,15 +97,48 @@ module.exports = async function handler(req, res) {
         role: r.metadata?.role || null
       }));
 
+      // F-INT1 (F3): mandatos dos SOCIOS em agencias — a metade inversa da porta
+      // giratoria ("quem desta empresa dirige/dirigiu um regulador?").
+      let socios_mandatos = [];
+      if (pIds.length) {
+        const { data: sm } = await supabase.from("mandates")
+          .select("person_id, role, started_at, ended_at, agencies(acronym, name)")
+          .in("person_id", pIds).limit(200);
+        socios_mandatos = (sm || []).map((m) => ({
+          person_id: m.person_id, nome: pById.get(m.person_id) || null,
+          role: m.role || null, agency: m.agencies?.acronym || null,
+          started_at: m.started_at, ended_at: m.ended_at, active: !m.ended_at
+        }));
+      }
+
+      // Doacoes feitas pela empresa: agrega por recebedor.
+      const doacoes = doacoesRes.data || [];
+      const porRecebedor = new Map();
+      for (const d of doacoes) {
+        const k = d.recipient_person_id || d.recipient_name || "?";
+        const cur = porRecebedor.get(k) || { person_id: d.recipient_person_id || null, nome: d.recipient_name || null, total: 0, count: 0 };
+        cur.total += Number(d.amount) || 0; cur.count++;
+        porRecebedor.set(k, cur);
+      }
+      const doacoes_feitas = {
+        total: doacoes.reduce((s, d) => s + (Number(d.amount) || 0), 0),
+        count: doacoes.length,
+        top: [...porRecebedor.values()].sort((a, b) => b.total - a.total).slice(0, 10)
+      };
+
       const screening = company.cnpj ? await screeningByCnpj(company.cnpj).catch(() => ({ ok: false })) : { ok: false, status: "sem_cnpj" };
       return res.status(200).json({
         ok: true, mode: "company", company,
         contracts, contracts_summary: { count: contracts.length, total_value: totalValue, agencies },
-        socios, deliberations_afeta: delibsAfeta.data || [],
+        socios, socios_mandatos, deliberations_afeta: delibsAfeta.data || [],
+        doacoes_feitas, jurisprudence,
         screening: screening.ok ? { flags: screening.flags, sources: screening.sources } : { available: false, reason: screening.status || "indisponivel" },
         intelligence: {
           contracts_count: contracts.length, contracts_total: totalValue, agencies_served: agencies.length,
           socios_count: socios.length, deliberations_afeta: (delibsAfeta.data || []).length,
+          socios_com_mandato: new Set(socios_mandatos.map((m) => m.person_id)).size,
+          doacoes_feitas_total: doacoes_feitas.total,
+          jurisprudence_count: jurisprudence.length,
           is_inactive: !!(company.registration_status && !isSituacaoAtiva(company.registration_status)),
           has_sanctions: screening.ok ? !!screening.flags.has_sanctions : false
         }
@@ -126,7 +205,10 @@ module.exports = async function handler(req, res) {
       supabase.from("party_links").select("*").eq("person_id", person.id),
       supabase.from("votes").select("*, deliberations(deliberation_number, title, theme, result, agency_id, data_reuniao)").eq("voter_person_id", person.id),
       supabase.from("relationships").select("*").eq("from_id", person.id).eq("from_kind", "person"),
-      supabase.from("relationships").select("*").eq("to_id", person.id).eq("to_kind", "person"),
+      // F3: exclui 'mentions' (documento->pessoa, criadas na ingestao) — cada ato do DOU
+      // somaria +10 no capture_score e contaria como "vinculo" no front. As mencoes tem
+      // bloco proprio (dou_mentions).
+      supabase.from("relationships").select("*").eq("to_id", person.id).eq("to_kind", "person").neq("relationship", "mentions"),
       supabase.from("assets").select("*").eq("person_id", person.id).order("reference_year", { ascending: false }),
       // Deliberacoes RELATADAS por esta pessoa (rapporteur) — vinculo forte com o mérito.
       supabase.from("deliberations").select("id, deliberation_number, title, theme, result, agency_id, data_reuniao").eq("rapporteur_person_id", person.id),
@@ -253,6 +335,53 @@ module.exports = async function handler(req, res) {
       corporate_network = { companies, count: companies.length, inactive_count };
     }
 
+    // F-INT1 (F3): contratos publicos das EMPRESAS onde a pessoa e socia — fecha o
+    // circuito socio -> fornecedor do Estado dentro do proprio dossie.
+    let contracts_via_socio = { items: [], count: 0, total_value: 0 };
+    if (corporate_network.count) {
+      const ids = corporate_network.companies.map((c) => c.company_id);
+      const { data: cvs } = await supabase.from("contracts")
+        .select("supplier_company_id, object, value, signed_at, ends_at, agencies(acronym)")
+        .in("supplier_company_id", ids)
+        .order("signed_at", { ascending: false, nullsFirst: false }).limit(200);
+      const nameByCompany = new Map(corporate_network.companies.map((c) => [c.company_id, c.legal_name || c.cnpj]));
+      const items = (cvs || []).map((c) => ({
+        empresa: nameByCompany.get(c.supplier_company_id) || null,
+        object: c.object, value: c.value, signed_at: c.signed_at, ends_at: c.ends_at,
+        agency: c.agencies?.acronym || null
+      }));
+      contracts_via_socio = {
+        items: items.slice(0, 30), count: items.length,
+        total_value: items.reduce((s, c) => s + (Number(c.value) || 0), 0),
+        truncated: (cvs || []).length >= 200
+      };
+    }
+
+    // F-INT1 (F3): atos do DOU que CITAM a pessoa (alertas de nomeacao/exoneracao/
+    // sancao com target person, resolvidos ao documento de origem).
+    let dou_mentions = [];
+    {
+      const { data: personAlerts } = await supabase.from("alerts")
+        .select("alert_type, created_at, source_document_id, metadata")
+        .eq("target_kind", "person").eq("target_id", person.id)
+        .order("created_at", { ascending: false }).limit(30);
+      const docIds = [...new Set((personAlerts || []).map((a) => a.source_document_id).filter(Boolean))];
+      if (docIds.length) {
+        const { data: docs } = await supabase.from("documents")
+          .select("id, title, published_at, source_url, document_type").in("id", docIds);
+        const docById = new Map((docs || []).map((d) => [d.id, d]));
+        dou_mentions = (personAlerts || [])
+          .map((a) => {
+            const d = docById.get(a.source_document_id);
+            if (!d) return null;
+            return {
+              alert_type: a.alert_type, agency: a.metadata?.agency_acronym || null,
+              title: d.title, published_at: d.published_at, link: d.source_url, document_type: d.document_type
+            };
+          }).filter(Boolean).slice(0, 15);
+      }
+    }
+
     // Enriquecimento ao vivo (Portal da Transparencia) - opcional, depende de chave.
     // SIAPE (servidor) + screening PEP/sancoes (CEIS/CNEP/CEPIM/CEAF) pelo nome.
     const [siape, screening] = await Promise.all([
@@ -276,6 +405,8 @@ module.exports = async function handler(req, res) {
       deliberations_relatadas: delibsRel.data || [],
       relationships: [...(relsFrom.data || []), ...(relsTo.data || [])],
       corporate_network,
+      contracts_via_socio,
+      dou_mentions,
       propositions,
       legislative_votes,
       comissoes,
@@ -304,6 +435,9 @@ module.exports = async function handler(req, res) {
         active_mandate: (mandates.data || []).some((m) => !m.ended_at),
         corporate_ties: corporate_network.count,
         corporate_inactive: corporate_network.inactive_count,
+        contracts_via_socio_count: contracts_via_socio.count,
+        contracts_via_socio_total: contracts_via_socio.total_value,
+        dou_mentions_count: dou_mentions.length,
         is_pep: !!flags?.is_pep,
         has_sanctions: !!flags?.has_sanctions
       }

@@ -230,6 +230,11 @@ create index deliberations_process_idx on deliberations (process_number);
 create index companies_cnpj_idx on companies (cnpj);
 create index relationships_from_idx on relationships (from_kind, from_id);
 create index relationships_to_idx on relationships (to_kind, to_id);
+-- F-INT1 (F3): os upserts de relationships (employs/mentions em lib/ingest.js, socio em
+-- lib/qsa.js) usam onConflict nessas 5 colunas — o banco de producao ja tem o indice
+-- unico equivalente; este garante instalacoes novas (sem ele o upsert falha em silencio).
+create unique index if not exists relationships_edge_uidx
+  on relationships (from_kind, from_id, to_kind, to_id, relationship);
 create index contacts_target_idx on contacts (target_kind, target_id);
 create index domains_target_idx on domains (target_kind, target_id);
 create index news_items_source_idx on news_items (source_name, published_at);

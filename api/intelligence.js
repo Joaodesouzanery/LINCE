@@ -19,9 +19,13 @@ function params(req) {
 // Agrega os atos do DOU das ultimas N semanas por agencia x semana x tipo e
 // detecta anomalias: PICO (semana atual >= 2x o baseline) e SILENCIO (agencia
 // ativa que zerou). Baseline = media das semanas anteriores a atual.
-async function weeklyAgencyAnalysis(supabase, weeks = 8) {
+// onlyAgencyIds (opcional): restringe o scan às agências dadas — o painel_get usa
+// p/ não paginar o corpus DOU inteiro (20k+ linhas) a cada abertura de painel.
+async function weeklyAgencyAnalysis(supabase, weeks = 8, onlyAgencyIds = null) {
   const since = new Date(Date.now() - weeks * 7 * 86400000).toISOString().slice(0, 10);
-  const { data: agencies } = await supabase.from("agencies").select("id, acronym, name").eq("sector", "regulatory");
+  let agQuery = supabase.from("agencies").select("id, acronym, name").eq("sector", "regulatory");
+  if (onlyAgencyIds && onlyAgencyIds.length) agQuery = agQuery.in("id", onlyAgencyIds);
+  const { data: agencies } = await agQuery;
   const agById = Object.fromEntries((agencies || []).map((a) => [a.id, a]));
 
   // Pagina para nao estourar o teto de linhas do PostgREST (ha dezenas de
@@ -35,11 +39,13 @@ async function weeklyAgencyAnalysis(supabase, weeks = 8) {
   const PAGE = 1000;
   const CAP = 40000;
   for (let from = 0; from < CAP; from += PAGE) {
-    const { data } = await supabase
+    let q = supabase
       .from("documents")
       .select("agency_id, published_at, document_type")
       .eq("source_name", "DOU")
-      .gte("published_at", since)
+      .gte("published_at", since);
+    if (onlyAgencyIds && onlyAgencyIds.length) q = q.in("agency_id", onlyAgencyIds);
+    const { data } = await q
       .order("published_at", { ascending: false })
       .range(from, from + PAGE - 1);
     rows.push(...(data || []));
@@ -969,7 +975,74 @@ module.exports = async function handler(req, res) {
         .sort((a, b) => String(a.evento.data_inicio).localeCompare(String(b.evento.data_inicio)))
         .slice(0, 60);
       const noticias = ((noticiasRes.status === "fulfilled" ? noticiasRes.value.data : null) || []);
-      return res.status(200).json({ ok: true, painel, proposicoes, stakeholders, orgaos, agenda, noticias, counts: { proposicoes: proposicoes.length, stakeholders: stakeholders.length, orgaos: orgaos.length, agenda: agenda.length, noticias: noticias.length } });
+
+      // F-INT1 (F3): o painel passa a ser ALIMENTADO pela camada de inteligencia —
+      // anomalias, contratos a vencer e consultas abertas dos ORGAOS do painel.
+      // Tudo best-effort: painel sem orgaos ou tabela ausente degrada para vazio.
+      const inteligencia = { anomalias: [], contratos_vencendo: [], consultas: [] };
+      const orgaoIds = [...orgaoMap.keys()];
+      if (orgaoIds.length) {
+        const acrOf = new Set([...orgaoMap.values()].map((o) => o.acronym).filter(Boolean));
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const in90Iso = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+        const since45Iso = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+        const [anomP, ctsP, consP] = await Promise.allSettled([
+          // scan restrito às agências do painel (sem o filtro seriam 20k+ linhas por request)
+          weeklyAgencyAnalysis(supabase, 8, orgaoIds),
+          supabase.from("contracts").select("object, supplier_name, value, ends_at, agencies(acronym)")
+            .in("agency_id", orgaoIds).gte("ends_at", todayIso).lte("ends_at", in90Iso)
+            .order("value", { ascending: false, nullsFirst: false }).limit(10),
+          supabase.from("documents").select("title, published_at, source_url, agencies(acronym)")
+            .eq("source_name", "DOU").in("agency_id", orgaoIds).gte("published_at", since45Iso)
+            .or("title.ilike.%consulta publica%,title.ilike.%consulta pública%,title.ilike.%audiencia publica%,title.ilike.%audiência pública%,title.ilike.%tomada de subs%")
+            .order("published_at", { ascending: false }).limit(10)
+        ]);
+        if (anomP.status === "fulfilled") {
+          inteligencia.anomalias = (anomP.value.anomalies || []).filter((a) => acrOf.has(a.agency)).slice(0, 6);
+        }
+        if (ctsP.status === "fulfilled") {
+          inteligencia.contratos_vencendo = (ctsP.value.data || []).map((c) => ({
+            object: (c.object || "Contrato").slice(0, 120), supplier: c.supplier_name || null,
+            value: c.value, ends_at: c.ends_at, agency: c.agencies?.acronym || null
+          }));
+        }
+        if (consP.status === "fulfilled") {
+          inteligencia.consultas = (consP.value.data || []).map((d) => ({
+            title: d.title, date: d.published_at, link: d.source_url, agency: d.agencies?.acronym || null
+          }));
+        }
+      }
+
+      // F-INT1 (F3): COMISSAO x PAUTA — stakeholder do painel que integra o colegiado
+      // onde uma proposicao do painel esta na pauta (chave natural: orgao_sigla).
+      let comissao_pauta = [];
+      const eventSiglas = new Set(agenda.map((a) => a.evento?.orgao_sigla).filter(Boolean));
+      const stakeIds = [...stakeMap.keys()];
+      if (eventSiglas.size && stakeIds.length) {
+        const { data: bms } = await supabase.from("body_memberships")
+          .select("person_id, orgao_sigla, orgao_nome, cargo").in("person_id", stakeIds).limit(1000);
+        // Presidente/relator primeiro TAMBEM no dedup (senao "suplente" podia vencer).
+        const pesoCargo = (c) => /presi/i.test(c || "") ? 0 : /relat|vice/i.test(c || "") ? 1 : 2;
+        const seenCp = new Set(); // pessoa com 2 cargos no MESMO orgao (titular+suplente) duplicava o card
+        for (const bm of (bms || []).slice().sort((a, b) => pesoCargo(a.cargo) - pesoCargo(b.cargo))) {
+          if (!eventSiglas.has(bm.orgao_sigla)) continue;
+          const cpKey = `${bm.person_id}|${bm.orgao_sigla}`;
+          if (seenCp.has(cpKey)) continue;
+          seenCp.add(cpKey);
+          const matches = agenda.filter((a) => a.evento?.orgao_sigla === bm.orgao_sigla);
+          for (const a of matches.slice(0, 3)) {
+            comissao_pauta.push({
+              person_id: bm.person_id, nome: (stakeMap.get(String(bm.person_id)) || {}).full_name || null,
+              cargo: bm.cargo || null, orgao_sigla: bm.orgao_sigla, orgao_nome: bm.orgao_nome || null,
+              prop_titulo: a.prop_titulo, data_inicio: a.evento?.data_inicio || null
+            });
+          }
+        }
+        // Presidente/relator primeiro — e o alerta mais acionavel do painel.
+        comissao_pauta = comissao_pauta.sort((a, b) => pesoCargo(a.cargo) - pesoCargo(b.cargo)).slice(0, 12);
+      }
+
+      return res.status(200).json({ ok: true, painel, proposicoes, stakeholders, orgaos, agenda, noticias, inteligencia, comissao_pauta, counts: { proposicoes: proposicoes.length, stakeholders: stakeholders.length, orgaos: orgaos.length, agenda: agenda.length, noticias: noticias.length } });
     }
 
     if (type === "painel_save") {
@@ -2873,14 +2946,21 @@ module.exports = async function handler(req, res) {
       //    por agencia-alvo vai DENTRO da query (antes do limit), senao o
       //    .limit(40) global descartaria consultas da agencia-alvo alem do top-40.
       async function computeOpportunities() {
-        let consultasQuery = supabase.from("documents")
-          .select("title, published_at, source_url, agency_id, agencies(acronym)")
-          .eq("source_name", "DOU").gte("published_at", since45)
-          .or("title.ilike.%consulta p%,title.ilike.%audi%,title.ilike.%tomada de subs%");
-        if (targetIds.length) consultasQuery = consultasQuery.in("agency_id", targetIds);
-        consultasQuery = consultasQuery.order("published_at", { ascending: false }).limit(40);
+        // F-INT1 (F3): mesma FTS do radar_intel (acentos importam no tsvector pt;
+        // %audi% casava "auditoria"). Fallback ILIKE se a migracao M17 nao existir.
+        const consultaSel = "title, published_at, source_url, agency_id, agencies(acronym)";
+        const buildConsultas = (useFts) => {
+          let cq = supabase.from("documents").select(consultaSel)
+            .eq("source_name", "DOU").gte("published_at", since45);
+          cq = useFts
+            ? cq.textSearch("search_tsv", '"consulta pública" OR "consulta publica" OR "audiência pública" OR "audiencia publica" OR "tomada de subsídios" OR "tomada de subsidios"', { type: "websearch", config: "portuguese" })
+            : cq.or("title.ilike.%consulta publica%,title.ilike.%consulta pública%,title.ilike.%audiencia publica%,title.ilike.%audiência pública%,title.ilike.%tomada de subs%");
+          if (targetIds.length) cq = cq.in("agency_id", targetIds);
+          return cq.order("published_at", { ascending: false }).limit(40);
+        };
+        let consultasQuery = buildConsultas(true);
 
-        const [contractsR, consultasR] = await Promise.all([
+        const [contractsR, consultasFtsR] = await Promise.all([
           targetIds.length
             ? supabase.from("contracts")
                 .select("object, supplier_name, ends_at, value, agencies(acronym)")
@@ -2889,6 +2969,7 @@ module.exports = async function handler(req, res) {
             : Promise.resolve({ data: [] }),
           consultasQuery
         ]);
+        const consultasR = consultasFtsR.error ? await buildConsultas(false) : consultasFtsR;
         // Rede de seguranca (targetIds vazio => mantem tudo; senao ja veio filtrado).
         const consultas = (consultasR.data || []).filter((d) => !targetIds.length || targetIds.includes(d.agency_id));
         return [
@@ -2927,6 +3008,12 @@ module.exports = async function handler(req, res) {
       const { narrateDeal } = require("../lib/anthropic");
       const payload = req.body && typeof req.body === "object" ? req.body : null;
       if (!payload) return res.status(400).json({ ok: false, error: "Body JSON ausente." });
+      // F-INT1 (F3): risks e SUBCONJUNTO de directors (mesmas pessoas) — dedupa antes
+      // do prompt p/ a IA nao contar a mesma pessoa 2x como "decisor" e "risco".
+      if (Array.isArray(payload.directors) && Array.isArray(payload.risks)) {
+        const riskIds = new Set(payload.risks.map((r) => r.person_id).filter(Boolean));
+        payload.directors = payload.directors.filter((d) => !d.person_id || !riskIds.has(d.person_id));
+      }
       const ai = await narrateDeal(payload);
       return res.status(200).json({ ok: true, ...ai });
     }

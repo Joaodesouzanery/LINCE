@@ -118,8 +118,13 @@ module.exports = async function handler(req, res) {
         // NOTA: o select NAO pede as colunas M20 (themes/situacao) — elas vem via
         // enrichProposicoes (best-effort), p/ o endpoint nao quebrar entre o deploy
         // do codigo e a aplicacao da migracao M20.
-        const { data, error } = await supabase.from("proposicoes")
-          .select("id, casa, tipo, numero, ano, ementa, titulo, autor, url, last_seen")
+        // F-INT1 (F3): respeita ?casa= tambem no acervo (o front envia; era ignorado).
+        const casaFiltro = String(req.query.casa || "").toLowerCase();
+        let histQuery = supabase.from("proposicoes")
+          .select("id, casa, tipo, numero, ano, ementa, titulo, autor, url, last_seen");
+        // a tabela guarda "Camara"/"Senado" (capitalizado) -> ilike casa exata sem case.
+        if (casaFiltro === "camara" || casaFiltro === "senado") histQuery = histQuery.ilike("casa", casaFiltro);
+        const { data, error } = await histQuery
           // Ordena pela DATA da proposicao (ano) e nao pela hora do scrape (last_seen,
           // que so desempata dentro do ano). So ha 'ano' na tabela — sem data cheia.
           .order("ano", { ascending: false, nullsFirst: false })
