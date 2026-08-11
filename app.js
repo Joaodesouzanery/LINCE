@@ -403,6 +403,13 @@ function onlyDigits(value) {
   return String(value || "").replace(/\D/g, "");
 }
 
+// Situação cadastral: ATIVA/ATIVA NÃO REGULAR = ativa; INATIVA/BAIXADA/INAPTA/etc = não.
+// (F-INT1: o antigo /ativ/i casava "INATIVA" como ativa.)
+function isSituacaoAtiva(status) {
+  const u = String(status || "").toUpperCase();
+  return u.includes("ATIV") && !u.includes("INATIV");
+}
+
 function formatCnpj(value) {
   const digits = onlyDigits(value);
   if (digits.length !== 14) return value || "-";
@@ -703,7 +710,9 @@ async function renderNatInspector(nodeId) {
     const acronym = node.subtitle || node.title;
     const stats = await requestJson(`/api/intelligence?type=agency_stats&agency=${encodeURIComponent(acronym)}`).catch(() => null);
     const series = stats?.weekly_series || [];
-    const lastWeek = series[series.length - 1]?.total ?? 0;
+    // F-INT1: compara a ultima semana COMPLETA (a atual e parcial e compararia dias com semanas).
+    const complete = series.filter((w) => !w.current);
+    const lastWeek = complete[complete.length - 1]?.total ?? 0;
     const aboveBaseline = stats?.baseline_avg > 0 && lastWeek > stats.baseline_avg * 1.5;
     const alertItems = (stats?.alerts || []).map((a) => `
       <div class="activity-alert${a.severity !== "high" ? " info" : ""}">
@@ -1174,7 +1183,7 @@ function compactItems(items) {
 function buildGraph(company, domains, news, processes = [], transparency = []) {
   const nodes = [];
   const edges = [];
-  const companyInapta = !!(company.status && !/ativ/i.test(company.status));
+  const companyInapta = !!(company.status && !isSituacaoAtiva(company.status));
   nodes.push({
     id: "company",
     type: "company",
@@ -1376,6 +1385,7 @@ async function loadDouFeed() {
         </article>
       `)
       .join("");
+    if (payload.truncated) list.innerHTML += `<p class="card-sub" style="opacity:.7">⚠ Mostrando os 100 mais recentes — refine por data ou agência p/ ver o restante.</p>`;
   } catch (error) {
     list.innerHTML = emptyCard("Monitor DOU", `Falha ao carregar: ${error.message}`);
   }
@@ -1666,7 +1676,7 @@ function renderCorporateNetwork(d) {
   }
   const statusPill = (s) => {
     if (!s) return "";
-    const inactive = !/ativ/i.test(s);
+    const inactive = !isSituacaoAtiva(s);
     return `<span class="entity-pill${inactive ? " score-high" : " score-low"}">${escapeHtml(s)}</span>`;
   };
   return `
@@ -3898,31 +3908,42 @@ async function loadRadar() {
   if (oppEl) oppEl.innerHTML = emptyCard("Oportunidades", "Carregando...");
   if (legEl) legEl.innerHTML = "";
 
-  // Tres motores em paralelo; cada painel degrada sozinho.
-  const [radarRes, corrRes, anomRes] = await Promise.allSettled([
+  // Quatro motores em paralelo; cada painel degrada sozinho.
+  // F-INT1: riscos vêm de type=giratoria (a detecção forte, com contratos e severity
+  // critical) — antes usavam radar_intel.computeRisks (fraca: "tem CNPJ" = risco).
+  const [radarRes, giraRes, corrRes, anomRes] = await Promise.allSettled([
     requestJson("/api/intelligence?type=radar_intel"),
+    requestJson("/api/intelligence?type=giratoria"),
     requestJson("/api/intelligence?type=correlations"),
     requestJson("/api/intelligence?type=trends_anomalies")
   ]);
 
+  if (giraRes.status === "fulfilled") {
+    const cases = giraRes.value.cases || [];
+    renderRadarRisks(cases.slice(0, 20));
+    const rc = $("#radar-risk-count");
+    if (rc) { rc.hidden = !cases.length; rc.textContent = cases.length > 20 ? `20 de ${cases.length}` : String(cases.length); }
+  } else if (risksEl) {
+    risksEl.innerHTML = emptyCard("Riscos", `Falha: ${escapeHtml(giraRes.reason?.message || "erro")}. Verifique ingestões/migração.`);
+  }
+
   if (radarRes.status === "fulfilled") {
     const r = radarRes.value;
-    renderRadarRisks(r.risks || []);
     renderRadarOpportunities(r.opportunities || []);
     renderRadarLegislative(r.legislative || []);
-    const rc = $("#radar-risk-count"), oc = $("#radar-opp-count");
-    if (rc) { rc.hidden = !(r.risks || []).length; rc.textContent = String((r.risks || []).length); }
-    if (oc) { oc.hidden = !(r.opportunities || []).length; oc.textContent = String((r.opportunities || []).length); }
+    const oc = $("#radar-opp-count");
+    const oppN = (r.opportunities || []).length;
+    if (oc) { oc.hidden = !oppN; oc.textContent = String(oppN); }
   } else {
-    risksEl.innerHTML = emptyCard("Riscos", `Falha: ${escapeHtml(radarRes.reason?.message || "erro")}. Verifique ingestões/migração.`);
-    if (oppEl) oppEl.innerHTML = "";
+    if (oppEl) oppEl.innerHTML = emptyCard("Oportunidades", `Falha: ${escapeHtml(radarRes.reason?.message || "erro")}`);
   }
 
   if (corrEl) {
     if (corrRes.status === "fulfilled") {
       renderRadarCorrelations(corrRes.value.correlations || []);
       const cc = $("#radar-corr-count");
-      if (cc) { cc.hidden = !(corrRes.value.correlations || []).length; cc.textContent = String((corrRes.value.correlations || []).length); }
+      const corrN = (corrRes.value.correlations || []).length;
+      if (cc) { cc.hidden = !corrN; cc.textContent = corrN > 20 ? `20 de ${corrRes.value.total || corrN}` : String(corrN); }
     } else corrEl.innerHTML = emptyCard("Conexões", `Falha: ${escapeHtml(corrRes.reason?.message || "erro")}`);
   }
 
@@ -3930,7 +3951,8 @@ async function loadRadar() {
     if (anomRes.status === "fulfilled") {
       renderRadarAnomalies(anomRes.value.anomalies || []);
       const ac = $("#radar-anom-count");
-      if (ac) { ac.hidden = !(anomRes.value.anomalies || []).length; ac.textContent = String((anomRes.value.anomalies || []).length); }
+      const anomN = (anomRes.value.anomalies || []).length;
+      if (ac) { ac.hidden = !anomN; ac.textContent = anomN > 15 ? `15 de ${anomN}` : String(anomN); }
     } else anomEl.innerHTML = emptyCard("Movimentos", `Falha: ${escapeHtml(anomRes.reason?.message || "erro")}`);
   }
 }
@@ -3971,6 +3993,7 @@ function renderRadarCorrelations(items) {
   el.querySelectorAll(".corr-person").forEach((card) => card.addEventListener("click", () => {
     const id = card.dataset.personId;
     if (!id) return;
+    suppressDirectorsAutoload = true; // mesma corrida do card de riscos
     setView("directors");
     openDirectorDossier(id);
   }));
@@ -4002,24 +4025,39 @@ function renderRadarAnomalies(items) {
   }).join("");
 }
 
+// F-INT1: o painel de riscos passou a consumir type=giratoria — a detecção FORTE
+// (cruza sócio × contratos; severity critical p/ self-dealing, com timing do contrato).
+// Antes usava radar_intel.computeRisks, que marcava "porta giratória" p/ qualquer sócio de MEI.
+const GIRA_SEV = { critical: ["CRÍTICO", "var(--red)", "high"], high: ["ALTO", "var(--red)", "high"], medium: ["MÉDIO", "var(--yellow)", "mid"] };
 function renderRadarRisks(items) {
   const el = $("#radar-risks");
-  if (!items.length) { el.innerHTML = emptyCard("Riscos", "Nenhum risco de captura detectado (ou faltam dados de mandatos/sócios)."); return; }
-  el.innerHTML = items.map((x) => `
-    <article class="news-card target-card">
+  if (!items.length) { el.innerHTML = emptyCard("Riscos", "Nenhum risco de captura detectado (ou faltam dados de mandatos/sócios/contratos)."); return; }
+  el.innerHTML = items.map((x) => {
+    const [lbl, cor, cls] = GIRA_SEV[x.severity] || GIRA_SEV.medium;
+    return `
+    <article class="news-card target-card ${x.person_id ? "selectable" : ""}" ${x.person_id ? `data-open-person="${escapeHtml(x.person_id)}"` : ""}>
       <div class="card-body">
         <div class="card-head">
           ${TARGET_ICO}
-          <div><strong>${escapeHtml(x.name || "?")}</strong><span class="card-sub">${escapeHtml(x.agency || "")}${x.role ? " · " + escapeHtml(x.role) : ""}</span></div>
-          <span class="card-prio">${x.inaptas ? "ALTO" : "MÉDIO"}</span>
+          <div><strong>${escapeHtml(x.name || "?")}</strong><span class="card-sub">${escapeHtml(x.agency || "")}${x.role ? " · " + escapeHtml(x.role) : ""}${x.active === false ? " · mandato encerrado" : ""}</span></div>
+          <span class="card-prio">${lbl}</span>
         </div>
-        <div class="entity-row">
-          <span class="entity-pill score-${x.inaptas ? "high" : "mid"}">${x.companies} empresa(s)${x.inaptas ? ` · ${x.inaptas} inapta(s)` : ""}</span>
-          <span class="entity-pill">porta giratória</span>
+        <p class="card-sub">${escapeHtml(x.rationale || "")}</p>
+        <div class="entity-row" style="flex-wrap:wrap">
+          <span class="entity-pill score-${cls}">${(x.companies || []).length} empresa(s)</span>
+          ${(x.self_dealing || []).length ? `<span class="entity-pill score-high">${x.self_dealing.length} fornece à própria agência</span>` : ""}
+          ${x.contract_during_mandate ? `<span class="entity-pill score-high">contrato durante o mandato</span>` : ""}
+          ${(x.public_supplier || []).length ? `<span class="entity-pill">${x.public_supplier.length} fornecedor(es) público(s)</span>` : ""}
         </div>
       </div>
-      ${cardFoot(x.inaptas ? "var(--red)" : "var(--yellow)", "captura", "LINCE//RISCO")}
-    </article>`).join("");
+      ${cardFoot(cor, x.severity === "critical" ? "self-dealing" : "porta giratória", "LINCE//RISCO")}
+    </article>`;
+  }).join("");
+  el.querySelectorAll("[data-open-person]").forEach((card) => card.addEventListener("click", () => {
+    suppressDirectorsAutoload = true; // evita loadDirectors() sobrescrever o dossie (corrida documentada)
+    setView("directors");
+    openDirectorDossier(card.dataset.openPerson);
+  }));
 }
 
 function renderRadarOpportunities(items, sel = "#radar-opportunities") {
@@ -4160,10 +4198,15 @@ async function saveMonitorFromForm(event) {
   button.disabled = true;
   button.textContent = "Criando...";
   try {
+    // F-INT1: CNPJ/CPF digitado vira cpf_cnpj (antes o padrão normalizado "12 345 678..."
+    // jamais casava com o texto do DOU — monitor por CNPJ era decorativo).
+    const digits = onlyDigits(pattern);
+    const cpfCnpj = (digits.length === 11 || digits.length === 14) ? digits : null;
     await postJson("/api/intelligence?type=monitor_save", {
       kind,
       label: label || pattern,
       pattern,
+      ...(cpfCnpj ? { cpf_cnpj: cpfCnpj } : {}),
       active: $("#mon-active")?.checked ?? true
     });
     event.target.reset();
@@ -4804,6 +4847,7 @@ function renderPersonLocal(matches) {
     .join("");
   el.querySelectorAll(".director-row").forEach((row) => {
     row.addEventListener("click", () => {
+      suppressDirectorsAutoload = true; // corrida lista×dossie (F-INT1)
       setView("directors");
       openDirectorDossier(row.dataset.personId);
     });
@@ -5074,7 +5118,11 @@ async function loadNationalGraph() {
     const trunc = aggregate
       ? ` · panorama agregado (${g.meta?.cross_agency_suppliers ?? 0} fornecedores transversais)`
       : (g.meta?.truncated ? ` · amostra de ${g.meta.limit} (refine por agência ou dê 2 cliques num nó)` : "");
-    $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos${trunc}`;
+    // F-INT1: camada que falhou na leitura não some mais em silêncio.
+    // (modo agregado manda partial como BOOLEAN; panorâmico como array de camadas)
+    const partialList = Array.isArray(g.meta?.partial) ? g.meta.partial : (g.meta?.partial ? ["contratos"] : []);
+    const partial = partialList.length ? ` · ⚠ fontes indisponíveis: ${partialList.join(", ")}` : "";
+    $("#nat-graph-title").textContent = `${natGraph.nodes.length} entidades · ${natGraph.edges.length} vínculos${trunc}${partial}`;
     natGraph.graphView?.fit();
   } catch (error) {
     const empty = $("#nat-graph-empty");
@@ -5198,7 +5246,7 @@ async function loadIntelligence() {
               ${TARGET_ICO}
               <div>
                 <strong>${escapeHtml(s.name)}</strong>
-                <span class="card-sub">${s.docs} atos · ${s.open_alerts} alertas abertos · ${s.active_directors} diretores ativos</span>
+                <span class="card-sub">${s.docs_90d ?? s.docs} atos (90d) · ${s.open_alerts} alertas abertos · ${s.active_directors} diretores ativos</span>
               </div>
               <span class="card-prio">P${Math.max(1, Math.min(5, Math.ceil(s.score / 20)))}</span>
             </div>
@@ -5215,8 +5263,14 @@ async function loadIntelligence() {
       const all = [...(rd.radar?.["30d"] || []).map((i) => ({ ...i, window: "30d" })),
                    ...(rd.radar?.["60d"] || []).map((i) => ({ ...i, window: "60d" })),
                    ...(rd.radar?.["90d"] || []).map((i) => ({ ...i, window: "90d" }))];
-      if (!all.length) { radar.innerHTML = emptyCard("Radar", "Nenhum contrato a vencer nos proximos 90 dias. Rode ingest-pncp."); }
-      else radar.innerHTML = all.map((c) => `
+      if (!all.length) { radar.innerHTML = emptyCard("Radar", "Nenhum contrato ou fim de mandato nos proximos 90 dias. (Contratos dependem do ingest-pncp.)"); }
+      else radar.innerHTML = all.map((c) => {
+        // F-INT1: contrato e mandato sao eventos diferentes — cards distintos (antes o
+        // mandato dizia "Fornecedor nao identificado" e rodape PNCP//).
+        const isMandato = c.type === "mandato";
+        const sub = isMandato ? `<p class="card-sub">Sucessão de dirigente — fim de mandato</p>`
+          : `<p>${escapeHtml(c.supplier || "Fornecedor nao identificado")}${c.value != null ? ` · ${money(c.value)}` : ""}</p>`;
+        return `
         <article class="news-card target-card">
           <div class="card-body">
             <div class="card-head">
@@ -5226,21 +5280,28 @@ async function loadIntelligence() {
               </div>
               <span class="card-prio">${escapeHtml(c.window)}</span>
             </div>
-            <p>${escapeHtml(c.supplier || "Fornecedor nao identificado")}</p>
+            ${sub}
           </div>
-          ${cardFoot(c.window === "30d" ? "var(--red)" : c.window === "60d" ? "var(--yellow)" : "var(--green)", `Vencimento ${c.window}`, `PNCP//${c.agency || "BR"}`)}
-        </article>`).join("");
+          ${cardFoot(c.window === "30d" ? "var(--red)" : c.window === "60d" ? "var(--yellow)" : "var(--green)", `${isMandato ? "Mandato" : "Contrato"} ${c.window}`, `${isMandato ? "DOU" : "PNCP"}//${c.agency || "BR"}`)}
+        </article>`;
+      }).join("");
+      if (rd.truncated && (rd.truncated.contratos || rd.truncated.mandatos)) {
+        radar.innerHTML += `<p class="card-sub" style="opacity:.7">⚠ Lista truncada em 500 itens por fonte — os mais distantes podem não aparecer.</p>`;
+      }
     }
     // Overview daily
     const dailyEl = $("#overview-daily");
     if (dailyEl && daily.by_agency) {
       const entries = Object.entries(daily.by_agency);
       if (!entries.length) { dailyEl.innerHTML = emptyCard("Diario", "Nenhum ato nas ultimas 24h. O cron roda ao meio-dia UTC."); }
-      else dailyEl.innerHTML = entries.map(([ac, d]) => `
+      else {
+        dailyEl.innerHTML = entries.map(([ac, d]) => `
         <article class="news-card">
           <span class="source-meta">${escapeHtml(ac)} | ${d.normas} normas · ${d.pessoal} atos pessoal · ${d.contratos} contratos</span>
           ${(d.destaques || []).slice(0, 2).map((s) => `<p>${escapeHtml(s)}</p>`).join("")}
         </article>`).join("");
+        if (daily.truncated) dailyEl.innerHTML += `<p class="card-sub" style="opacity:.7">⚠ Amostra truncada — as contagens acima são parciais.</p>`;
+      }
     }
   } catch (error) {
     if (score) score.innerHTML = emptyCard("Score", `Erro: ${error.message}`);
@@ -5254,7 +5315,9 @@ async function loadConsultas() {
   try {
     const data = await requestJson("/api/rss-feeds?type=consultas");
     if (!data.items?.length) { list.innerHTML = emptyCard("Consultas", "Nenhuma consulta identificada nos RSS das agencias no momento."); return; }
-    list.innerHTML = data.items.map((c) => `
+    // F-INT1: sinaliza quando o resultado veio do FALLBACK (títulos do DOU, não os feeds RSS).
+    const fonteAviso = /fallback/i.test(String(data.source || "")) ? `<p class="card-sub" style="opacity:.75">⚠ Feeds RSS indisponíveis — mostrando menções no DOU (fallback), não necessariamente consultas abertas.</p>` : "";
+    list.innerHTML = fonteAviso + data.items.map((c) => `
       <article class="news-card target-card">
         <div class="card-body">
           <div class="card-head">
@@ -5283,7 +5346,8 @@ async function loadAgenda() {
   try {
     const data = await requestJson("/api/rss-feeds?type=agenda");
     if (!data.items?.length) { list.innerHTML = emptyCard("Agenda", "Nenhuma pauta identificada nos RSS das agencias no momento."); return; }
-    list.innerHTML = data.items.map((c) => `
+    const fonteAviso = /fallback/i.test(String(data.source || "")) ? `<p class="card-sub" style="opacity:.75">⚠ Feeds RSS indisponíveis — mostrando menções no DOU (fallback).</p>` : "";
+    list.innerHTML = fonteAviso + data.items.map((c) => `
       <article class="news-card target-card">
         <div class="card-body">
           <div class="card-head">
@@ -5877,7 +5941,7 @@ async function loadTrend(days = 30) {
   const trend = await requestJson(`/api/intelligence?type=trend&days=${days}`).catch(() => null);
   if (trend?.series) { renderTrendChart(trend.series); renderSparkline(trend.series); }
   const docEl = $("#metric-docs");
-  if (docEl && trend) docEl.textContent = trend.total;
+  if (docEl && trend) docEl.textContent = `${trend.total}${trend.truncated ? "+" : ""}`; // F-INT1: janela truncada visivel
 }
 
 // Painel "Saúde dos dados" (cobertura + lacunas acionáveis). Reusa type=data_health.
@@ -5937,6 +6001,7 @@ async function loadOverviewMetrics() {
       dailyEl.innerHTML = entries.length
         ? entries.map(([ac, d]) => `<article class="news-card"><span class="source-meta">${escapeHtml(ac)}</span><strong>${d.normas} normas · ${d.pessoal} atos pessoal · ${d.contratos} contratos</strong>${(d.destaques||[]).slice(0,1).map(s=>`<p>${escapeHtml(s)}</p>`).join("")}</article>`).join("")
         : emptyCard("Diario", "Nenhum ato nas ultimas 24h.");
+      if (entries.length && daily.truncated) dailyEl.innerHTML += `<p class="card-sub" style="opacity:.7">⚠ Amostra truncada — contagens parciais.</p>`; // F-INT1
     }
     const contracts = await requestJson("/api/intelligence?type=radar").catch(() => null);
     if (contracts) {

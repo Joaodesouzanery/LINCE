@@ -5,7 +5,7 @@
 // GET /api/intelligence?type=radar|score|daily|landscape|deal_dossier|monitors|monitor_alerts|holdings
 // POST /api/intelligence?type=monitor_save|monitor_toggle|monitor_delete|deal_narrative|exec_summary
 const { getSupabase } = require("../lib/supabase");
-const { normalizeName, onlyDigits } = require("../lib/text");
+const { normalizeName, onlyDigits, isSituacaoAtiva } = require("../lib/text");
 const { runScore, CONTRACT_SCAN_CAP } = require("../lib/sponsor-score"); // M27 — Score de Patrocinador (F-EVT4)
 const { sponsorAngle } = require("../lib/anthropic");         // M27 — angulo (gated)
 const { screeningByCnpj } = require("../lib/transparencia");  // M27 — screening (bloqueio duro na aprovacao)
@@ -394,25 +394,38 @@ module.exports = async function handler(req, res) {
 
     if (type === "trend") {
       // Serie temporal de atos para o grafico de tendencia (ultimos N dias).
+      // F-INT1: ordem DESC + paginacao — se truncar, quem cai fora sao os dias mais
+      // ANTIGOS (antes a ordem asc cortava os dias RECENTES e a curva "caia" no fim).
       const days = Math.min(Number(req.query.days) || 30, 90);
       const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-      const { data: docs } = await supabase
-        .from("documents")
-        .select("published_at, document_type")
-        .eq("source_name", "DOU")
-        .gte("published_at", since)
-        .order("published_at", { ascending: true })
-        .limit(5000);
+      const docs = [];
+      const TREND_CAP = 20000;
+      for (let from = 0; from < TREND_CAP; from += 1000) {
+        const { data, error } = await supabase
+          .from("documents")
+          .select("published_at, document_type")
+          .eq("source_name", "DOU")
+          .gte("published_at", since)
+          .order("published_at", { ascending: false })
+          .order("id", { ascending: false })
+          .range(from, from + 999);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        docs.push(...(data || []));
+        if (!data || data.length < 1000) break;
+      }
+      const truncated = docs.length >= TREND_CAP;
       const buckets = {};
-      for (const d of docs || []) {
+      for (const d of docs) {
         const k = d.published_at;
         if (!buckets[k]) buckets[k] = { date: k, norma: 0, ato_pessoal: 0, contrato: 0, total: 0 };
         const t = d.document_type === "norma" || d.document_type === "ato_pessoal" || d.document_type === "contrato" ? d.document_type : "norma";
         buckets[k][t]++; buckets[k].total++;
       }
       const series = Object.values(buckets).sort((a, b) => a.date.localeCompare(b.date));
-      const total = (docs || []).length;
-      return res.status(200).json({ ok: true, type: "trend", days, total, series });
+      // Se truncou, o dia mais antigo da janela esta INCOMPLETO — descarta p/ nao exibir contagem parcial.
+      if (truncated && series.length > 1) series.shift();
+      const total = series.reduce((s, b) => s + b.total, 0); // coerente com o grafico (pos-shift)
+      return res.status(200).json({ ok: true, type: "trend", days, total, truncated, series });
     }
 
     if (type === "recent") {
@@ -441,26 +454,35 @@ module.exports = async function handler(req, res) {
     }
 
     if (type === "daily") {
-      // Resumo executivo: atos das ultimas 24h por agencia
+      // Resumo executivo: atos desde ontem por agencia.
+      // F-INT1: pagina ate 3000 (antes limit 50 e as contagens por agencia eram uma
+      // AMOSTRA exibida como total do dia). truncated agora e honesto e o front exibe.
       const since = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-      const { data: docs } = await supabase
-        .from("documents")
-        .select("title, document_type, published_at, metadata, agencies(acronym)")
-        .eq("source_name", "DOU")
-        .gte("published_at", since)
-        .order("published_at", { ascending: false })
-        .limit(50);
-
+      const docs = [];
+      const DAILY_CAP = 3000;
+      for (let from = 0; from < DAILY_CAP; from += 1000) {
+        const { data, error } = await supabase
+          .from("documents")
+          .select("title, document_type, published_at, metadata, agencies(acronym)")
+          .eq("source_name", "DOU")
+          .gte("published_at", since)
+          .order("published_at", { ascending: false })
+          .order("id", { ascending: false })
+          .range(from, from + 999);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        docs.push(...(data || []));
+        if (!data || data.length < 1000) break;
+      }
       const byAgency = {};
-      for (const d of docs || []) {
+      for (const d of docs) {
         const ac = d.agencies?.acronym || d.metadata?.agency_acronym || "?";
         if (!byAgency[ac]) byAgency[ac] = { normas: 0, pessoal: 0, contratos: 0, destaques: [] };
         if (d.document_type === "norma") byAgency[ac].normas++;
         else if (d.document_type === "ato_pessoal") byAgency[ac].pessoal++;
         else if (d.document_type === "contrato") byAgency[ac].contratos++;
-        if (d.metadata?.ai_summary) byAgency[ac].destaques.push(d.metadata.ai_summary);
+        if (d.metadata?.ai_summary && byAgency[ac].destaques.length < 5) byAgency[ac].destaques.push(d.metadata.ai_summary);
       }
-      return res.status(200).json({ ok: true, type: "daily", date: since, truncated: (docs || []).length >= 50, by_agency: byAgency });
+      return res.status(200).json({ ok: true, type: "daily", date: since, total: docs.length, truncated: docs.length >= DAILY_CAP, by_agency: byAgency });
     }
 
     if (type === "score") {
@@ -512,17 +534,13 @@ module.exports = async function handler(req, res) {
 
     // Radar 30/60/90: atos mais recentes agrupados por periodo
     if (type === "radar") {
-      const now = new Date();
-      const d30 = new Date(now); d30.setDate(d30.getDate() + 30);
-      const d60 = new Date(now); d60.setDate(d60.getDate() + 60);
-      const d90 = new Date(now); d90.setDate(d90.getDate() + 90);
-
-      // Contratos E mandatos de dirigentes vencendo nos proximos 90 dias.
-      const today = now.toISOString().slice(0, 10);
-      const horizon = d90.toISOString().slice(0, 10);
+      // F-INT1: fronteiras por STRING de data (YYYY-MM-DD) — antes new Date(dateStr)
+      // parseava UTC-meia-noite contra objetos locais e itens na borda caiam no balde errado.
+      const addDaysIso = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+      const today = addDaysIso(0), s30 = addDaysIso(30), s60 = addDaysIso(60), horizon = addDaysIso(90);
       const [contractsRes, mandatesRes] = await Promise.all([
         supabase.from("contracts")
-          .select("object, supplier_name, ends_at, agencies(acronym)")
+          .select("object, supplier_name, value, ends_at, agencies(acronym)")
           .lte("ends_at", horizon).gte("ends_at", today).order("ends_at").limit(500),
         supabase.from("mandates")
           .select("role, ended_at, people(full_name), agencies(acronym)")
@@ -531,15 +549,15 @@ module.exports = async function handler(req, res) {
 
       const radar = { "30d": [], "60d": [], "90d": [] };
       const bucketize = (dateStr, entry) => {
-        const end = new Date(dateStr);
-        if (end <= d30) radar["30d"].push(entry);
-        else if (end <= d60) radar["60d"].push(entry);
+        const d = String(dateStr || "").slice(0, 10);
+        if (d <= s30) radar["30d"].push(entry);
+        else if (d <= s60) radar["60d"].push(entry);
         else radar["90d"].push(entry);
       };
       for (const c of contractsRes.data || []) {
         bucketize(c.ends_at, {
           type: "contrato", agency: c.agencies?.acronym,
-          label: (c.object || "").slice(0, 80), supplier: c.supplier_name, date: c.ends_at
+          label: (c.object || "").slice(0, 80), supplier: c.supplier_name, value: c.value != null ? Number(c.value) : null, date: c.ends_at
         });
       }
       // Fim de mandato de dirigente = evento politico-regulatorio (sucessao).
@@ -550,7 +568,8 @@ module.exports = async function handler(req, res) {
           date: m.ended_at
         });
       }
-      return res.status(200).json({ ok: true, type: "radar", radar });
+      const truncated = { contratos: (contractsRes.data || []).length >= 500, mandatos: (mandatesRes.data || []).length >= 500 };
+      return res.status(200).json({ ok: true, type: "radar", truncated, radar });
     }
 
     if (type === "giratoria") {
@@ -560,7 +579,9 @@ module.exports = async function handler(req, res) {
       const { data: mandates } = await supabase
         .from("mandates")
         .select("person_id, agency_id, role, started_at, ended_at, people(full_name), agencies(acronym)")
+        .order("started_at", { ascending: false, nullsFirst: false })
         .limit(3000);
+      const mandatesTruncated = (mandates || []).length >= 3000;
 
       const personIds = [...new Set((mandates || []).map((m) => m.person_id))];
       if (personIds.length === 0) return res.status(200).json({ ok: true, type: "giratoria", cases: [] });
@@ -576,9 +597,17 @@ module.exports = async function handler(req, res) {
       const socioCompanyIds = [...new Set(socioRels.map((r) => r.to_id).filter(Boolean))];
       const supplierAgencies = {}; // company_id -> { agency_id -> [{signed_at, value}] }
       for (let i = 0; i < socioCompanyIds.length; i += 200) {
-        const { data: cts } = await supabase.from("contracts")
-          .select("supplier_company_id, agency_id, signed_at, value")
-          .in("supplier_company_id", socioCompanyIds.slice(i, i + 200));
+        // F-INT1: paginado (o teto default de 1000 do PostgREST truncava contratos e
+        // podia esconder self-dealing sem aviso).
+        const chunk = socioCompanyIds.slice(i, i + 200);
+        const cts = [];
+        for (let from = 0; from < 20000; from += 1000) {
+          const { data: page } = await supabase.from("contracts")
+            .select("supplier_company_id, agency_id, signed_at, value")
+            .in("supplier_company_id", chunk).order("id", { ascending: true }).range(from, from + 999);
+          cts.push(...(page || []));
+          if (!page || page.length < 1000) break;
+        }
         for (const c of cts || []) {
           if (!c.supplier_company_id || !c.agency_id) continue;
           const m = (supplierAgencies[c.supplier_company_id] = supplierAgencies[c.supplier_company_id] || {});
@@ -592,44 +621,56 @@ module.exports = async function handler(req, res) {
       for (const r of socioRels) (socioByPerson[r.from_id] = socioByPerson[r.from_id] || [])
         .push({ company_id: r.to_id, company: r.companies?.legal_name, cnpj: r.companies?.cnpj, role: r.metadata?.role });
 
-      const seen = new Set();
-      const cases = [];
+      // F-INT1: avalia TODOS os mandatos de cada pessoa (antes: so o 1o em ordem
+      // arbitraria — podia descartar exatamente o mandato com self-dealing).
+      const byPerson = new Map();
       for (const m of mandates || []) {
         const socios = socioByPerson[m.person_id];
         if (!socios || !socios.length) continue; // REQUER vinculo societario (filiacao-so NAO e porta-giratoria)
-        if (seen.has(m.person_id)) continue;
-        seen.add(m.person_id);
-
-        const selfDealing = [], publicSupplier = [];
+        if (!byPerson.has(m.person_id)) byPerson.set(m.person_id, []);
+        byPerson.get(m.person_id).push(m);
+      }
+      const cases = [];
+      for (const [personId, ms] of byPerson) {
+        const socios = socioByPerson[personId];
+        const selfDealing = []; const selfKeys = new Set();
         let duringMandate = false;
-        for (const s of socios) {
-          const ags = supplierAgencies[s.company_id];
-          if (!ags) continue;
-          if (m.agency_id && ags[m.agency_id]) {
-            selfDealing.push(s);
+        let best = null; // o mandato que evidencia o caso (prioridade: self-dealing > ativo > mais recente)
+        for (const m of ms) {
+          for (const s of socios) {
+            const ags = supplierAgencies[s.company_id];
+            if (!ags || !m.agency_id || !ags[m.agency_id]) continue;
+            const key = `${s.company_id}|${m.agency_id}`;
+            if (!selfKeys.has(key)) { selfKeys.add(key); selfDealing.push({ ...s, agency: m.agencies?.acronym }); }
+            // best = mandato self-dealing preferindo ATIVO, senao o mais recente.
+            if (!best) best = m;
+            else if (!m.ended_at && best.ended_at) best = m;
+            else if (!!m.ended_at === !!best.ended_at && String(m.started_at || "") > String(best.started_at || "")) best = m;
             // timing: contrato assinado DENTRO da janela do mandato?
             for (const c of ags[m.agency_id]) {
               if (c.signed_at && m.started_at && c.signed_at >= m.started_at && (!m.ended_at || c.signed_at <= m.ended_at)) duringMandate = true;
             }
-          } else {
-            publicSupplier.push(s);
           }
         }
+        if (!best) best = ms.find((m) => !m.ended_at) || ms.slice().sort((a, b) => String(b.started_at || "").localeCompare(String(a.started_at || "")))[0];
+        const selfCompanyIds = new Set(selfDealing.map((s) => s.company_id));
+        const publicSupplier = socios.filter((s) => supplierAgencies[s.company_id] && !selfCompanyIds.has(s.company_id));
         const severity = selfDealing.length ? "critical" : (publicSupplier.length ? "high" : "medium");
         cases.push({
-          person_id: m.person_id, name: m.people?.full_name || "?", agency: m.agencies?.acronym, role: m.role,
-          mandate_from: m.started_at, mandate_to: m.ended_at, active: !m.ended_at,
+          person_id: personId, name: best.people?.full_name || "?", agency: best.agencies?.acronym, role: best.role,
+          mandate_from: best.started_at, mandate_to: best.ended_at, active: ms.some((m) => !m.ended_at),
           companies: socios, self_dealing: selfDealing, public_supplier: publicSupplier,
           contract_during_mandate: duringMandate,
-          parties: partyByPerson[m.person_id] || [], severity,
+          parties: partyByPerson[personId] || [], severity,
           rationale: selfDealing.length
-            ? `Sócio de ${selfDealing.length} fornecedor(es) da PRÓPRIA agência (${m.agencies?.acronym})${duringMandate ? " — com contrato assinado durante o mandato" : ""}`
+            ? `Sócio de ${selfDealing.length} fornecedor(es) da PRÓPRIA agência que dirige/dirigiu${duringMandate ? " — com contrato assinado durante o mandato" : ""}`
             : (publicSupplier.length ? "Sócio de fornecedor público (outra agência)" : "Vínculo societário durante o mandato")
         });
       }
-      cases.sort((a, b) => (b.self_dealing.length - a.self_dealing.length) || (b.companies.length - a.companies.length));
+      // Contrato assinado DURANTE o mandato primeiro (o timing e o agravante), depois self-dealing.
+      cases.sort((a, b) => ((b.contract_during_mandate ? 1 : 0) - (a.contract_during_mandate ? 1 : 0)) || (b.self_dealing.length - a.self_dealing.length) || (b.companies.length - a.companies.length));
       return res.status(200).json({
-        ok: true, type: "giratoria", total: cases.length,
+        ok: true, type: "giratoria", total: cases.length, truncated: mandatesTruncated,
         self_dealing_count: cases.filter((c) => c.self_dealing.length).length, cases
       });
     }
@@ -642,32 +683,41 @@ module.exports = async function handler(req, res) {
       const now = new Date();
       const since30 = new Date(now - 30 * 86400000).toISOString().slice(0, 10);
       const since8w = new Date(now - 56 * 86400000).toISOString().slice(0, 10);
-      const [docsTotal, docs30d, alertsRes, mandatesRes, weeklyRes] = await Promise.all([
-        supabase.from("documents").select("id", { count: "exact", head: true }).eq("agency_id", ag.id),
-        supabase.from("documents").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).gte("published_at", since30),
+      // F-INT1: contagens com filtro DOU (consistente com o motor de anomalias); alertas
+      // abertos = COUNT real (antes .limit(5).length capava em 5); weekly paginado desc.
+      const weeklyDocs = [];
+      const [docsTotal, docs30d, alertsRes, alertsCount, mandatesRes] = await Promise.all([
+        supabase.from("documents").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).eq("source_name", "DOU"),
+        supabase.from("documents").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).eq("source_name", "DOU").gte("published_at", since30),
         supabase.from("alerts").select("id, alert_type, severity, title, body, created_at").eq("target_id", ag.id).is("acknowledged_at", null).order("created_at", { ascending: false }).limit(5),
-        supabase.from("mandates").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).is("ended_at", null),
-        supabase.from("documents").select("published_at").eq("agency_id", ag.id).gte("published_at", since8w).order("published_at")
+        supabase.from("alerts").select("id", { count: "exact", head: true }).eq("target_id", ag.id).is("acknowledged_at", null),
+        supabase.from("mandates").select("id", { count: "exact", head: true }).eq("agency_id", ag.id).is("ended_at", null)
       ]);
-      const weekBuckets = {};
-      for (const d of weeklyRes.data || []) {
-        const dt = new Date(d.published_at + "T12:00:00Z");
-        dt.setUTCDate(dt.getUTCDate() - dt.getUTCDay());
-        const k = dt.toISOString().slice(0, 10);
-        weekBuckets[k] = (weekBuckets[k] || 0) + 1;
+      for (let from = 0; from < 20000; from += 1000) { // desc: se truncar, perde as semanas ANTIGAS (nunca a atual)
+        const { data, error } = await supabase.from("documents").select("published_at").eq("agency_id", ag.id).eq("source_name", "DOU").gte("published_at", since8w).order("published_at", { ascending: false }).order("id", { ascending: false }).range(from, from + 999);
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        weeklyDocs.push(...(data || []));
+        if (!data || data.length < 1000) break;
       }
-      const weekly_series = Object.entries(weekBuckets)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([week, total]) => ({ week, total }))
-        .slice(-8);
-      const baseline_avg = weekly_series.length
-        ? Math.round(weekly_series.reduce((s, w) => s + w.total, 0) / weekly_series.length)
-        : 0;
+      const weekKeyOf = (dateStr) => { const dt = new Date(dateStr + "T12:00:00Z"); dt.setUTCDate(dt.getUTCDate() - dt.getUTCDay()); return dt.toISOString().slice(0, 10); };
+      const weekBuckets = {};
+      for (const d of weeklyDocs) { const k = weekKeyOf(d.published_at); weekBuckets[k] = (weekBuckets[k] || 0) + 1; }
+      // Série com as 8 semanas COMPLETAS no eixo (semanas zeradas INCLUÍDAS — consistente
+      // com weeklyAgencyAnalysis); baseline = média das semanas ANTERIORES à atual.
+      const currentWeek = weekKeyOf(now.toISOString().slice(0, 10));
+      const weekly_series = [];
+      for (let i = 7; i >= 0; i--) {
+        const dt = new Date(currentWeek + "T12:00:00Z"); dt.setUTCDate(dt.getUTCDate() - i * 7);
+        const k = dt.toISOString().slice(0, 10);
+        weekly_series.push({ week: k, total: weekBuckets[k] || 0, current: k === currentWeek });
+      }
+      const past = weekly_series.filter((w) => !w.current);
+      const baseline_avg = past.length ? Math.round(past.reduce((s, w) => s + w.total, 0) / past.length) : 0;
       return res.status(200).json({
         ok: true, type: "agency_stats",
         agency: ag.acronym, agency_name: ag.name,
         total_docs: docsTotal.count || 0, docs_30d: docs30d.count || 0,
-        open_alerts: alertsRes.data?.length || 0, active_directors: mandatesRes.count || 0,
+        open_alerts: alertsCount.count || 0, active_directors: mandatesRes.count || 0,
         weekly_series, baseline_avg, alerts: alertsRes.data || []
       });
     }
@@ -711,8 +761,10 @@ module.exports = async function handler(req, res) {
         severity: ["info", "medium", "high"].includes(p.severity) ? p.severity : "medium",
         updated_at: new Date().toISOString()
       };
-      const digits = onlyDigits(p.cpf_cnpj);
-      if (digits.length === 11 || digits.length === 14) row.cpf_cnpj = digits;
+      if (typeof p.active === "boolean") row.active = p.active; // F-INT1: o front sempre envia active — antes era ignorado
+      // F-INT1: cpf_cnpj SEMPRE recalculado (limpa o antigo se o padrao deixou de ser CNPJ/CPF).
+      const digits = onlyDigits(p.cpf_cnpj || pattern);
+      row.cpf_cnpj = (digits.length === 11 || digits.length === 14) ? digits : null;
       // kind=agency: resolve a sigla para agency_id (match por UUID no cron).
       if (kind === "agency") {
         const { data: ag } = await supabase.from("agencies").select("id, acronym").eq("acronym", normalized.replace(/\s+/g, "")).maybeSingle();
@@ -2205,7 +2257,7 @@ module.exports = async function handler(req, res) {
       const socio = socioRels.map((r) => ({ ...r, companies: companiesById[r.to_id] || null }));
       const activeMandate = mandates.some((m) => !m.ended_at);
       const inactiveCompanies = socio.filter(
-        (r) => r.companies?.registration_status && !/ativ/i.test(r.companies.registration_status)
+        (r) => r.companies?.registration_status && !isSituacaoAtiva(r.companies.registration_status)
       ).length;
 
       // SELF-DEALING: alguma empresa-socio FORNECE uma agencia que a pessoa dirige?
@@ -2292,7 +2344,7 @@ module.exports = async function handler(req, res) {
           const comps = byPerson[m.person_id];
           if (!comps || seen.has(m.person_id)) continue;
           seen.add(m.person_id);
-          const inaptas = comps.filter((c) => c.registration_status && !/ativ/i.test(c.registration_status)).length;
+          const inaptas = comps.filter((c) => c.registration_status && !isSituacaoAtiva(c.registration_status)).length;
           out.push({
             kind: "porta_giratoria", person_id: m.person_id, name: m.people?.full_name || "?",
             agency: m.agencies?.acronym || null, role: m.role || null,
@@ -2431,33 +2483,35 @@ module.exports = async function handler(req, res) {
       }
 
       // Regra 1 (ALTA): nomeacao recente x socio x fornecedor publico.
+      // F-INT1: UM card por pessoa (antes: pessoa com 6 empresas = 6 cards high identicos
+      // empurrando o resto p/ fora do corte de 50).
+      const seenR1 = new Set();
       for (const m of recent) {
-        const comps = socioByPerson[m.person_id] || [];
-        for (const comp of comps) {
-          const contracts = contractsByComp[comp.id] || [];
-          if (!contracts.length) continue;
-          out.push({
-            kind: "nomeacao_x_fornecedor", severity: "high",
-            title: `${m.people?.full_name || "Dirigente"} nomeado(a) há pouco na ${m.agencies?.acronym || "agência"} é sócio(a) de fornecedor público`,
-            entities: [
-              { kind: "person", id: m.person_id, label: m.people?.full_name || "?" },
-              { kind: "company", id: comp.id, label: comp.legal_name || comp.cnpj }
-            ],
-            evidence: [
-              `Mandato iniciado em ${m.started_at}${m.role ? ` (${m.role})` : ""}`,
-              `Sócio(a) de ${comp.legal_name || comp.cnpj}${comp.socio_role ? ` como ${comp.socio_role}` : ""}`,
-              ...contracts.slice(0, 3).map((c) => `Contrato público: ${(c.object || "").slice(0, 80)}${c.agencies?.acronym ? ` (${c.agencies.acronym})` : ""}`)
-            ],
-            suggested_action: "Verificar impedimento/conflito de interesse e histórico de contratos."
-          });
-        }
+        if (seenR1.has(m.person_id)) continue;
+        const comps = (socioByPerson[m.person_id] || []).filter((comp) => (contractsByComp[comp.id] || []).length);
+        if (!comps.length) continue;
+        seenR1.add(m.person_id);
+        const contratosEv = comps.flatMap((comp) => (contractsByComp[comp.id] || []).slice(0, 2).map((c) => `Contrato público de ${comp.legal_name || comp.cnpj}: ${(c.object || "").slice(0, 70)}${c.agencies?.acronym ? ` (${c.agencies.acronym})` : ""}`)).slice(0, 4);
+        out.push({
+          kind: "nomeacao_x_fornecedor", severity: "high",
+          title: `${m.people?.full_name || "Dirigente"} nomeado(a) há pouco na ${m.agencies?.acronym || "agência"} é sócio(a) de ${comps.length} fornecedor(es) público(s)`,
+          entities: [
+            { kind: "person", id: m.person_id, label: m.people?.full_name || "?" },
+            ...comps.slice(0, 3).map((comp) => ({ kind: "company", id: comp.id, label: comp.legal_name || comp.cnpj }))
+          ],
+          evidence: [
+            `Mandato iniciado em ${m.started_at}${m.role ? ` (${m.role})` : ""}`,
+            ...contratosEv
+          ],
+          suggested_action: "Verificar impedimento/conflito de interesse e histórico de contratos."
+        });
       }
 
       // Regra 2 (MEDIA/ALTA): dirigente ativo x empresa inapta/baixada.
       const seenR2 = new Set();
       for (const m of active) {
         if (seenR2.has(m.person_id)) continue;
-        const inaptas = (socioByPerson[m.person_id] || []).filter((c) => c.registration_status && !/ativ/i.test(c.registration_status));
+        const inaptas = (socioByPerson[m.person_id] || []).filter((c) => c.registration_status && !isSituacaoAtiva(c.registration_status));
         if (!inaptas.length) continue;
         seenR2.add(m.person_id);
         out.push({
@@ -2507,14 +2561,25 @@ module.exports = async function handler(req, res) {
         const { data: hotMonitors } = await supabase.from("monitors")
           .select("id, label, kind, hit_count, last_hit_at, person_id, company_id")
           .eq("active", true).gt("hit_count", 0).limit(100);
+        // F-INT1: rotula com o NOME da pessoa (antes: o label do monitor aparecia como se
+        // fosse a pessoa no card) e pula quem ja tem card das regras 1/2 (dedup entre regras).
+        const monPids = [...new Set((hotMonitors || []).map((m) => m.person_id).filter(Boolean))];
+        const pName = {};
+        if (monPids.length) {
+          const { data: ppl } = await supabase.from("people").select("id, full_name").in("id", monPids);
+          for (const p of ppl || []) pName[p.id] = p.full_name;
+        }
+        const seenR4 = new Set();
         for (const mon of hotMonitors || []) {
           const pid = mon.person_id;
           const links = pid ? (socioByPerson[pid] || []) : [];
-          if (pid && links.length) {
+          if (pid && links.length && !seenR1.has(pid) && !seenR2.has(pid) && !seenR4.has(pid)) {
+            seenR4.add(pid);
+            const nome = pName[pid] || mon.label;
             out.push({
               kind: "monitor_x_vinculos", severity: "high",
-              title: `Monitor "${mon.label}" disparou ${mon.hit_count}x sobre pessoa com ${links.length} vínculo(s) societário(s)`,
-              entities: [{ kind: "person", id: pid, label: mon.label }],
+              title: `Monitor "${mon.label}" disparou ${mon.hit_count}x — ${nome} tem ${links.length} vínculo(s) societário(s)`,
+              entities: [{ kind: "person", id: pid, label: nome }],
               evidence: [
                 `Último disparo: ${String(mon.last_hit_at || "").slice(0, 10)}`,
                 ...links.slice(0, 3).map((c) => `Sócio(a) de ${c.legal_name || c.cnpj}`)
@@ -2620,7 +2685,7 @@ module.exports = async function handler(req, res) {
           if (seen.has(m.person_id)) continue;
           seen.add(m.person_id);
           const links = linksByPerson[m.person_id] || [];
-          const inaptas = links.filter((c) => c.registration_status && !/ativ/i.test(c.registration_status));
+          const inaptas = links.filter((c) => c.registration_status && !isSituacaoAtiva(c.registration_status));
           directors.push({
             person_id: m.person_id, name: m.people?.full_name || "?",
             agency: m.agencies?.acronym || null, role: m.role || null, since: m.started_at || null,

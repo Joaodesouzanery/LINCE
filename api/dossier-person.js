@@ -3,7 +3,7 @@
 // GET /api/dossier-person?id=<uuid>  ou  ?name=<nome>
 const { getSupabase } = require("../lib/supabase");
 const { findServidoresByName, screeningByName, screeningByCnpj } = require("../lib/transparencia");
-const { normalizeName, onlyDigits } = require("../lib/text");
+const { normalizeName, onlyDigits, isSituacaoAtiva } = require("../lib/text");
 
 module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=900");
@@ -60,7 +60,7 @@ module.exports = async function handler(req, res) {
         intelligence: {
           contracts_count: contracts.length, contracts_total: totalValue, agencies_served: agencies.length,
           socios_count: socios.length, deliberations_afeta: (delibsAfeta.data || []).length,
-          is_inactive: !!(company.registration_status && !/ativ/i.test(company.registration_status)),
+          is_inactive: !!(company.registration_status && !isSituacaoAtiva(company.registration_status)),
           has_sanctions: screening.ok ? !!screening.flags.has_sanctions : false
         }
       });
@@ -248,7 +248,7 @@ module.exports = async function handler(req, res) {
         };
       });
       const inactive_count = companies.filter(
-        (c) => c.registration_status && !/ativ/i.test(c.registration_status)
+        (c) => c.registration_status && !isSituacaoAtiva(c.registration_status)
       ).length;
       corporate_network = { companies, count: companies.length, inactive_count };
     }

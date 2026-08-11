@@ -202,22 +202,34 @@ module.exports = async function handler(req, res) {
       edges.push({ from: k(fromKind, fromId), to: k(toKind, toId), relationship, weight: weight ?? null, meta: meta || {} });
     };
     // Le com tolerancia a falha: tabela ausente/vazia nao quebra o grafo.
-    const safe = async (q) => { try { const { data } = await q; return data || []; } catch { return []; } };
+    // F-INT1: falha de camada agora e MARCADA (partial) — antes sumia sem sinal; e todas as
+    // leituras limitadas ganham .order("id") p/ o grafo ser REPRODUTIVEL entre requests.
+    const partialLayers = [];
+    const truncatedLayers = {};
+    const safe = async (q, layer) => {
+      try { const { data, error } = await q; if (error) { partialLayers.push(layer); return []; } return data || []; }
+      catch { partialLayers.push(layer); return []; }
+    };
+    const markTrunc = (layer, rows) => { if (rows.length >= limit) truncatedLayers[layer] = true; return rows; };
 
     // 1) Tabela relationships (employs, reported, socio, owns, ...).
     let relRows;
     if (nodeParam) {
       const sel = "from_kind, from_id, to_kind, to_id, relationship, confidence_score, metadata";
       const [a, b] = await Promise.all([
-        safe(supabase.from("relationships").select(sel).eq("from_kind", nKind).eq("from_id", nId).limit(limit)),
-        safe(supabase.from("relationships").select(sel).eq("to_kind", nKind).eq("to_id", nId).limit(limit))
+        safe(supabase.from("relationships").select(sel).eq("from_kind", nKind).eq("from_id", nId).order("id").limit(limit), "relationships"),
+        safe(supabase.from("relationships").select(sel).eq("to_kind", nKind).eq("to_id", nId).order("id").limit(limit), "relationships")
       ]);
+      // trunca se QUALQUER direcao bateu o limit (nao a concatenacao — a soma podia
+      // marcar truncado sem nenhuma query ter cortado).
+      if (a.length >= limit || b.length >= limit) truncatedLayers.relationships = true;
       relRows = [...a, ...b];
     } else {
       relRows = await safe(supabase.from("relationships")
-        .select("from_kind, from_id, to_kind, to_id, relationship, confidence_score, metadata").limit(limit));
+        .select("from_kind, from_id, to_kind, to_id, relationship, confidence_score, metadata").order("id").limit(limit), "relationships");
+      markTrunc("relationships", relRows);
     }
-    const relTruncated = relRows.length >= limit;
+    const relTruncated = !!truncatedLayers.relationships;
     for (const r of relRows) {
       if (!need[r.from_kind] || !need[r.to_kind]) continue;
       pushEdge(r.from_kind, r.from_id, r.to_kind, r.to_id, r.relationship, r.confidence_score, r.metadata);
@@ -228,9 +240,9 @@ module.exports = async function handler(req, res) {
     const agencyFilter = (q) => (nKind === "agency" ? q.eq("agency_id", nId) : q);
 
     // 2) Mandatos -> pessoa --mandato--> agencia.
-    const mandates = await safe(personFilter(agencyFilter(
-      supabase.from("mandates").select("person_id, agency_id, role, started_at, ended_at, confidence_score").limit(limit)
-    )));
+    const mandates = markTrunc("mandates", await safe(personFilter(agencyFilter(
+      supabase.from("mandates").select("person_id, agency_id, role, started_at, ended_at, confidence_score").order("id").limit(limit)
+    )), "mandates"));
     for (const m of mandates) {
       if (!m.person_id || !m.agency_id) continue;
       pushEdge("person", m.person_id, "agency", m.agency_id, "mandato", m.confidence_score ?? 0.9,
@@ -238,9 +250,9 @@ module.exports = async function handler(req, res) {
     }
 
     // 3) Filiacao partidaria -> pessoa --filiacao/doacao--> partido (no sintetico).
-    const parties = await safe(personFilter(
-      supabase.from("party_links").select("person_id, party, link_type, reference_year, amount").limit(limit)
-    ));
+    const parties = markTrunc("party_links", await safe(personFilter(
+      supabase.from("party_links").select("person_id, party, link_type, reference_year, amount").order("id").limit(limit)
+    ), "party_links"));
     for (const p of parties) {
       if (!p.person_id || !p.party) continue;
       const partyId = String(p.party).toUpperCase().trim();
@@ -254,9 +266,9 @@ module.exports = async function handler(req, res) {
     // 3b) Doacoes de campanha (M20.3) -> doador (no sintetico) --doacao--> pessoa.
     // "Quem financia": agrega por doador p/ nao poluir com N arestas do mesmo doador.
     const donationFilter = (q) => (nKind === "person" ? q.eq("recipient_person_id", nId) : q);
-    const donations = await safe(donationFilter(
-      supabase.from("campaign_donations").select("recipient_person_id, donor_name, donor_document, donor_type, amount").limit(limit)
-    ));
+    const donations = markTrunc("campaign_donations", await safe(donationFilter(
+      supabase.from("campaign_donations").select("recipient_person_id, donor_name, donor_document, donor_type, amount").order("id").limit(limit)
+    ), "campaign_donations"));
     const donorAgg = new Map();
     for (const dn of donations) {
       if (!dn.recipient_person_id) continue;
@@ -276,10 +288,10 @@ module.exports = async function handler(req, res) {
 
     // 4) Deliberacoes -> agencia--delibera-->deliberacao; relator--relatou-->deliberacao;
     //    deliberacao--afeta-->empresa.
-    const delibs = await safe(agencyFilter(
+    const delibs = markTrunc("deliberations", await safe(agencyFilter(
       supabase.from("deliberations")
-        .select("id, agency_id, affected_company_id, rapporteur_person_id, title").limit(limit)
-    ));
+        .select("id, agency_id, affected_company_id, rapporteur_person_id, title").order("id").limit(limit)
+    ), "deliberations"));
     for (const d of delibs) {
       if (d.agency_id) pushEdge("agency", d.agency_id, "deliberation", d.id, "delibera", 0.9, {});
       if (d.rapporteur_person_id) pushEdge("person", d.rapporteur_person_id, "deliberation", d.id, "relatou", 0.9, {});
@@ -288,9 +300,9 @@ module.exports = async function handler(req, res) {
 
     // 5) Votos -> votante--votou-->deliberacao.
     const voteFilter = (q) => (nKind === "person" ? q.eq("voter_person_id", nId) : q);
-    const votes = await safe(voteFilter(
-      supabase.from("votes").select("deliberation_id, voter_person_id, vote_direction, is_dissent").limit(limit)
-    ));
+    const votes = markTrunc("votes", await safe(voteFilter(
+      supabase.from("votes").select("deliberation_id, voter_person_id, vote_direction, is_dissent").order("id").limit(limit)
+    ), "votes"));
     for (const v of votes) {
       if (!v.voter_person_id || !v.deliberation_id) continue;
       pushEdge("person", v.voter_person_id, "deliberation", v.deliberation_id, "votou", 0.9,
@@ -302,7 +314,7 @@ module.exports = async function handler(req, res) {
     for (const [kind, cfg] of Object.entries(KIND_TABLE)) {
       const ids = [...need[kind]];
       if (!ids.length) continue;
-      const data = await safe(supabase.from(cfg.table).select("*").in("id", ids));
+      const data = await safe(supabase.from(cfg.table).select("*").in("id", ids), `labels:${kind}`);
       for (const row of data) {
         labels[k(kind, row.id)] = {
           id: k(kind, row.id), type: kind,
@@ -347,8 +359,8 @@ module.exports = async function handler(req, res) {
     const nodes = [...used].map((id) => labels[id]);
 
     // Contagem honesta para o front sinalizar truncamento.
-    const { count: totalRel } = await supabase
-      .from("relationships").select("id", { count: "exact", head: true }).then((r) => r).catch(() => ({ count: null }));
+    let totalRel = null;
+    try { const { count } = await supabase.from("relationships").select("id", { count: "exact", head: true }); totalRel = count; } catch { /* best-effort */ }
 
     return res.status(200).json({
       ok: true,
@@ -356,7 +368,9 @@ module.exports = async function handler(req, res) {
       edges: finalEdges,
       meta: {
         limit,
-        truncated: relTruncated,
+        truncated: relTruncated || Object.keys(truncatedLayers).length > 0,
+        truncated_layers: truncatedLayers,
+        partial: [...new Set(partialLayers)],
         total_relationships: totalRel ?? null,
         relationship_types: [...new Set(finalEdges.map((e) => e.relationship))].sort()
       },
