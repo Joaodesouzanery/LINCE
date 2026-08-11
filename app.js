@@ -1709,10 +1709,13 @@ function renderPoliticalRisk(pr) {
   const score = Number(pr.score) || 0;
   const color = score < 40 ? "var(--green)" : score < 70 ? "var(--yellow)" : "var(--red)";
   const bandLabel = { alto: "ALTO", medio: "MÉDIO", baixo: "BAIXO" }[pr.band] || String(pr.band || "").toUpperCase();
+  // F-INT1 (F2): componentes novos do backend (financiamento_politico com doações
+  // reais + decaimento; self_dealing só com overlap temporal). "porta_giratoria"
+  // era um label fantasma (o backend nunca emitia) — removido.
   const COMP_LABEL = {
-    partidario: "Partidário/doações",
+    financiamento_politico: "Financiamento político",
+    partidario: "Partidário/doações", // compat com payload antigo em cache
     self_dealing: "Self-dealing",
-    porta_giratoria: "Porta giratória",
     rede_societaria: "Rede societária",
     empresas_inaptas: "Empresas inaptas"
   };
@@ -1720,6 +1723,13 @@ function renderPoliticalRisk(pr) {
     .map(([k, v]) => `<span class="entity-pill ${v > 0 ? "score-mid" : "score-low"}">${escapeHtml(COMP_LABEL[k] || k)}: ${Number(v) || 0}</span>`)
     .join("");
   const selfDealing = pr.signals?.self_dealing_companies || [];
+  const noOverlap = pr.signals?.supplier_no_overlap || [];
+  const doa = pr.signals?.doacoes;
+  // Evolução do patrimônio por ano (TSE): "2018: R$ X → 2022: R$ Y".
+  const patAnos = Object.entries(pr.signals?.patrimonio_por_ano || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
+  const patLine = patAnos.length
+    ? patAnos.map(([y, v]) => `${y}: ${money(v)}`).join(" → ")
+    : (pr.signals?.patrimonio_declarado ? money(pr.signals.patrimonio_declarado) : "");
   return `
     <article class="news-card">
       <span class="source-meta">Risco político (sinais de captura)</span>
@@ -1728,8 +1738,10 @@ function renderPoliticalRisk(pr) {
         <span style="font-size:.8rem;opacity:.6">/ 100 · risco ${escapeHtml(bandLabel)}</span>
       </div>
       <div class="score-bar-wrap"><div class="score-bar-fill" style="width:${score}%"></div></div>
-      ${selfDealing.length ? `<div class="activity-alert" style="margin-top:8px"><span class="alert-icon">⚠</span><span style="font-size:.78rem"><strong>Self-dealing:</strong> sócio de fornecedor da PRÓPRIA agência — ${selfDealing.map((n) => escapeHtml(n)).join(", ")}</span></div>` : ""}
-      ${pr.signals?.patrimonio_declarado ? `<p style="font-size:.72rem;opacity:.55;margin:6px 0 0">Patrimônio declarado (TSE): ${escapeHtml(money(pr.signals.patrimonio_declarado))}</p>` : ""}
+      ${selfDealing.length ? `<div class="activity-alert" style="margin-top:8px"><span class="alert-icon">⚠</span><span style="font-size:.78rem"><strong>Self-dealing:</strong> sócio de fornecedor da PRÓPRIA agência com contrato DURANTE o mandato — ${selfDealing.map((n) => escapeHtml(n)).join(", ")}${pr.signals?.self_dealing_value ? ` (${escapeHtml(money(pr.signals.self_dealing_value))})` : ""}</span></div>` : ""}
+      ${!selfDealing.length && noOverlap.length ? `<p style="font-size:.74rem;opacity:.7;margin:6px 0 0">⚠ Fornece à própria agência, sem overlap CONFIRMADO com o mandato (fora da janela ou datas incompletas): ${noOverlap.map((n) => escapeHtml(n)).join(", ")}</p>` : ""}
+      ${doa?.n ? `<p style="font-size:.72rem;opacity:.6;margin:6px 0 0">Doações de campanha (TSE): ${escapeHtml(money(doa.total))} em ${doa.n} registro(s)${Math.abs((doa.efetivo_com_decaimento ?? doa.total) - doa.total) >= 1 ? ` · efetivo c/ decaimento: ${escapeHtml(money(doa.efetivo_com_decaimento))}` : ""}</p>` : ""}
+      ${patLine ? `<p style="font-size:.72rem;opacity:.55;margin:6px 0 0">Patrimônio declarado (TSE): ${escapeHtml(patLine)}</p>` : ""}
       <div class="entity-row" style="margin-top:8px">${comps}</div>
     </article>`;
 }
@@ -4013,7 +4025,7 @@ function renderRadarAnomalies(items) {
         <div class="card-head">
           ${TARGET_ICO}
           <div><strong>${escapeHtml(a.agency)}: ${escapeHtml(METRIC_LABEL[a.metric] || a.metric)} ${isSpike ? `${escapeHtml(String(a.ratio))}× acima do padrão ↗` : "zeraram esta semana ↓"}</strong>
-          <span class="card-sub">semana atual: ${a.current} · baseline: ${a.baseline}/sem</span></div>
+          <span class="card-sub">semana atual: ${a.current}${isSpike && a.projected != null && a.projected !== a.current ? ` (projeção 7d: ${a.projected})` : ""} · baseline: ${a.baseline}/sem</span></div>
           <span class="card-prio">${isSpike ? "PICO" : "SILÊNCIO"}</span>
         </div>
         <div class="entity-row">
@@ -4045,7 +4057,7 @@ function renderRadarRisks(items) {
         <p class="card-sub">${escapeHtml(x.rationale || "")}</p>
         <div class="entity-row" style="flex-wrap:wrap">
           <span class="entity-pill score-${cls}">${(x.companies || []).length} empresa(s)</span>
-          ${(x.self_dealing || []).length ? `<span class="entity-pill score-high">${x.self_dealing.length} fornece à própria agência</span>` : ""}
+          ${(x.self_dealing || []).length ? `<span class="entity-pill score-high">${x.self_dealing.length} fornece à própria agência${x.self_dealing_value ? ` · ${escapeHtml(money(x.self_dealing_value))}` : ""}</span>` : ""}
           ${x.contract_during_mandate ? `<span class="entity-pill score-high">contrato durante o mandato</span>` : ""}
           ${(x.public_supplier || []).length ? `<span class="entity-pill">${x.public_supplier.length} fornecedor(es) público(s)</span>` : ""}
         </div>
@@ -5242,8 +5254,12 @@ async function loadIntelligence() {
     if (score) {
       if (!sc.scores?.length) { score.innerHTML = emptyCard("Score", "Sem dados. Rode a ingestao do DOU."); }
       else score.innerHTML = sc.scores.map((s) => {
-        const level = s.score > 60 ? "high" : s.score > 30 ? "mid" : "low";
-        const qColor = s.score > 60 ? "var(--red)" : s.score > 30 ? "var(--yellow)" : "var(--green)";
+        // F-INT1 (F2): dois números HONESTOS no lugar do "Score N/100" min-max:
+        // Atividade (volume 90d) × Sinais (alertas ponderados, janela 180d).
+        const sinais = Number(s.sinais) || 0;
+        const level = sinais >= 10 ? "high" : sinais >= 3 ? "mid" : "low";
+        const qColor = sinais >= 10 ? "var(--red)" : sinais >= 3 ? "var(--yellow)" : "var(--green)";
+        const tipos = Object.entries(s.sinais_por_tipo || {}).map(([k, v]) => `${k}: ${v}`).join(" · ");
         return `
         <article class="news-card target-card">
           <div class="card-body">
@@ -5251,12 +5267,12 @@ async function loadIntelligence() {
               ${TARGET_ICO}
               <div>
                 <strong>${escapeHtml(s.name)}</strong>
-                <span class="card-sub">${s.docs_90d ?? s.docs} atos (90d) · ${s.open_alerts} alertas abertos · ${s.active_directors} diretores ativos</span>
+                <span class="card-sub">${s.open_alerts} alertas abertos · ${s.active_directors} diretores ativos</span>
               </div>
-              <span class="card-prio">P${Math.max(1, Math.min(5, Math.ceil(s.score / 20)))}</span>
             </div>
             <div class="entity-row">
-              <span class="entity-pill score-${level}">Score ${s.score}/100</span>
+              <span class="entity-pill score-low">Atividade (90d): ${s.atividade_90d ?? s.docs_90d ?? s.docs}</span>
+              <span class="entity-pill score-${level}" ${tipos ? `title="${escapeHtml(tipos)}"` : ""}>Sinais (${sc.alert_ttl_days || 180}d): ${sinais}</span>
             </div>
           </div>
           ${cardFoot(qColor, s.agency || "Agência", `LINCE//${s.agency || "AG"}`)}
@@ -5269,7 +5285,14 @@ async function loadIntelligence() {
                    ...(rd.radar?.["60d"] || []).map((i) => ({ ...i, window: "60d" })),
                    ...(rd.radar?.["90d"] || []).map((i) => ({ ...i, window: "90d" }))];
       if (!all.length) { radar.innerHTML = emptyCard("Radar", "Nenhum contrato ou fim de mandato nos proximos 90 dias. (Contratos dependem do ingest-pncp.)"); }
-      else radar.innerHTML = all.map((c) => {
+      else {
+      // F-INT1 (F2): R$ total dos contratos a vencer por janela — o número que manda.
+      const vt = rd.valor_total;
+      if (vt && vt.total > 0) {
+        const ge = rd.truncated?.contratos ? "≥ " : ""; // lista truncada em 500 -> soma parcial
+        radar.innerHTML = `<p class="card-sub" style="margin-bottom:8px"><strong>${ge}${escapeHtml(money(vt.total))}</strong> em contratos a vencer em 90d (30d: ${escapeHtml(money(vt["30d"] || 0))} · 60d: ${escapeHtml(money(vt["60d"] || 0))} · 90d: ${escapeHtml(money(vt["90d"] || 0))})</p>`;
+      } else radar.innerHTML = "";
+      radar.innerHTML += all.map((c) => {
         // F-INT1: contrato e mandato sao eventos diferentes — cards distintos (antes o
         // mandato dizia "Fornecedor nao identificado" e rodape PNCP//).
         const isMandato = c.type === "mandato";
@@ -5292,6 +5315,7 @@ async function loadIntelligence() {
       }).join("");
       if (rd.truncated && (rd.truncated.contratos || rd.truncated.mandatos)) {
         radar.innerHTML += `<p class="card-sub" style="opacity:.7">⚠ Lista truncada em 500 itens por fonte — os mais distantes podem não aparecer.</p>`;
+      }
       }
     }
     // Overview daily
@@ -6052,8 +6076,8 @@ async function loadOverviewMetrics() {
       alertsEl.querySelectorAll(".overview-alert-view").forEach((btn) => {
         btn.addEventListener("click", () => setView("dou"));
       });
-      // (P4) NAO sobrescrever #metric-alerts aqui — o valor de type=score (soma
-      // real das agencias, sem teto) ja foi setado; este feed e capado em 10.
+      // (P4) NAO sobrescrever #metric-alerts aqui — o valor de type=score (alertas
+      // bucketaveis por agencia, janela de 180d) ja foi setado; este feed e capado em 10.
     } else if (alertsEl) {
       alertsEl.innerHTML = `<p style="color:var(--green);font-size:.85rem">✓ Nenhum alerta pendente.</p>`;
     }

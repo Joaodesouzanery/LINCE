@@ -65,6 +65,12 @@ async function weeklyAgencyAnalysis(supabase, weeks = 8) {
 
   const currentWeek = weekKey(new Date().toISOString().slice(0, 10));
   const midweek = new Date().getUTCDay() >= 3; // silencio so vale de quarta em diante
+  // F-INT1 (F2): PRO-RATA da semana parcial — numa quinta, a semana atual tem ~4/7 dos
+  // atos e o teste de pico (current >= 2x baseline) quase nunca disparava a tempo.
+  // Projeta current p/ 7 dias SO no teste de pico; o valor exibido segue o real.
+  // Com <3 dias decorridos NAO projeta (domingo x7 = falso pico garantido).
+  const daysElapsed = Math.max(1, new Date().getUTCDay() + 1); // dom=1 ... sab=7
+  const canProject = daysElapsed >= 3;
   // Se a semana atual esta vazia para TODAS as agencias, e FALHA DE INGESTAO (cron
   // parado), nao "silencio" regulatorio real -> nao pintar tudo de vermelho.
 
@@ -88,8 +94,9 @@ async function weeklyAgencyAnalysis(supabase, weeks = 8) {
       if (!past.length) continue;
       const baseline = past.reduce((a, b) => a + b, 0) / past.length;
       const current = byWeek[currentWeek]?.[metric] || 0;
-      if (baseline >= 2 && current >= 5 && current >= baseline * 2) {
-        anomalies.push({ agency: ag.acronym, metric, kind: "pico", current, baseline: Math.round(baseline * 10) / 10, ratio: Math.round((current / baseline) * 10) / 10 });
+      const projected = canProject ? Math.round((current / daysElapsed) * 7 * 10) / 10 : current; // pro-rata 7d
+      if (baseline >= 2 && current >= 5 && projected >= baseline * 2) {
+        anomalies.push({ agency: ag.acronym, metric, kind: "pico", current, projected, baseline: Math.round(baseline * 10) / 10, ratio: Math.round((projected / baseline) * 10) / 10 });
       } else if (metric === "total" && baseline >= 5 && current === 0 && midweek && !archiveStale) {
         anomalies.push({ agency: ag.acronym, metric, kind: "silencio", current: 0, baseline: Math.round(baseline * 10) / 10, ratio: 0 });
       }
@@ -513,50 +520,71 @@ module.exports = async function handler(req, res) {
     }
 
     if (type === "score") {
-      // Score de risco por agencia. A versao antiga somava VOLUME cru sem janela
-      // nem normalizacao -> todas saturavam em 100 (inutil). Agora: atividade
-      // recente (90d) + alertas ponderados por severidade, NORMALIZADO entre as
-      // agencias (min-max) para diferenciar de fato. docs = total (so display).
+      // F-INT1 (F2 — "honesto e simples"): a versao min-max sempre produzia um 100 e um 0
+      // (mesmo com tudo calmo) e era dominada por VOLUME disfarçado de risco. Agora sao
+      // DOIS numeros com nome honesto, sem normalizacao escondida:
+      //   atividade_90d = volume de publicacao (nao e risco)
+      //   sinais        = alertas ponderados (TTL 180d; alertas de PESSOA contam no
+      //                   bucket da agencia via metadata.agency_id — antes eram perdidos)
       const { data: agencies } = await supabase.from("agencies").select("id, acronym, name").eq("sector", "regulatory");
       const since90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+      const since180 = new Date(Date.now() - 180 * 86400000).toISOString(); // TTL: alerta velho nao conta p/ sempre
       const SEV_WEIGHT = { high: 3, medium: 2, info: 1, low: 1 };
       const agIds = (agencies || []).map((a) => a.id);
 
-      // Em LOTE (era N+1: 4 queries x 11 agencias sequenciais). Agora: contagens
-      // head por agencia em paralelo + 3 queries agregaveis em memoria.
-      if (!agIds.length) return res.status(200).json({ ok: true, type: "score", window_days: 90, scores: [] });
-      const [docTotals, doc90s, alertsRes, mandatesRes] = await Promise.all([
+      if (!agIds.length) return res.status(200).json({ ok: true, type: "score", window_days: 90, alert_ttl_days: 180, scores: [] });
+      // Alerts paginados (teto default de 1000 do PostgREST) em ordem ESTAVEL
+      // (created_at desc: com >CAP alertas, os descartados sao os mais antigos).
+      async function fetchOpenAlerts() {
+        const rows = []; const CAP = 10000;
+        for (let from = 0; from < CAP; from += 1000) {
+          const { data } = await supabase.from("alerts")
+            .select("target_id, target_kind, severity, alert_type, metadata, created_at")
+            .is("acknowledged_at", null).gte("created_at", since180)
+            .order("created_at", { ascending: false }).order("id", { ascending: false })
+            .range(from, from + 999);
+          rows.push(...(data || []));
+          if (!data || data.length < 1000) break;
+        }
+        return { rows, truncated: rows.length >= CAP };
+      }
+      const [docTotals, doc90s, alertsPage, mandatesRes] = await Promise.all([
         Promise.all(agIds.map((id) => supabase.from("documents")
           .select("id", { count: "exact", head: true }).eq("agency_id", id).eq("source_name", "DOU"))),
         Promise.all(agIds.map((id) => supabase.from("documents")
           .select("id", { count: "exact", head: true }).eq("agency_id", id).eq("source_name", "DOU").gte("published_at", since90))),
-        supabase.from("alerts").select("target_id, severity").is("acknowledged_at", null).in("target_id", agIds).limit(5000),
-        supabase.from("mandates").select("agency_id").is("ended_at", null).in("agency_id", agIds).limit(5000)
+        fetchOpenAlerts(),
+        supabase.from("mandates").select("agency_id, person_id").is("ended_at", null).in("agency_id", agIds).limit(5000)
       ]);
-      const alertsByAgency = {}, directorsByAgency = {};
-      for (const a of alertsRes.data || []) (alertsByAgency[a.target_id] = alertsByAgency[a.target_id] || []).push(a);
-      for (const m of mandatesRes.data || []) directorsByAgency[m.agency_id] = (directorsByAgency[m.agency_id] || 0) + 1;
+      const alertsRes = { data: alertsPage.rows };
+      const agIdSet = new Set(agIds);
+      const alertsByAgency = {}, directorsByAgency = {}, directorsSeen = {};
+      for (const m of mandatesRes.data || []) {
+        const seen = (directorsSeen[m.agency_id] = directorsSeen[m.agency_id] || new Set());
+        if (m.person_id && seen.has(m.person_id)) continue; // pessoa com 2 mandatos = 1 diretor
+        if (m.person_id) seen.add(m.person_id);
+        directorsByAgency[m.agency_id] = (directorsByAgency[m.agency_id] || 0) + 1;
+      }
+      for (const a of alertsRes.data || []) {
+        // bucket: alerta de agencia -> target_id; alerta de pessoa (nomeacao/exoneracao/
+        // monitor) -> agency_id da metadata (gravado na ingestao).
+        const agId = agIdSet.has(a.target_id) ? a.target_id : (a.metadata?.agency_id && agIdSet.has(a.metadata.agency_id) ? a.metadata.agency_id : null);
+        if (agId) (alertsByAgency[agId] = alertsByAgency[agId] || []).push(a);
+      }
 
-      const rows = (agencies || []).map((ag, i) => {
+      const scores = (agencies || []).map((ag, i) => {
         const openAlerts = alertsByAgency[ag.id] || [];
-        const weightedAlerts = openAlerts.reduce((s, a) => s + (SEV_WEIGHT[a.severity] || 1), 0);
-        // Sinal bruto: atividade recente + peso de alertas (alertas pesam mais).
-        const raw = (doc90s[i]?.count || 0) + weightedAlerts * 15;
+        const sinais = openAlerts.reduce((s, a) => s + (SEV_WEIGHT[a.severity] || 1), 0);
+        const porTipo = {};
+        for (const a of openAlerts) { const k = a.alert_type || "outro"; porTipo[k] = (porTipo[k] || 0) + 1; }
         return {
           agency: ag.acronym, name: ag.name,
-          docs: docTotals[i]?.count || 0, docs_90d: doc90s[i]?.count || 0,
-          open_alerts: openAlerts.length, weighted_alerts: weightedAlerts,
-          active_directors: directorsByAgency[ag.id] || 0, raw
+          docs: docTotals[i]?.count || 0, atividade_90d: doc90s[i]?.count || 0, docs_90d: doc90s[i]?.count || 0,
+          open_alerts: openAlerts.length, sinais, sinais_por_tipo: porTipo,
+          active_directors: directorsByAgency[ag.id] || 0
         };
-      });
-      // Normaliza o sinal bruto para 0-100 entre as agencias (min-max).
-      const raws = rows.map((r) => r.raw);
-      const min = Math.min(...raws, 0), max = Math.max(...raws, 1);
-      const span = max - min || 1;
-      const scores = rows
-        .map((r) => ({ ...r, score: Math.round(100 * (r.raw - min) / span) }))
-        .sort((a, b) => b.score - a.score);
-      return res.status(200).json({ ok: true, type: "score", window_days: 90, scores });
+      }).sort((a, b) => (b.sinais - a.sinais) || (b.atividade_90d - a.atividade_90d));
+      return res.status(200).json({ ok: true, type: "score", window_days: 90, alert_ttl_days: 180, alerts_truncated: alertsPage.truncated, scores });
     }
 
     // Radar 30/60/90: atos mais recentes agrupados por periodo
@@ -596,7 +624,12 @@ module.exports = async function handler(req, res) {
         });
       }
       const truncated = { contratos: (contractsRes.data || []).length >= 500, mandatos: (mandatesRes.data || []).length >= 500 };
-      return res.status(200).json({ ok: true, type: "radar", truncated, radar });
+      // F-INT1 (F2): R$ agregado — total de contratos a vencer por janela (o numero que
+      // faltava: contrato de R$ 2 mil pesava igual a R$ 200 mi).
+      const valor_total = {};
+      for (const w of ["30d", "60d", "90d"]) valor_total[w] = radar[w].filter((e) => e.type === "contrato").reduce((s, e) => s + (Number(e.value) || 0), 0);
+      valor_total.total = valor_total["30d"] + valor_total["60d"] + valor_total["90d"];
+      return res.status(200).json({ ok: true, type: "radar", truncated, valor_total, radar });
     }
 
     if (type === "giratoria") {
@@ -662,13 +695,17 @@ module.exports = async function handler(req, res) {
         const socios = socioByPerson[personId];
         const selfDealing = []; const selfKeys = new Set();
         let duringMandate = false;
+        let selfDealingValue = 0; // F-INT1 (F2): R$ dos contratos self-dealing (dimensiona o caso)
         let best = null; // o mandato que evidencia o caso (prioridade: self-dealing > ativo > mais recente)
         for (const m of ms) {
           for (const s of socios) {
             const ags = supplierAgencies[s.company_id];
             if (!ags || !m.agency_id || !ags[m.agency_id]) continue;
             const key = `${s.company_id}|${m.agency_id}`;
-            if (!selfKeys.has(key)) { selfKeys.add(key); selfDealing.push({ ...s, agency: m.agencies?.acronym }); }
+            if (!selfKeys.has(key)) {
+              selfKeys.add(key); selfDealing.push({ ...s, agency: m.agencies?.acronym });
+              selfDealingValue += ags[m.agency_id].reduce((sum, c) => sum + (Number(c.value) || 0), 0);
+            }
             // best = mandato self-dealing preferindo ATIVO, senao o mais recente.
             if (!best) best = m;
             else if (!m.ended_at && best.ended_at) best = m;
@@ -686,7 +723,7 @@ module.exports = async function handler(req, res) {
         cases.push({
           person_id: personId, name: best.people?.full_name || "?", agency: best.agencies?.acronym, role: best.role,
           mandate_from: best.started_at, mandate_to: best.ended_at, active: ms.some((m) => !m.ended_at),
-          companies: socios, self_dealing: selfDealing, public_supplier: publicSupplier,
+          companies: socios, self_dealing: selfDealing, self_dealing_value: selfDealingValue, public_supplier: publicSupplier,
           contract_during_mandate: duringMandate,
           parties: partyByPerson[personId] || [], severity,
           rationale: selfDealing.length
@@ -694,8 +731,9 @@ module.exports = async function handler(req, res) {
             : (publicSupplier.length ? "Sócio de fornecedor público (outra agência)" : "Vínculo societário durante o mandato")
         });
       }
-      // Contrato assinado DURANTE o mandato primeiro (o timing e o agravante), depois self-dealing.
-      cases.sort((a, b) => ((b.contract_during_mandate ? 1 : 0) - (a.contract_during_mandate ? 1 : 0)) || (b.self_dealing.length - a.self_dealing.length) || (b.companies.length - a.companies.length));
+      // Contrato assinado DURANTE o mandato primeiro (o timing e o agravante), depois
+      // self-dealing por QUANTIDADE e por R$ (F2), depois rede.
+      cases.sort((a, b) => ((b.contract_during_mandate ? 1 : 0) - (a.contract_during_mandate ? 1 : 0)) || (b.self_dealing.length - a.self_dealing.length) || ((b.self_dealing_value || 0) - (a.self_dealing_value || 0)) || (b.companies.length - a.companies.length));
       return res.status(200).json({
         ok: true, type: "giratoria", total: cases.length, truncated: mandatesTruncated,
         self_dealing_count: cases.filter((c) => c.self_dealing.length).length, cases
@@ -2290,20 +2328,24 @@ module.exports = async function handler(req, res) {
       const { data: person } = await supabase.from("people").select("id, full_name, role").eq("id", id).maybeSingle();
       if (!person) return res.status(404).json({ ok: false, error: "Pessoa nao encontrada." });
 
-      const [partyRes, mandatesRes, socioRes] = await Promise.all([
+      const [partyRes, mandatesRes, socioRes, donationsRes] = await Promise.all([
         supabase.from("party_links").select("party, link_type, amount, reference_year").eq("person_id", id),
-        supabase.from("mandates").select("agency_id, role, ended_at").eq("person_id", id),
+        supabase.from("mandates").select("agency_id, role, started_at, ended_at").eq("person_id", id),
         // relationships e polimorfica (to_id sem FK) -> NAO da para usar embed
         // companies(...). Busca so os ids/metadata e resolve as empresas depois.
         supabase.from("relationships")
           .select("to_id, metadata")
           .eq("from_kind", "person").eq("from_id", id)
-          .eq("to_kind", "company").eq("relationship", "socio")
+          .eq("to_kind", "company").eq("relationship", "socio"),
+        // F-INT1 (F2): doacoes REAIS (a tabela boa, com valor/tipo/ano) — antes o
+        // componente partidario contava LINHAS de filiacao (2 filiacoes antigas = teto).
+        supabase.from("campaign_donations").select("amount, donor_type, reference_year").eq("recipient_person_id", id).order("reference_year", { ascending: false, nullsFirst: false }).limit(5000)
       ]);
 
       const parties = partyRes.data || [];
       const mandates = mandatesRes.data || [];
       const socioRels = socioRes.data || [];
+      const donations = donationsRes.data || [];
       // 2a query: resolve empresas por id (padrao de api/dossier-person.js).
       let companiesById = {};
       if (socioRels.length) {
@@ -2318,27 +2360,59 @@ module.exports = async function handler(req, res) {
         (r) => r.companies?.registration_status && !isSituacaoAtiva(r.companies.registration_status)
       ).length;
 
-      // SELF-DEALING: alguma empresa-socio FORNECE uma agencia que a pessoa dirige?
-      // (o sinal forte, deterministico: socio x contract x mandate mesma agencia).
-      const mandateAgencies = new Set(mandates.map((m) => m.agency_id).filter(Boolean));
+      // SELF-DEALING com OVERLAP TEMPORAL (F2): a empresa-socio fornece a agencia
+      // que a pessoa dirige/dirigiu, com contrato assinado DENTRO da janela do mandato.
+      // (Antes: contrato de 2015 x mandato de 2022 pontuava 35 — sem relacao temporal.)
       const socioCompanyIds = [...new Set(socioRels.map((r) => r.to_id).filter(Boolean))];
-      const selfDealingCompanies = [];
-      if (socioCompanyIds.length && mandateAgencies.size) {
+      const selfDealingCompanies = []; const supplierNoOverlap = [];
+      let selfDealingValue = 0;
+      if (socioCompanyIds.length && mandates.length) {
+        // Ordem por signed_at desc (estavel/relevante): se o teto de 1000 do PostgREST
+        // cortar, ficam os contratos recentes — os que importam p/ overlap de mandato.
         const { data: cts } = await supabase.from("contracts")
-          .select("supplier_company_id, agency_id").in("supplier_company_id", socioCompanyIds);
-        const flagged = new Set();
-        for (const c of cts || []) if (c.supplier_company_id && mandateAgencies.has(c.agency_id)) flagged.add(c.supplier_company_id);
-        for (const cid of flagged) selfDealingCompanies.push(companiesById[cid]?.legal_name || cid);
+          .select("supplier_company_id, agency_id, signed_at, value")
+          .in("supplier_company_id", socioCompanyIds)
+          .order("signed_at", { ascending: false, nullsFirst: false }).limit(5000);
+        const flaggedOverlap = new Set(), flaggedAny = new Set();
+        for (const c of cts || []) {
+          if (!c.supplier_company_id || !c.agency_id) continue;
+          for (const m of mandates) {
+            if (m.agency_id !== c.agency_id) continue;
+            flaggedAny.add(c.supplier_company_id);
+            const inWindow = c.signed_at && m.started_at && c.signed_at >= m.started_at && (!m.ended_at || c.signed_at <= m.ended_at);
+            // break: o valor do contrato conta UMA vez (reconducao/mandato duplicado
+            // na mesma agencia somava o mesmo contrato 2x+).
+            if (inWindow) { flaggedOverlap.add(c.supplier_company_id); selfDealingValue += Number(c.value) || 0; break; }
+          }
+        }
+        for (const cid of flaggedOverlap) selfDealingCompanies.push(companiesById[cid]?.legal_name || cid);
+        for (const cid of flaggedAny) if (!flaggedOverlap.has(cid)) supplierNoOverlap.push(companiesById[cid]?.legal_name || cid);
       }
 
-      // Patrimonio declarado (TSE) — sinal a monitorar (nao pontua alto sozinho).
-      const { data: assetsRows } = await supabase.from("assets").select("value").eq("person_id", id);
-      const patrimonio = (assetsRows || []).reduce((s, a) => s + (Number(a.value) || 0), 0);
+      // Financiamento politico (F2): doacoes reais com DECAIMENTO (>8 anos pesa metade).
+      const currentYear = new Date().getFullYear();
+      let doacoesEfetivas = 0, doacoesTotal = 0;
+      for (const d of donations) {
+        const v = Number(d.amount) || 0;
+        doacoesTotal += v;
+        doacoesEfetivas += (d.reference_year && currentYear - d.reference_year > 8) ? v * 0.5 : v;
+      }
+      const financiamento = doacoesEfetivas >= 500000 ? 30 : doacoesEfetivas >= 50000 ? 20 : doacoesEfetivas > 0 ? 10 : (parties.length ? 5 : 0);
+
+      // Patrimonio declarado (TSE) — sinal EXIBIDO com evolucao por ano (nao pontua).
+      const { data: assetsRows } = await supabase.from("assets").select("value, reference_year").eq("person_id", id).order("reference_year", { ascending: false, nullsFirst: false }).limit(5000);
+      let patrimonio = 0; const patrimonioPorAno = {};
+      for (const a of assetsRows || []) {
+        const v = Number(a.value) || 0; patrimonio += v;
+        if (a.reference_year) patrimonioPorAno[a.reference_year] = (patrimonioPorAno[a.reference_year] || 0) + v;
+      }
 
       // Componentes 0-100 (transparentes: o front exibe o detalhamento).
+      // financiamento max 30 · self_dealing 35 (overlap) / 15 (fornece sem overlap) /
+      // 8 (socio + mandato ativo) · rede max 20 · inaptas max 15.
       const components = {
-        partidario: Math.min(30, parties.length * 15),
-        self_dealing: selfDealingCompanies.length ? 35 : (activeMandate && socio.length ? 12 : 0),
+        financiamento_politico: financiamento,
+        self_dealing: selfDealingCompanies.length ? 35 : (supplierNoOverlap.length ? 15 : (activeMandate && socio.length ? 8 : 0)),
         rede_societaria: Math.min(20, socio.length * 5),
         empresas_inaptas: Math.min(15, inactiveCompanies * 10)
       };
@@ -2351,10 +2425,14 @@ module.exports = async function handler(req, res) {
         score, band, components,
         signals: {
           parties: parties.map((p) => ({ party: p.party, type: p.link_type, amount: p.amount, year: p.reference_year })),
+          doacoes: { total: doacoesTotal, efetivo_com_decaimento: Math.round(doacoesEfetivas), n: donations.length },
           active_mandate: activeMandate,
           mandate_count: mandates.length,
           self_dealing_companies: selfDealingCompanies,
+          self_dealing_value: selfDealingValue,
+          supplier_no_overlap: supplierNoOverlap,
           patrimonio_declarado: patrimonio,
+          patrimonio_por_ano: patrimonioPorAno,
           companies: socio.map((r) => ({
             cnpj: r.companies?.cnpj, legal_name: r.companies?.legal_name,
             status: r.companies?.registration_status, role: r.metadata?.role
@@ -2364,59 +2442,23 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // Radar de Risco & Oportunidade (estilo Arko + Sherlocker). Sintetiza 4
-    // angulos a partir do que ja existe: (1) porta giratoria/captura, (2)
-    // contratos a vencer, (3) consultas abertas, (4) proposicoes legislativas.
+    // Radar de Risco & Oportunidade (estilo Arko + Sherlocker).
+    // F-INT1 (F2): o painel de RISCOS agora vem de type=giratoria (motor forte, com
+    // contratos + severity) — o computeRisks fraco ("tem CNPJ" = risco) foi removido.
+    // Aqui ficam: (1) contratos a vencer, (2) consultas abertas, (3) proposicoes.
     if (type === "radar_intel") {
       res.setHeader("Cache-Control", "s-maxage=600, stale-while-revalidate=1800");
       const today = new Date().toISOString().slice(0, 10);
       const in90 = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
       const since45 = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
 
-      // RISCO — porta giratoria: diretor ativo que tambem e socio de empresa(s).
-      async function computeRisks() {
-        const { data: activeMandates } = await supabase
-          .from("mandates")
-          .select("person_id, role, agency_id, people(full_name), agencies(acronym)")
-          .is("ended_at", null).limit(2000);
-        const dirIds = [...new Set((activeMandates || []).map((m) => m.person_id).filter(Boolean))];
-        if (!dirIds.length) return [];
-        const { data: socioRels } = await supabase
-          .from("relationships").select("from_id, to_id, metadata")
-          .eq("from_kind", "person").eq("to_kind", "company").eq("relationship", "socio")
-          .in("from_id", dirIds).limit(4000);
-        const compIds = [...new Set((socioRels || []).map((r) => r.to_id))];
-        let compById = {};
-        if (compIds.length) {
-          const { data: comps } = await supabase.from("companies")
-            .select("id, cnpj, legal_name, registration_status").in("id", compIds);
-          compById = Object.fromEntries((comps || []).map((c) => [c.id, c]));
-        }
-        const byPerson = {};
-        for (const r of socioRels || []) {
-          const c = compById[r.to_id]; if (!c) continue;
-          (byPerson[r.from_id] = byPerson[r.from_id] || []).push({ ...c, socio_role: r.metadata?.role });
-        }
-        const seen = new Set(), out = [];
-        for (const m of activeMandates || []) {
-          const comps = byPerson[m.person_id];
-          if (!comps || seen.has(m.person_id)) continue;
-          seen.add(m.person_id);
-          const inaptas = comps.filter((c) => c.registration_status && !isSituacaoAtiva(c.registration_status)).length;
-          out.push({
-            kind: "porta_giratoria", person_id: m.person_id, name: m.people?.full_name || "?",
-            agency: m.agencies?.acronym || null, role: m.role || null,
-            companies: comps.length, inaptas, severity: inaptas ? "high" : "medium"
-          });
-        }
-        return out.sort((a, b) => (b.inaptas - a.inaptas) || (b.companies - a.companies)).slice(0, 30);
-      }
-
-      // OPORTUNIDADE — contratos a vencer nos proximos 90 dias.
+      // OPORTUNIDADE — contratos a vencer nos proximos 90 dias, MAIORES primeiro
+      // (F2: R$ manda; antes a ordem era so cronologica).
       async function computeContracts() {
         const { data } = await supabase.from("contracts")
           .select("object, supplier_name, ends_at, value, agencies(acronym)")
-          .gte("ends_at", today).lte("ends_at", in90).order("ends_at").limit(40);
+          .gte("ends_at", today).lte("ends_at", in90)
+          .order("value", { ascending: false, nullsFirst: false }).order("ends_at").limit(40);
         return (data || []).map((c) => ({
           kind: "contrato_vencendo", label: (c.object || "Contrato").slice(0, 140),
           supplier: c.supplier_name || null, agency: c.agencies?.acronym || null,
@@ -2425,13 +2467,23 @@ module.exports = async function handler(req, res) {
       }
 
       // OPORTUNIDADE — consultas/audiencias publicas abertas (dos atos do DOU).
+      // F2: full-text (search_tsv, stemming pt) no lugar de %audi% (que casava
+      // "auditoria", "auditor"...). Fallback ILIKE se a migracao M17 nao existir.
       async function computeConsultas() {
-        const { data } = await supabase.from("documents")
-          .select("title, published_at, source_url, agencies(acronym)")
+        const sel = "title, published_at, source_url, agencies(acronym)";
+        let r = await supabase.from("documents").select(sel)
           .eq("source_name", "DOU").gte("published_at", since45)
-          .or("title.ilike.%consulta p%,title.ilike.%audi%,title.ilike.%tomada de subs%")
+          // Acentos IMPORTAM: o tsvector 'portuguese' preserva acento ("públic" != "public").
+          // Os atos do DOU vem acentuados; as variantes sem acento cobrem texto degradado.
+          .textSearch("search_tsv", '"consulta pública" OR "consulta publica" OR "audiência pública" OR "audiencia publica" OR "tomada de subsídios" OR "tomada de subsidios"', { type: "websearch", config: "portuguese" })
           .order("published_at", { ascending: false }).limit(25);
-        return (data || []).map((d) => ({
+        if (r.error) {
+          r = await supabase.from("documents").select(sel)
+            .eq("source_name", "DOU").gte("published_at", since45)
+            .or("title.ilike.%consulta publica%,title.ilike.%consulta pública%,title.ilike.%audiencia publica%,title.ilike.%audiência pública%,title.ilike.%tomada de subs%")
+            .order("published_at", { ascending: false }).limit(25);
+        }
+        return (r.data || []).map((d) => ({
           kind: "consulta_aberta", label: d.title, agency: d.agencies?.acronym || null,
           date: d.published_at, link: d.source_url
         }));
@@ -2450,18 +2502,20 @@ module.exports = async function handler(req, res) {
         } catch { return []; }
       }
 
-      const [risksP, contractsP, consultasP, legisP] = await Promise.allSettled([
-        computeRisks(), computeContracts(), computeConsultas(), computeLegislative()
+      const [contractsP, consultasP, legisP] = await Promise.allSettled([
+        computeContracts(), computeConsultas(), computeLegislative()
       ]);
       const val = (p) => (p.status === "fulfilled" ? p.value : []);
-      const risks = val(risksP);
       const opportunities = [...val(contractsP), ...val(consultasP)];
       const legislative = val(legisP);
 
       return res.status(200).json({
         ok: true, type: "radar_intel",
-        counts: { risks: risks.length, opportunities: opportunities.length, legislative: legislative.length },
-        risks, opportunities, legislative,
+        counts: { opportunities: opportunities.length, legislative: legislative.length },
+        // riscos: usar type=giratoria (motor com contratos/severity) — campo mantido
+        // vazio p/ compat de payload.
+        risks: [], risks_source: "giratoria",
+        opportunities, legislative,
         fetchedAt: new Date().toISOString()
       });
     }
@@ -2650,6 +2704,56 @@ module.exports = async function handler(req, res) {
 
       const SEV_ORDER = { high: 0, medium: 1, low: 2 };
       out.sort((a, b) => (SEV_ORDER[a.severity] ?? 3) - (SEV_ORDER[b.severity] ?? 3));
+
+      // F-INT1 (F2): as correlacoes de ALTO valor viram registros em `alerts` —
+      // entram no webhook/central de alertas em vez de existirem so enquanto a tela
+      // esta aberta. Dedup manual por metadata->>corr_key (source_document_id NULL
+      // nao conflita no indice unico). Best-effort: falha aqui nao derruba a resposta.
+      try {
+        const persistKinds = new Set(["nomeacao_x_fornecedor", "janela_regulatoria"]);
+        const toPersist = out.filter((c) => persistKinds.has(c.kind)).slice(0, 20);
+        if (toPersist.length) {
+          // janela_regulatoria vem so com o ACRONIMO da agencia — resolve o uuid
+          // (alerts.target_id e NOT NULL; sem isso o insert falhava silenciosamente).
+          const acrsToResolve = [...new Set(toPersist
+            .map((c) => c.entities?.[0]).filter((e) => e && e.kind === "agency" && !e.id && e.label)
+            .map((e) => e.label))];
+          const agByAcr = {};
+          if (acrsToResolve.length) {
+            const { data: ags } = await supabase.from("agencies").select("id, acronym").in("acronym", acrsToResolve);
+            for (const a of ags || []) agByAcr[a.acronym] = a.id;
+          }
+          const candidates = toPersist.map((c) => {
+            const ent = c.entities?.[0] || {};
+            const targetId = ent.id || (ent.kind === "agency" ? agByAcr[ent.label] : null) || null;
+            if (!targetId) return null; // target_id e NOT NULL — sem id resolvido, nao persiste
+            return {
+              corrKey: `${c.kind}:${ent.id || ent.label || c.title.slice(0, 60)}`,
+              row: {
+                alert_type: "correlacao", severity: c.severity || "medium",
+                target_kind: ent.kind === "person" || ent.kind === "company" ? ent.kind : "agency",
+                target_id: targetId,
+                title: c.title.slice(0, 200), body: (c.evidence || []).join(" · ").slice(0, 500),
+                metadata: { kind: c.kind, suggested_action: c.suggested_action || null }
+              }
+            };
+          }).filter(Boolean);
+          if (candidates.length) {
+            // Dedup em LOTE (1 select) + insert em lote — antes eram ate 40 queries por GET.
+            const keys = candidates.map((c) => c.corrKey);
+            const { data: dups } = await supabase.from("alerts").select("metadata->>corr_key")
+              .eq("alert_type", "correlacao").in("metadata->>corr_key", keys);
+            const dupSet = new Set((dups || []).map((d) => d.corr_key));
+            const fresh = candidates.filter((c) => !dupSet.has(c.corrKey))
+              .map((c) => ({ ...c.row, metadata: { ...c.row.metadata, corr_key: c.corrKey } }));
+            if (fresh.length) {
+              const { error: insErr } = await supabase.from("alerts").insert(fresh);
+              if (insErr) console.error("correlations persist:", insErr.message);
+            }
+          }
+        }
+      } catch (e) { console.error("correlations persist:", e?.message); }
+
       return res.status(200).json({
         ok: true, type: "correlations",
         total: out.length, correlations: out.slice(0, 50),
