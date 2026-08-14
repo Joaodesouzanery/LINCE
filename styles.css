@@ -1949,6 +1949,13 @@ button.entity-pill:hover {
   }
   @page {
     margin: 16mm 14mm;
+    /* Numeração "página N" no rodapé de TODAS as páginas (antes o rodapé só
+       existia no fim do fluxo, então o documento impresso não tinha paginação). */
+    @bottom-right {
+      content: "página " counter(page) " de " counter(pages);
+      font-size: 8pt;
+      color: #666;
+    }
   }
   body {
     background: #fff !important;
@@ -1979,6 +1986,44 @@ button.entity-pill:hover {
     text-align: center;
     text-transform: uppercase;
     padding: 4px 0;
+  }
+  /* Fase 1 (1C): capa própria — o documento começava direto no conteúdo. */
+  .print-cover {
+    page-break-after: always;
+    padding-top: 55mm;
+    text-align: center;
+  }
+  .print-cover-title {
+    font-size: 26pt;
+    margin: 14px 0 6px;
+    color: #111;
+  }
+  .print-cover-sub {
+    font-family: var(--font-mono);
+    font-size: 11pt;
+    color: #444;
+    margin: 0 0 40mm;
+  }
+  .print-cover-meta {
+    display: inline-block;
+    text-align: left;
+    border-top: 1px solid #999;
+    border-bottom: 1px solid #999;
+    padding: 10px 0;
+    font-size: 9.5pt;
+  }
+  .print-cover-meta p {
+    margin: 3px 0;
+  }
+  /* Nota de metodologia: nunca quebrar no meio (é a parte que dá credibilidade). */
+  .print-method {
+    page-break-inside: avoid;
+    border-top: 1px solid #999;
+    font-size: 9.5pt;
+    color: #333;
+  }
+  .print-method ul {
+    margin: 4px 0 8px 16px;
   }
   .print-head {
     display: flex;

@@ -13,6 +13,8 @@
     "backfill:dou": "node scripts/backfill-dou.js",
     "load:receita-socio": "node scripts/load-receita-socio.js",
     "backfill:qsa": "node scripts/backfill-qsa.js",
+    "backfill:people-keys": "node scripts/backfill-people-keys.js",
+    "backfill:socio-edges": "node scripts/backfill-socio-edges.js",
     "backfill:ai": "node scripts/backfill-ai.js",
     "backfill:themes": "node scripts/backfill-themes.js",
     "load:agenda": "node scripts/load-agenda.js",

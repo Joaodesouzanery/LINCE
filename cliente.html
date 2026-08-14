@@ -69,12 +69,29 @@
 
       function render(d){
         var p = d.painel || {};
+        var b = p.brand || {};
         var props = d.proposicoes || [], ag = d.agenda || [], vot = d.votacoes || [], stk = d.stakeholders || [], org = d.orgaos || [], nws = d.noticias || [];
         document.title = (p.cliente || p.nome || "Painel") + " — acompanhamento";
+        // WHITE-LABEL: cor e logo do cliente/escritório (validados no backend).
+        // A cor entra por <style> (não inline em <html>): inline venceria TAMBÉM a
+        // regra de dark mode e uma marca escura sumiria no fundo escuro. No escuro
+        // usamos uma versão clareada (mistura com branco) para manter contraste.
+        if (b.cor) {
+          var clarear = function(hex, f){
+            var n = parseInt(hex.slice(1), 16), r = (n >> 16) & 255, g = (n >> 8) & 255, bl = n & 255;
+            var m = function(c){ return Math.round(c + (255 - c) * f); };
+            return "rgb(" + m(r) + "," + m(g) + "," + m(bl) + ")";
+          };
+          var st = document.createElement("style");
+          st.textContent = ":root{--accent:" + b.cor + "}" +
+            "@media (prefers-color-scheme:dark){:root{--accent:" + clarear(b.cor, 0.55) + "}}";
+          document.head.appendChild(st);
+        }
         var html = "";
 
         html += '<header class="hd">' +
-          '<div class="brand">Painel de acompanhamento</div>' +
+          (b.logo_url ? '<img src="' + esc(b.logo_url) + '" alt="" style="max-height:52px;max-width:220px;margin-bottom:10px">' : "") +
+          '<div class="brand">' + esc(b.titulo || "Painel de acompanhamento") + "</div>" +
           "<h1>" + esc(p.cliente || p.nome || "Painel") + "</h1>" +
           (p.cliente && p.nome ? '<p class="sub">' + esc(p.nome) + "</p>" : "") +
           (p.descricao ? '<p class="sub">' + esc(p.descricao) + "</p>" : "") +
@@ -152,7 +169,10 @@
           }).join("") + "</div></section>";
         }
 
-        html += '<div class="foot">Acompanhamento gerado pela LINCE · dados públicos (Câmara e Senado — Dados Abertos, TSE).</div>';
+        // Rodapé: com ocultar_marca o revendedor entrega sem citar o fornecedor.
+        // A procedência dos DADOS (públicos) fica sempre — é o que dá credibilidade.
+        var fonteTxt = "Dados públicos (Câmara e Senado — Dados Abertos, TSE, DOU).";
+        html += '<div class="foot">' + (b.rodape ? esc(b.rodape) + " · " : (b.ocultar_marca ? "" : "Acompanhamento gerado pela LINCE · ")) + fonteTxt + "</div>";
         root.innerHTML = html;
       }
 
@@ -161,7 +181,7 @@
       fetch("/api/intelligence?type=painel_public&token=" + encodeURIComponent(token), { headers: { accept: "application/json" } })
         .then(function(r){ return r.ok ? r.json() : r.json().catch(function(){ return { ok: false }; }).then(function(b){ throw new Error(b && b.error ? b.error : "indisponivel"); }); })
         .then(function(d){ if (!d || !d.ok) throw new Error("indisponivel"); render(d); })
-        .catch(function(){ state("Link inválido ou expirado", "Solicite um novo link de acompanhamento ao seu contato na LINCE."); });
+        .catch(function(){ state("Link inválido ou expirado", "Solicite um novo link de acompanhamento ao seu contato."); });
     })();
   </script>
 </body>

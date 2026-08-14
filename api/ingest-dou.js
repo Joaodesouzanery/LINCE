@@ -7,7 +7,7 @@ const { analyzeAto } = require("../lib/anthropic");
 const { classifyThemes } = require("../lib/themes");
 const { processPeopleFromDoc, loadActiveMonitors, matchMonitorsForDoc, flushMonitorAlerts } = require("../lib/ingest");
 const { timingSafeEqualStr } = require("../lib/timing");
-const { sendAlertWebhook } = require("../lib/notify");
+const { sendAlertWebhook, sendMonitorEmails } = require("../lib/notify");
 
 const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
 
@@ -142,6 +142,9 @@ module.exports = async function handler(req, res) {
     // os HITS DE MONITOR (watchlist do usuário = alto sinal) para o webhook. Não
     // notifica os atos de pessoal genéricos (evita spam). Nunca lança.
     const notified = await sendAlertWebhook(monitorAlerts, { label: "LINCE · Monitor DOU" });
+    // Fase 1 (1C): e-mail por monitor (monitors.owner_email). Best-effort — nunca lança.
+    const emailed = await sendMonitorEmails(supabase, monitorAlerts, { label: "LINCE · Monitor DOU" })
+      .catch((e) => ({ ok: false, error: e.message }));
 
     return res.status(200).json({
       ok: true,
@@ -152,7 +155,10 @@ module.exports = async function handler(req, res) {
       directors,
       alerts: alerts.length,
       monitor_alerts: monitorAlerts.length,
-      notified: notified.ok ? notified.sent : (notified.skipped || notified.error || false)
+      notified: notified.ok ? notified.sent : (notified.skipped || notified.error || false),
+      emailed: emailed.ok ? emailed.sent : (emailed.skipped || emailed.error || false),
+      // falhas parciais de envio nao podem sumir so porque UM destinatario deu certo
+      email_falhas: (emailed.falhas && emailed.falhas.length) ? emailed.falhas : undefined
     });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message, source: "DOU/INLABS" });

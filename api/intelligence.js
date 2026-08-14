@@ -584,6 +584,7 @@ module.exports = async function handler(req, res) {
         const porTipo = {};
         for (const a of openAlerts) { const k = a.alert_type || "outro"; porTipo[k] = (porTipo[k] || 0) + 1; }
         return {
+          id: ag.id, // usado pelo select de órgãos do painel (painel_item_add exige o uuid)
           agency: ag.acronym, name: ag.name,
           docs: docTotals[i]?.count || 0, atividade_90d: doc90s[i]?.count || 0, docs_90d: doc90s[i]?.count || 0,
           open_alerts: openAlerts.length, sinais, sinais_por_tipo: porTipo,
@@ -652,12 +653,35 @@ module.exports = async function handler(req, res) {
       const personIds = [...new Set((mandates || []).map((m) => m.person_id))];
       if (personIds.length === 0) return res.status(200).json({ ok: true, type: "giratoria", cases: [] });
 
-      const [socioRes, partyRes] = await Promise.all([
-        supabase.from("relationships").select("from_id, to_id, metadata, companies(id, cnpj, legal_name)")
-          .eq("from_kind", "person").eq("to_kind", "company").eq("relationship", "socio").in("from_id", personIds),
-        supabase.from("party_links").select("person_id, party").in("person_id", personIds)
-      ]);
-      const socioRels = socioRes.data || [];
+      // ATENCAO: relationships e POLIMORFICA (to_id sem FK) -> embed `companies(...)`
+      // devolve PGRST200 ("Could not find a relationship..."), o erro era engolido pelo
+      // `|| []` e a lista de casos saia SEMPRE vazia. Resolve as empresas em 2a query,
+      // como o political_risk ja faz.
+      // .in() em CHUNKS: com centenas de person_id a URL do PostgREST estoura e a
+      // query inteira falha (personIds cresce a cada ingestao de ato de pessoal).
+      const socioRels = [];
+      for (let i = 0; i < personIds.length; i += 200) {
+        const { data, error } = await supabase.from("relationships").select("from_id, to_id, metadata")
+          .eq("from_kind", "person").eq("to_kind", "company").eq("relationship", "socio")
+          .in("from_id", personIds.slice(i, i + 200));
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        socioRels.push(...(data || []));
+      }
+      const partyRows = [];
+      for (let i = 0; i < personIds.length; i += 200) {
+        const { data } = await supabase.from("party_links").select("person_id, party").in("person_id", personIds.slice(i, i + 200));
+        partyRows.push(...(data || []));
+      }
+      const partyRes = { data: partyRows };
+      const socioCompById = {};
+      {
+        const ids = [...new Set(socioRels.map((r) => r.to_id).filter(Boolean))];
+        for (let i = 0; i < ids.length; i += 200) {
+          const { data: comps } = await supabase.from("companies")
+            .select("id, cnpj, legal_name, registration_status").in("id", ids.slice(i, i + 200));
+          for (const c of comps || []) socioCompById[c.id] = c;
+        }
+      }
 
       // Contratos das empresas-socio -> quais agencias cada empresa fornece (+ datas/valores).
       const socioCompanyIds = [...new Set(socioRels.map((r) => r.to_id).filter(Boolean))];
@@ -685,7 +709,7 @@ module.exports = async function handler(req, res) {
       for (const pl of partyRes.data || []) (partyByPerson[pl.person_id] = partyByPerson[pl.person_id] || []).push(pl.party);
       const socioByPerson = {};
       for (const r of socioRels) (socioByPerson[r.from_id] = socioByPerson[r.from_id] || [])
-        .push({ company_id: r.to_id, company: r.companies?.legal_name, cnpj: r.companies?.cnpj, role: r.metadata?.role });
+        .push({ company_id: r.to_id, company: socioCompById[r.to_id]?.legal_name, cnpj: socioCompById[r.to_id]?.cnpj, role: r.metadata?.role });
 
       // F-INT1: avalia TODOS os mandatos de cada pessoa (antes: so o 1o em ordem
       // arbitraria — podia descartar exatamente o mandato com self-dealing).
@@ -833,6 +857,12 @@ module.exports = async function handler(req, res) {
         updated_at: new Date().toISOString()
       };
       if (typeof p.active === "boolean") row.active = p.active; // F-INT1: o front sempre envia active — antes era ignorado
+      // Fase 1: destinatario do alerta por e-mail (vazio limpa).
+      if (p.owner_email !== undefined) {
+        const em = String(p.owner_email || "").trim();
+        if (em && !em.includes("@")) return res.status(400).json({ ok: false, error: "E-mail invalido." });
+        row.owner_email = em ? em.slice(0, 200) : null;
+      }
       // F-INT1: cpf_cnpj SEMPRE recalculado (limpa o antigo se o padrao deixou de ser CNPJ/CPF).
       const digits = onlyDigits(p.cpf_cnpj || pattern);
       row.cpf_cnpj = (digits.length === 11 || digits.length === 14) ? digits : null;
@@ -842,11 +872,16 @@ module.exports = async function handler(req, res) {
         if (!ag) return res.status(400).json({ ok: false, error: `Agencia "${pattern}" nao encontrada. Use a sigla (ex.: ANEEL).` });
         row.agency_id = ag.id;
       }
-      let result;
-      if (p.id) {
-        result = await supabase.from("monitors").update(row).eq("id", p.id).select().maybeSingle();
-      } else {
-        result = await supabase.from("monitors").insert(row).select().maybeSingle();
+      const gravar = async (r) => (p.id
+        ? supabase.from("monitors").update(r).eq("id", p.id).select().maybeSingle()
+        : supabase.from("monitors").insert(r).select().maybeSingle());
+      let result = await gravar(row);
+      // Se a coluna owner_email ainda nao existe no banco (migration pendente),
+      // grava sem ela em vez de derrubar a criacao do monitor inteira.
+      if (result.error && /owner_email/.test(result.error.message || "")) {
+        const { owner_email, ...semEmail } = row;
+        result = await gravar(semEmail);
+        if (!result.error) result.warn = "Coluna monitors.owner_email ausente — aplique o schema para habilitar alerta por e-mail.";
       }
       if (result.error) return res.status(500).json({ ok: false, error: result.error.message });
       if (!result.data) return res.status(404).json({ ok: false, error: "Monitor nao encontrado." });
@@ -881,7 +916,7 @@ module.exports = async function handler(req, res) {
           if (allHits.length) backfillHits = await flushMonitorAlerts(supabase, allHits, null);
         } catch (e) { backfillError = e.message; } // best-effort: o monitor ja foi salvo — mas a falha e VISIVEL
       }
-      return res.status(200).json({ ok: true, monitor: result.data, backfill_hits: backfillHits, backfill_error: backfillError });
+      return res.status(200).json({ ok: true, monitor: result.data, backfill_hits: backfillHits, backfill_error: backfillError, warn: result.warn || null });
     }
 
     if (type === "monitor_toggle") {
@@ -1048,6 +1083,31 @@ module.exports = async function handler(req, res) {
     if (type === "painel_save") {
       res.setHeader("Cache-Control", "no-store");
       const p = params(req);
+      // UPDATE = PATCH PARCIAL (so os campos enviados). Antes reconstruia a linha
+      // inteira: salvar a marca white-label zerava owner_email/webhook_url/frequencia.
+      if (p.id) {
+        const patch = { updated_at: new Date().toISOString() };
+        if (p.nome !== undefined) {
+          const nome = String(p.nome).trim();
+          if (nome.length < 2) return res.status(400).json({ ok: false, error: "Informe o nome do painel." });
+          patch.nome = nome;
+        }
+        if (p.cliente !== undefined) patch.cliente = p.cliente ? String(p.cliente).slice(0, 200) : null;
+        if (p.descricao !== undefined) patch.descricao = p.descricao ? String(p.descricao).slice(0, 1000) : null;
+        if (p.tema !== undefined) patch.tema = Array.isArray(p.tema) ? p.tema : null;
+        if (p.webhook_url !== undefined) patch.webhook_url = p.webhook_url ? String(p.webhook_url).slice(0, 500) : null;
+        if (p.frequencia !== undefined && ["tempo_real", "diario", "off"].includes(p.frequencia)) patch.frequencia = p.frequencia;
+        if (p.owner_email !== undefined) patch.owner_email = p.owner_email ? String(p.owner_email).slice(0, 200) : null;
+        if (p.metadata && typeof p.metadata === "object" && !Array.isArray(p.metadata)) {
+          const { data: cur, error: cErr } = await supabase.from("paineis").select("metadata").eq("id", String(p.id)).maybeSingle();
+          if (cErr) return res.status(500).json({ ok: false, error: cErr.message }); // sem isso um erro de leitura viraria overwrite total
+          patch.metadata = { ...((cur && cur.metadata) || {}), ...p.metadata }; // merge (nao perde outras chaves)
+        }
+        const { data, error } = await supabase.from("paineis").update(patch).eq("id", String(p.id)).select().maybeSingle();
+        if (error) return res.status(500).json({ ok: false, error: error.message });
+        if (!data) return res.status(404).json({ ok: false, error: "Painel nao encontrado." });
+        return res.status(200).json({ ok: true, painel: data });
+      }
       const nome = String(p.nome || "").trim();
       if (nome.length < 2) return res.status(400).json({ ok: false, error: "Informe o nome do painel." });
       const row = {
@@ -1059,12 +1119,9 @@ module.exports = async function handler(req, res) {
         owner_email: p.owner_email ? String(p.owner_email).slice(0, 200) : null,
         updated_at: new Date().toISOString()
       };
-      const result = p.id
-        ? await supabase.from("paineis").update(row).eq("id", p.id).select().maybeSingle()
-        : await supabase.from("paineis").insert(row).select().maybeSingle();
-      if (result.error) return res.status(500).json({ ok: false, error: result.error.message });
-      if (!result.data) return res.status(404).json({ ok: false, error: "Painel nao encontrado." });
-      return res.status(200).json({ ok: true, painel: result.data });
+      const { data, error } = await supabase.from("paineis").insert(row).select().maybeSingle();
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, painel: data });
     }
 
     if (type === "painel_delete") {
@@ -1230,7 +1287,20 @@ module.exports = async function handler(req, res) {
       const digest = await buildPainelDigest(supabase, pRow.id);
       if (!digest) return res.status(404).json({ ok: false, error: "Painel nao encontrado." });
       // Sanitiza: painel = so branding; itens = sem item_id/nota (notas do operador sao internas).
-      const pub = { nome: digest.painel.nome, cliente: digest.painel.cliente, descricao: digest.painel.descricao };
+      // Fase 1 (1C): branding WHITE-LABEL vem de metadata.brand — whitelist explicita
+      // (o resto do metadata segue interno: saldos, config, cursores).
+      const b = (digest.painel.metadata && digest.painel.metadata.brand) || {};
+      const safeHttps = (u) => { try { const x = new URL(String(u)); return x.protocol === "https:" ? x.href : null; } catch { return null; } };
+      const pub = {
+        nome: digest.painel.nome, cliente: digest.painel.cliente, descricao: digest.painel.descricao,
+        brand: {
+          logo_url: safeHttps(b.logo_url),
+          cor: /^#[0-9a-f]{6}$/i.test(String(b.cor || "")) ? b.cor : null,
+          titulo: b.titulo ? String(b.titulo).slice(0, 120) : null,
+          rodape: b.rodape ? String(b.rodape).slice(0, 200) : null,
+          ocultar_marca: !!b.ocultar_marca
+        }
+      };
       const sProp = (it) => ({ ref_id: it.ref_id, prioridade: it.prioridade, posicionamento: it.posicionamento, tags: it.tags, data: it.data });
       const sEnt = (it) => ({ ref_id: it.ref_id, data: it.data });
       // F7: reusa digest.noticias (ja sanitizado: url/titulo/fonte/published_at/resumo,

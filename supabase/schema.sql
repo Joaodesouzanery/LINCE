@@ -390,6 +390,9 @@ create table if not exists monitors (
 );
 -- O matcher so le monitores ativos.
 create index if not exists monitors_active_idx on monitors (active) where active;
+-- Fase 1 (F-INT1): destinatario do alerta por e-mail. Ate aqui so o digest de PAINEL
+-- tinha e-mail; o monitor (watchlist do cliente) so tinha webhook global.
+alter table monitors add column if not exists owner_email text;
 
 -- Bens declarados ao TSE (bem_candidato x consulta_cand). Sem CPF do candidato
 -- (LGPD): o vinculo forte ja esta em person_id; match_method registra a confianca.

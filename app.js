@@ -1644,10 +1644,15 @@ function renderFinanciadores(d) {
     <td>${escapeHtml(x.donor_document || "—")}</td>
     <td>${escapeHtml(money(x.total))}${x.count > 1 ? ` <span class="entity-pill">${x.count}×</span>` : ""}</td>
   </tr>`).join("");
+  // Ressalva de homônimo: 100% das doações do TSE são casadas por NOME (sem CPF, por
+  // LGPD). Sem este selo, o dossiê afirma "quem financia X" com risco de atribuir a
+  // doação a um homônimo — exposição real num relatório que embasa decisão.
+  const weak = f.weak_match;
   return `
     <article class="news-card">
-      <span class="source-meta">Financiadores de campanha (TSE)</span>
+      <span class="source-meta">Financiadores de campanha (TSE)${weak ? " | match por nome (possível homônimo)" : ""}</span>
       <strong>${escapeHtml(money(f.total))} em ${f.count} doação(ões)</strong>
+      ${weak ? `<div class="activity-alert info"><span class="alert-icon">ℹ</span><span style="font-size:.78rem">Vínculo por nome normalizado — confirme antes de citar (homônimos possíveis).</span></div>` : ""}
       <div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Doador</th><th>Tipo</th><th>Documento</th><th>Total</th></tr></thead><tbody>${rows}</tbody></table></div>
     </article>`;
 }
@@ -3898,7 +3903,10 @@ async function openPainel(id) {
   detail.hidden = false;
   detail.innerHTML = emptyCard("Painel", "Abrindo…");
   try {
-    const d = await requestJson(`/api/intelligence?type=painel_get&id=${encodeURIComponent(id)}`);
+    const [d] = await Promise.all([
+      requestJson(`/api/intelligence?type=painel_get&id=${encodeURIComponent(id)}`),
+      ensureAgenciesList() // popula o select da aba Órgãos
+    ]);
     if (!d?.ok) throw new Error(d?.error || "erro");
     state.painelData = d;
     renderPainelDetail(d);
@@ -4063,6 +4071,7 @@ function renderPainelAgenda(d) {
 
 function renderPainelDados(d) {
   const p = d.painel || {};
+  const brand = (p.metadata && p.metadata.brand) || {}; // white-label do link do cliente
   const tram = (d.proposicoes || []).filter((x) => x.data && x.data.situacao).slice(0, 12);
   const freq = p.frequencia || "diario";
   return `<article class="news-card">
@@ -4094,6 +4103,15 @@ function renderPainelDados(d) {
       </div>
       ${p.share_token ? `<div style="margin-top:6px"><input class="dou-date" style="width:100%" readonly onclick="this.select()" value="${escapeHtml(location.origin + "/cliente?p=" + p.share_token)}"></div>` : ""}
       <span id="painel-share-status" style="font-size:.75rem;opacity:.6"></span>
+      <div class="entity-row" style="flex-wrap:wrap;gap:6px;margin-top:8px">
+        <input id="painel-brand-logo" class="dou-date" type="url" placeholder="URL do logo (https://…)" value="${escapeHtml(brand.logo_url || "")}" style="min-width:200px">
+        <input id="painel-brand-cor" class="dou-date" type="color" value="${escapeHtml(/^#[0-9a-f]{6}$/i.test(brand.cor || "") ? brand.cor : "#1f3a5f")}" title="Cor de destaque" style="width:60px;padding:2px">
+        <input id="painel-brand-titulo" class="dou-date" placeholder="Título do topo (ex.: Monitoramento Regulatório)" value="${escapeHtml(brand.titulo || "")}" style="min-width:200px">
+        <input id="painel-brand-rodape" class="dou-date" placeholder="Rodapé próprio (opcional)" value="${escapeHtml(brand.rodape || "")}" style="min-width:180px">
+        <label style="font-size:.78rem;display:flex;align-items:center;gap:4px"><input type="checkbox" id="painel-brand-ocultar" ${brand.ocultar_marca ? "checked" : ""}> ocultar marca LINCE</label>
+        <button type="button" class="entity-pill" data-painel-brand-save="${escapeHtml(p.id || "")}">Salvar marca</button>
+      </div>
+      <p class="card-sub" style="margin:4px 0 0">Personalize para o escritório/consultoria revender com a marca dele. O logo precisa estar em https.</p>
     </div>
   </article>`;
 }
@@ -4127,30 +4145,134 @@ function renderPainelProposicoes(d) {
   </article>`;
 }
 
+// Fase 1 (1B): o endpoint painel_item_add SEMPRE existiu e valida o ref — mas nenhuma
+// tela o chamava. Sem stakeholder e sem órgão, a aba Inteligência (anomalias, contratos
+// a vencer, consultas) e o cruzamento Comissão × Pauta ficavam mortos, e não havia como
+// montar um painel de demonstração pela interface.
 function renderPainelStakeholders(d) {
   const st = d.stakeholders || [];
-  if (!st.length) return `<article class="news-card"><span class="source-meta">Stakeholders</span><p>Nenhum stakeholder no painel.</p></article>`;
+  const rows = st.length
+    ? `<div class="news-list">${st.map((x) => { const s = x.data || {}; return `<div class="director-row"><span class="selectable" data-person-id="${escapeHtml(x.ref_id)}" style="flex:1"><strong>${escapeHtml(s.full_name || x.ref_id)}</strong> <span class="card-sub">${escapeHtml(s.role || "")}${s.uf ? " · " + escapeHtml(s.uf) : ""}</span></span><button type="button" class="entity-pill" data-item-remove="${escapeHtml(x.item_id)}" title="Remover do painel">×</button></div>`; }).join("")}</div>`
+    : `<p class="card-sub">Nenhum stakeholder no painel. Busque abaixo para adicionar — é o que liga o cruzamento Comissão × Pauta.</p>`;
   return `<article class="news-card"><span class="source-meta">Stakeholders</span>
-    <div class="news-list">${st.map((x) => { const s = x.data || {}; return `<div class="director-row selectable" data-person-id="${escapeHtml(x.ref_id)}"><strong>${escapeHtml(s.full_name || x.ref_id)}</strong> <span class="card-sub">${escapeHtml(s.role || "")}${s.uf ? " · " + escapeHtml(s.uf) : ""}</span></div>`; }).join("")}</div>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap;margin:6px 0">
+      <input id="painel-stake-q" class="dou-date" style="min-width:220px" placeholder="Buscar pessoa por nome…" value="${escapeHtml(state.painelStakeQ || "")}">
+      <button type="button" class="entity-pill" id="painel-stake-search">Buscar</button>
+      <span id="painel-stake-status" class="card-sub"></span>
+    </div>
+    <div id="painel-stake-results" class="entity-row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
+    ${rows}
   </article>`;
 }
 
 function renderPainelOrgaos(d) {
   const og = d.orgaos || [];
-  if (!og.length) return `<article class="news-card"><span class="source-meta">Órgãos</span><p>Nenhum órgão no painel.</p></article>`;
+  const jaNoPainel = new Set(og.map((x) => String(x.ref_id)));
+  const opts = (state.agenciesList || []).filter((a) => !jaNoPainel.has(String(a.id)))
+    .map((a) => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.acronym)}${a.name ? " · " + escapeHtml(a.name) : ""}</option>`).join("");
+  const rows = og.length
+    ? `<div class="entity-row" style="flex-wrap:wrap">${og.map((x) => { const o = x.data || {}; return `<span class="entity-pill">${escapeHtml(o.acronym || x.ref_id)}${o.name ? " · " + escapeHtml(o.name) : ""} <button type="button" data-item-remove="${escapeHtml(x.item_id)}" style="background:none;border:none;cursor:pointer;color:inherit;opacity:.6" title="Remover">×</button></span>`; }).join("")}</div>`
+    : `<p class="card-sub">Nenhum órgão no painel. Adicione ao menos um — é o que ativa anomalias, contratos a vencer e consultas na aba Inteligência.</p>`;
   return `<article class="news-card"><span class="source-meta">Órgãos</span>
-    <div class="entity-row">${og.map((x) => { const o = x.data || {}; return `<span class="entity-pill">${escapeHtml(o.acronym || x.ref_id)}${o.name ? " · " + escapeHtml(o.name) : ""}</span>`; }).join("")}</div>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap;margin:6px 0">
+      <select id="painel-orgao-sel" class="dou-date" style="min-width:220px">${opts || `<option value="">${state.agenciesErro ? "(falha ao carregar agências — recarregue)" : ((state.agenciesList || []).length ? "(todos já estão no painel)" : "(nenhuma agência na base)")}</option>`}</select>
+      <button type="button" class="entity-pill" id="painel-orgao-add">+ adicionar órgão</button>
+      <span id="painel-orgao-status" class="card-sub"></span>
+    </div>
+    ${rows}
   </article>`;
 }
 
-async function painelCreate() {
-  const nome = window.prompt("Nome do painel (ex.: Energia, Segurança):");
-  if (!nome || !nome.trim()) return;
-  const cliente = window.prompt("Cliente (opcional):") || "";
+// Lista de agências (id + sigla) p/ o select de órgãos. type=score já traz as 11.
+async function ensureAgenciesList() {
+  if (state.agenciesList?.length) return state.agenciesList;
   try {
-    const r = await postJson("/api/intelligence?type=painel_save", { nome: nome.trim(), cliente: cliente.trim() });
+    const sc = await requestJson("/api/intelligence?type=score");
+    state.agenciesList = (sc.scores || []).filter((s) => s.id).map((s) => ({ id: s.id, acronym: s.agency, name: s.name }));
+    state.agenciesErro = state.agenciesList.length ? null : "lista de agências vazia";
+  } catch (e) { state.agenciesList = []; state.agenciesErro = e.message || "falha ao carregar"; }
+  return state.agenciesList;
+}
+
+async function painelStakeSearch() {
+  const q = ($("#painel-stake-q")?.value || "").trim();
+  const st = $("#painel-stake-status"), box = $("#painel-stake-results");
+  state.painelStakeQ = q;
+  if (q.length < 3) { if (st) st.textContent = "Digite ao menos 3 letras."; return; }
+  if (st) st.textContent = "Buscando…";
+  try {
+    const r = await requestJson(`/api/dossier-person?q=${encodeURIComponent(q)}`);
+    const people = r?.people || [];
+    if (st) st.textContent = people.length ? `${people.length} encontrada(s) — clique para adicionar.` : "Nenhuma pessoa na base com esse nome.";
+    if (box) box.innerHTML = people.slice(0, 20).map((p) =>
+      `<button type="button" class="entity-pill" data-painel-add-stake="${escapeHtml(p.id)}">+ ${escapeHtml(p.full_name)}${p.agency ? ` · ${escapeHtml(p.agency)}` : ""}</button>`).join("");
+  } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; }
+}
+
+// White-label: grava em metadata.brand (o painel_save faz MERGE de metadata, então
+// isso não apaga saldos/config já guardados lá).
+async function painelBrandSave(id) {
+  const st = $("#painel-share-status");
+  const logo = ($("#painel-brand-logo")?.value || "").trim();
+  if (logo && !/^https:\/\//i.test(logo)) { if (st) st.textContent = "O logo precisa ser uma URL https."; return; }
+  const brand = {
+    logo_url: logo || null,
+    cor: $("#painel-brand-cor")?.value || null,
+    titulo: ($("#painel-brand-titulo")?.value || "").trim() || null,
+    rodape: ($("#painel-brand-rodape")?.value || "").trim() || null,
+    ocultar_marca: !!$("#painel-brand-ocultar")?.checked
+  };
+  if (st) st.textContent = "Salvando marca…";
+  try {
+    const r = await postJson("/api/intelligence?type=painel_save", { id, metadata: { brand } });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    if (state.painelData?.painel) state.painelData.painel = r.painel;
+    if (st) st.textContent = "Marca salva — abra o link do cliente para conferir.";
+  } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; }
+}
+
+async function painelItemAdd(item_kind, ref_id, statusSel) {
+  const st = $(statusSel);
+  if (!state.currentPainelId || !ref_id) return;
+  if (st) st.textContent = "Adicionando…";
+  try {
+    const r = await postJson("/api/intelligence?type=painel_item_add", { painel_id: state.currentPainelId, item_kind, ref_id });
+    if (!r?.ok) throw new Error(r?.error || "erro");
+    openPainel(state.currentPainelId);
+    toast(item_kind === "orgao" ? "Órgão adicionado ao painel." : "Stakeholder adicionado ao painel.");
+  } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; else alert(`Falha: ${e.message}`); }
+}
+
+// Mini-form no lugar de dois window.prompt() em sequência.
+async function painelCreate() {
+  let grid = $("#paineis-grid");
+  if (!grid || $("#painel-new-box")) return;
+  // Com um painel ABERTO o grid está hidden — volta à lista antes, senão o botão
+  // "+ Criar painel" (que continua visível no header) viraria um no-op silencioso.
+  if (grid.hidden) { await loadPaineis(); grid = $("#paineis-grid"); if (!grid) return; }
+  grid.insertAdjacentHTML("afterbegin", `<article class="news-card" id="painel-new-box" style="grid-column:1/-1">
+    <strong style="font-size:.9rem">Novo painel</strong>
+    <div class="entity-row" style="gap:6px;flex-wrap:wrap;margin-top:6px">
+      <input id="painel-new-nome" class="dou-date" style="min-width:180px" placeholder="Nome (ex.: Energia Elétrica)">
+      <input id="painel-new-cliente" class="dou-date" style="min-width:180px" placeholder="Cliente (opcional)">
+      <button type="button" class="entity-pill" id="painel-new-do">Criar</button>
+      <button type="button" class="entity-pill" id="painel-new-cancel">Cancelar</button>
+      <span id="painel-new-status" class="card-sub"></span>
+    </div>
+  </article>`);
+  $("#painel-new-nome")?.focus();
+}
+async function painelCreateDo() {
+  const nome = ($("#painel-new-nome")?.value || "").trim();
+  const cliente = ($("#painel-new-cliente")?.value || "").trim();
+  const st = $("#painel-new-status");
+  if (nome.length < 2) { if (st) st.textContent = "Informe o nome."; return; }
+  if (st) st.textContent = "Criando…";
+  try {
+    const r = await postJson("/api/intelligence?type=painel_save", { nome, cliente });
     if (r?.ok && r.painel) { await loadPaineis(); openPainel(r.painel.id); }
-  } catch (e) { alert(`Falha ao criar: ${e.message}`); }
+    else if (st) st.textContent = r?.error || "erro";
+  } catch (e) { if (st) st.textContent = `Falha: ${e.message}`; }
 }
 
 async function painelImportResolve() {
@@ -4306,6 +4428,19 @@ function wirePaineis() {
     if (e.target.closest("#painel-import-btn")) { const box = $("#painel-import-box"); if (box) box.hidden = !box.hidden; return; }
     if (e.target.closest("#painel-import-resolve")) { painelImportResolve(); return; }
     if (e.target.closest("[data-import-confirm]")) { painelImportConfirm(); return; }
+    // Fase 1 (1B): adicionar stakeholder/órgão + criação por mini-form
+    if (e.target.closest("#painel-new-do")) { painelCreateDo(); return; }
+    if (e.target.closest("#painel-new-cancel")) { $("#painel-new-box")?.remove(); return; }
+    if (e.target.closest("#painel-stake-search")) { painelStakeSearch(); return; }
+    const addStake = e.target.closest("[data-painel-add-stake]");
+    if (addStake) { painelItemAdd("stakeholder", addStake.dataset.painelAddStake, "#painel-stake-status"); return; }
+    if (e.target.closest("#painel-orgao-add")) { painelItemAdd("orgao", $("#painel-orgao-sel")?.value, "#painel-orgao-status"); return; }
+    const brandSave = e.target.closest("[data-painel-brand-save]");
+    if (brandSave) { painelBrandSave(brandSave.dataset.painelBrandSave); return; }
+  });
+  view.addEventListener("keydown", (e) => {
+    if (e.target.id === "painel-stake-q" && e.key === "Enter") { e.preventDefault(); painelStakeSearch(); }
+    if (e.target.id === "painel-new-nome" && e.key === "Enter") { e.preventDefault(); painelCreateDo(); }
   });
   view.addEventListener("change", (e) => {
     const prio = e.target.closest("[data-item-prio]");
@@ -4626,6 +4761,7 @@ async function saveMonitorFromForm(event) {
       label: label || pattern,
       pattern,
       ...(cpfCnpj ? { cpf_cnpj: cpfCnpj } : {}),
+      owner_email: $("#mon-email")?.value?.trim() || "",
       active: $("#mon-active")?.checked ?? true
     });
     // F-INT1 (F4): o backfill de 90d roda no save — mostra o resultado (ou a falha).
@@ -4709,7 +4845,10 @@ function sourceNamesInUse() {
   return used.size ? [...used] : ["Fontes públicas conectadas"];
 }
 
-function buildPrintDoc({ title, subtitle, classification, ai, sections, sourcesUsed, kicker }) {
+// Fase 1 (1C): o PDF é o entregável que se cobra (dossiê avulso). Ganhou CAPA,
+// METODOLOGIA e nota de confiança. `notes` = ressalvas de match (homônimo) e
+// truncamento — antes o corte em 40 itens era silencioso e o leitor não sabia.
+function buildPrintDoc({ title, subtitle, classification, ai, sections, sourcesUsed, kicker, notes }) {
   const summaryBlock = ai?.summary
     ? `<section class="print-summary">
         <h2>Resumo executivo (IA)</h2>
@@ -4717,13 +4856,25 @@ function buildPrintDoc({ title, subtitle, classification, ai, sections, sourcesU
         ${(ai.risk_flags || []).length ? `<p><strong>Riscos:</strong> ${ai.risk_flags.map((r) => escapeHtml(r)).join(" · ")}</p>` : ""}
         ${(ai.highlights || []).length ? `<p><strong>Destaques:</strong> ${ai.highlights.map((h) => escapeHtml(h)).join(" · ")}</p>` : ""}
       </section>`
-    : `<section class="print-summary"><h2>Resumo executivo</h2><p>Resumo por IA indisponível (configure ANTHROPIC_API_KEY para habilitar).</p></section>`;
+    : ""; // sem chave de IA o bloco simplesmente NÃO SAI (antes vazava "configure ANTHROPIC_API_KEY" no documento do cliente)
+  const geradoEm = new Date().toLocaleString("pt-BR");
+  const ressalvas = (notes || []).filter(Boolean);
   return `
     <div class="print-doc">
       <div class="print-class-bar">${escapeHtml(classification)} — USO RESTRITO</div>
+      <section class="print-cover">
+        <p class="print-kicker">${escapeHtml(kicker || "LINCE · INTELIGÊNCIA REGULATÓRIA")}</p>
+        <h1 class="print-cover-title">${escapeHtml(title)}</h1>
+        <p class="print-cover-sub">${escapeHtml(subtitle)}</p>
+        <div class="print-cover-meta">
+          <p><strong>Emitido em:</strong> ${escapeHtml(geradoEm)}</p>
+          <p><strong>Classificação:</strong> ${escapeHtml(classification)}</p>
+          <p><strong>Fontes:</strong> ${sourcesUsed.map((s) => escapeHtml(s)).join(" · ")}</p>
+        </div>
+      </section>
       <header class="print-head">
         <div>
-          <p class="print-kicker">${escapeHtml(kicker || "LINCE · INTELIGÊNCIA REGULATÓRIA · REAL-ONLY")}</p>
+          <p class="print-kicker">${escapeHtml(kicker || "LINCE · INTELIGÊNCIA REGULATÓRIA")}</p>
           <h1>${escapeHtml(title)}</h1>
           <p class="print-sub">${escapeHtml(subtitle)}</p>
         </div>
@@ -4731,9 +4882,19 @@ function buildPrintDoc({ title, subtitle, classification, ai, sections, sourcesU
       </header>
       ${summaryBlock}
       ${sections.map((s) => `<section class="print-section"><h2>${escapeHtml(s.heading)}</h2>${s.html}</section>`).join("")}
+      <section class="print-section print-method">
+        <h2>Metodologia e confiança</h2>
+        <p>Documento composto automaticamente a partir de fontes públicas oficiais
+        (${sourcesUsed.map((s) => escapeHtml(s)).join(" · ")}), sem dados fictícios ou estimados.
+        Cada linha é rastreável à fonte indicada na coluna correspondente.</p>
+        ${ressalvas.length ? `<p><strong>Ressalvas desta emissão:</strong></p><ul>${ressalvas.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` : ""}
+        <p>Vínculos marcados como <em>match por nome</em> foram estabelecidos por nome normalizado,
+        sem CPF (política de LGPD do sistema): homônimos são possíveis e devem ser confirmados
+        antes de citação externa. Este material é insumo de investigação — não constitui
+        parecer jurídico, contábil ou de auditoria.</p>
+      </section>
       <footer class="print-foot">
-        <p>Fontes consultadas: ${sourcesUsed.map((s) => escapeHtml(s)).join(" · ")}</p>
-        <p>Gerado em ${new Date().toLocaleString("pt-BR")} · LINCE real-only — sem dados fictícios · ${escapeHtml(classification)}</p>
+        <p>Gerado em ${escapeHtml(geradoEm)} · ${escapeHtml(classification)}</p>
       </footer>
     </div>`;
 }
@@ -4790,6 +4951,12 @@ async function exportPersonPdf(d) {
   const ai = withAi?.ai || null;
   const intel = d.intelligence || {};
   const sections = [];
+  // Ressalvas desta emissão: match por nome e truncamento — ambos ficavam invisíveis.
+  const notes = [];
+  const truncar = (arr, n, rotulo) => {
+    if ((arr || []).length > n) notes.push(`${rotulo}: exibidos os ${n} primeiros de ${arr.length} registros.`);
+    return (arr || []).slice(0, n);
+  };
   sections.push({
     heading: "Perfil",
     html: printItemsTable([
@@ -4815,7 +4982,7 @@ async function exportPersonPdf(d) {
   if ((d.propositions || []).length) {
     sections.push({
       heading: `Proposições de autoria (${d.propositions.length})`,
-      html: printItemsTable(d.propositions.slice(0, 40).map((p) => item(
+      html: printItemsTable(truncar(d.propositions, 40, "Proposições de autoria").map((p) => item(
         p.titulo || `${p.tipo || ""} ${p.numero || ""}/${p.ano || ""}`,
         [p.casa, p.situacao].filter(Boolean).join(" — ") || "—",
         "Câmara/Senado · Dados Abertos"
@@ -4825,7 +4992,7 @@ async function exportPersonPdf(d) {
   if ((d.legislative_votes || []).length) {
     sections.push({
       heading: `Votação nominal — Congresso (${d.legislative_votes.length})`,
-      html: printItemsTable(d.legislative_votes.slice(0, 40).map((v) => item(
+      html: printItemsTable(truncar(d.legislative_votes, 40, "Votação nominal").map((v) => item(
         `${String(v.data_votacao || "").slice(0, 10)} · ${v.voto || "—"}${v.divergente ? " (infiel)" : ""}`,
         String(v.proposicao_titulo || v.descricao || "—").slice(0, 100),
         "Câmara · Dados Abertos"
@@ -4841,8 +5008,9 @@ async function exportPersonPdf(d) {
     });
   }
   if ((d.financiadores?.count || 0)) {
+    if (d.financiadores.weak_match) notes.push("Financiadores de campanha: vínculo por nome normalizado (sem CPF) — homônimos possíveis.");
     sections.push({
-      heading: `Financiadores de campanha — ${money(d.financiadores.total)}`,
+      heading: `Financiadores de campanha — ${money(d.financiadores.total)}${d.financiadores.weak_match ? " (match por nome)" : ""}`,
       html: printItemsTable((d.financiadores.top || []).map((x) => item(
         x.donor_name || "—",
         `${money(x.total)}${x.donor_type ? " · " + x.donor_type : ""}${x.donor_document ? " · " + x.donor_document : ""}`,
@@ -4852,22 +5020,32 @@ async function exportPersonPdf(d) {
   }
   const assets = d.assets?.items || [];
   if (assets.length) {
+    if (d.assets.weak_match) notes.push("Patrimônio declarado: vínculo por nome normalizado (sem CPF) — homônimos possíveis.");
     sections.push({
       heading: `Patrimônio declarado (TSE)${d.assets.weak_match ? " — match por nome (verificar homônimo)" : ""}`,
-      html: printItemsTable(assets.slice(0, 40).map((a) => item(
+      html: printItemsTable(truncar(assets, 40, "Patrimônio declarado").map((a) => item(
         [a.asset_type, a.description].filter(Boolean).join(" — ").slice(0, 120),
         money(a.value),
         `TSE ${a.reference_year || ""}`
       )))
     });
   }
+  // Fontes REAIS deste dossiê (antes era uma lista fixa, que citava fonte não usada).
+  const fontes = ["LINCE (base local)"];
+  // DOU só quando há EVIDÊNCIA de ato (mandato ou menção). `role` sozinho não serve:
+  // parlamentar carregado da Câmara tem role e nunca apareceu no DOU.
+  if ((d.mandates || []).length || (d.dou_mentions || []).length) fontes.unshift("DOU / INLABS");
+  if ((d.propositions || []).length || (d.legislative_votes || []).length || (d.comissoes || []).length) fontes.push("Câmara/Senado · Dados Abertos");
+  if ((d.financiadores?.count || 0) || assets.length || (d.party_links || []).length) fontes.push("TSE");
+  if (d.screening?.flags) fontes.push("Portal da Transparência");
   runPrint(buildPrintDoc({
     title: d.person.full_name,
     subtitle: d.person.role || "Dirigente de agência reguladora",
     classification: "LINCE//DIR",
     ai,
     sections,
-    sourcesUsed: ["DOU / INLABS", "TSE", "Portal da Transparência", "LINCE (base local)"]
+    notes,
+    sourcesUsed: [...new Set(fontes)]
   }));
 }
 

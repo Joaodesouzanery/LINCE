@@ -225,7 +225,10 @@ module.exports = async function handler(req, res) {
     const donations = [];
     for (let from = 0; from < 20000; from += 1000) {
       const { data, error } = await supabase.from("campaign_donations")
-        .select("donor_name, donor_document, donor_type, amount, reference_year")
+        // match_method: TODAS as 19.487 linhas da base sao 'name' (o loader do TSE nao
+        // tem caminho por CPF — LGPD). Sem expor isso, o dossie afirma "financiadores
+        // de X" com risco de homonimo e nenhuma ressalva.
+        .select("donor_name, donor_document, donor_type, amount, reference_year, match_method")
         .eq("recipient_person_id", person.id).range(from, from + 999);
       if (error || !data) break; // tabela ausente (M20.3 nao aplicada) ou fim -> degrada
       donations.push(...data);
@@ -292,6 +295,8 @@ module.exports = async function handler(req, res) {
     const financiadores = {
       total: donations.reduce((s, dn) => s + (Number(dn.amount) || 0), 0),
       count: donations.length,
+      // espelha o weak_match de `assets` — vinculo por NOME normalizado, sem CPF
+      weak_match: donations.some((dn) => dn.match_method === "name"),
       top: [...donorMap.values()].sort((a, b) => b.total - a.total).slice(0, 15)
     };
 
