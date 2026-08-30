@@ -1,12 +1,19 @@
 // Backfill historico do DOU: ingere todos os dias de 2026-01-02 ate ontem.
 // Idempotente: dedupe por content_hash — pode rodar multiplas vezes sem duplicar.
-// Uso: node scripts/backfill-dou.js [YYYY-MM-DD inicio] [YYYY-MM-DD fim]
+// Uso: node scripts/backfill-dou.js [YYYY-MM-DD inicio] [YYYY-MM-DD fim] [--ia]
+// --ia liga o resumo por IA (analyzeAto): UMA chamada Claude por ato, sequencial.
+// Sem a flag o acervo entra sem resumo e scripts/backfill-ai.js preenche depois —
+// que e o caminho barato para recuperar muitos dias.
 // Ex:  node scripts/backfill-dou.js 2026-01-02 2026-06-12
 require("dotenv").config();
 const { getSupabase } = require("../lib/supabase");
 const { collectDou, login, AuthError } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");
-const { processPeopleFromDoc, loadActiveMonitors, matchMonitorsForDoc, flushMonitorAlerts } = require("../lib/ingest");
+const { loadActiveMonitors, flushMonitorAlerts } = require("../lib/ingest");
+const { persistDou } = require("../lib/dou-persist");
+
+// Opt-in explicito: a IA multiplica o tempo do backfill por ~50.
+const COM_IA = process.argv.includes("--ia");
 
 // Sessao INLABS compartilhada: loga uma vez e reusa o cookie. O cookie expira
 // em 30 min (Max-Age=1800), entao re-loga periodicamente. Evita o rate-limit
@@ -22,8 +29,6 @@ async function getCookie() {
   }
   return _cookie;
 }
-
-const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
 
 function dateRange(from, to) {
   const dates = [];
@@ -63,67 +68,24 @@ async function ingestDate(supabase, date, agencies, monitors) {
     }
   }
 
-  for (const r of records) {
-    const { data: exists } = await supabase
-      .from("documents")
-      .select("id")
-      .eq("content_hash", r.content_hash)
-      .maybeSingle();
-    if (exists) { skipped++; continue; }
-
-    // IA e opcional (sem ANTHROPIC_API_KEY, ai fica vazio)
-    const ai = await analyzeAto(r.title, r.extracted_text).catch(() => ({}));
-
-    const { data: doc, error } = await supabase.from("documents").insert({
-      agency_id: r.agency_id,
-      source_name: "DOU",
-      source_url: r.source_url,
-      document_type: DOC_TYPE[r.section] || "ato",
-      title: r.title,
-      published_at: r.published_at,
-      content_hash: r.content_hash,
-      extracted_text: r.extracted_text,
-      extraction_status: ai.summary ? "summarized" : "raw",
-      metadata: {
-        section: r.section,
-        orgao: r.orgao,
-        agency_acronym: r.agency_acronym,
-        ai_summary: ai.summary,
-        ai_entities: ai.entities,
-        ai_confidence: ai.confidence
-      }
-    }).select("id").single();
-
-    if (error) continue;
-    inserted++;
-
-    if (r.section === 2) {
-      const result = await processPeopleFromDoc(supabase, {
-        id: doc.id,
-        agency_id: r.agency_id,
-        agency_acronym: r.agency_acronym,
-        published_at: r.published_at,
-        title: r.title,
-        text: r.extracted_text,
-        aiEntities: ai.entities
-      });
-      if (result.people) directors += result.people;
-    }
-
-    // F-INT1 (F4): o backfill agora tambem avalia os MONITORES (antes o historico
-    // inteiro gerava zero alertas de monitor).
-    if (monitors && monitors.length) {
-      const hits = matchMonitorsForDoc(monitors, {
-        docId: doc.id, title: r.title, text: r.extracted_text, agencyId: r.agency_id,
-        agencyAcronym: r.agency_acronym, publishedAt: r.published_at, aiEntities: ai.entities
-      });
-      if (hits.length) {
-        const counts = new Map();
-        for (const h of hits) counts.set(h.monitorId, (counts.get(h.monitorId) || 0) + 1);
-        await flushMonitorAlerts(supabase, hits.map((h) => h.alert), counts).catch(() => {});
-        monitorHitsN += hits.length;
-      }
-    }
+  // Persistencia em lote (lib/dou-persist.js). Antes eram ~3 round-trips por ato:
+  // um SELECT de dedupe, o INSERT e um UPDATE so para themes.
+  //
+  // comAlertas: false — este script reingere HISTORICO. Gerar um alerta "novo" por
+  // ato de pessoal de 3 meses atras afogaria os alertas do dia com fatos velhos.
+  // A rota do dia (api/ingest-dou.js) mantem os alertas ligados.
+  const r = await persistDou(supabase, records, {
+    analisar: COM_IA ? analyzeAto : null,
+    comPessoas: true,
+    comAlertas: false,
+    monitores: monitors || []
+  });
+  inserted = r.inserted;
+  skipped = r.skipped;
+  directors = r.directors;
+  if (r.monitorAlerts.length) {
+    await flushMonitorAlerts(supabase, r.monitorAlerts, r.monitorHits).catch(() => {});
+    monitorHitsN = r.monitorAlerts.length;
   }
   return { inserted, skipped, directors, monitorHits: monitorHitsN };
 }
@@ -131,8 +93,9 @@ async function ingestDate(supabase, date, agencies, monitors) {
 async function main() {
   const supabase = getSupabase();
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-  const fromDate = process.argv[2] || "2026-01-02";
-  const toDate = process.argv[3] || yesterday;
+  const posicionais = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+  const fromDate = posicionais[0] || "2026-01-02";
+  const toDate = posicionais[1] || yesterday;
 
   const { data: agencies } = await supabase
     .from("agencies")

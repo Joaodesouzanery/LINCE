@@ -420,6 +420,15 @@ create unique index if not exists assets_tse_ref_idx on assets (sq_candidato, nr
 -- Bloco idempotente: rodar no SQL Editor do Supabase e depois `npm run backfill:themes`.
 -- ============================================================================
 alter table documents add column if not exists themes text[];
+
+-- Dedupe de atos do DOU. Ate aqui content_hash nao tinha indice nenhum: o SELECT
+-- de dedupe fazia sequential scan em dezenas de milhares de linhas, uma vez por
+-- ato. Unico (parcial, ignorando nulos) porque dois atos com o mesmo hash SAO o
+-- mesmo ato — isso torna a ingestao idempotente mesmo sob concorrencia, que o
+-- dedupe em aplicacao nao garante.
+-- Verificado antes de criar: 34.363 hashes, todos distintos e nao nulos.
+create unique index if not exists documents_content_hash_uidx
+  on documents (content_hash) where content_hash is not null;
 -- GIN permite filtrar "atos que contem o tema X" de forma eficiente
 -- (documents.themes @> array['Inteligência Artificial']).
 create index if not exists documents_themes_gin on documents using gin (themes);

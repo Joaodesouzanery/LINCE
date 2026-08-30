@@ -266,18 +266,22 @@ module.exports = async function handler(req, res) {
     // um dia anterior estoure o tempo (cada ingest-dou e ele mesmo ate 60s), o dado de
     // hoje ja foi persistido. So a falha de HOJE (1o dia) e fatal -> sinaliza INLABS
     // caido na hora; dias anteriores que falhem viram aviso nao-fatal.
-    // CAVEAT (Bloco H): quando a ANTHROPIC_API_KEY entrar, cada ingest fica lento
-    // (analyzeAto) e um range >2 pode estourar 60s -> revisar days aqui.
+    // A rota /api/ingest-dou pula IA e extracao de pessoas por padrao (ver la o
+    // porque), entao o range voltou a caber no orcamento — o caveat antigo sobre
+    // analyzeAto estourar 60s nao se aplica mais a este caminho.
+    //
+    // Datas em America/Sao_Paulo: toISOString() e UTC e depois das 21h de Brasilia
+    // pediria a edicao de AMANHA, que nao existe.
+    const emSP = (d) => new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit"
+    }).format(d);
     const dates = [];
     if (req.query.date) {
       dates.push(String(req.query.date));
     } else {
       const n = Math.min(5, Math.max(1, parseInt(req.query.days, 10) || 1));
-      const base0 = new Date();
-      for (let i = 0; i < n; i++) {
-        const d = new Date(base0); d.setDate(d.getDate() - i);
-        dates.push(d.toISOString().slice(0, 10));
-      }
+      const agora = Date.now();
+      for (let i = 0; i < n; i++) dates.push(emSP(new Date(agora - i * 86400000)));
     }
     const results = [];
     const warnings = [];

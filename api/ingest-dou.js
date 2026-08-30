@@ -4,12 +4,10 @@
 const { getSupabase } = require("../lib/supabase");
 const { collectDou } = require("../lib/dou");
 const { analyzeAto } = require("../lib/anthropic");
-const { classifyThemes } = require("../lib/themes");
-const { processPeopleFromDoc, loadActiveMonitors, matchMonitorsForDoc, flushMonitorAlerts } = require("../lib/ingest");
+const { persistDou } = require("../lib/dou-persist");
+const { loadActiveMonitors, flushMonitorAlerts } = require("../lib/ingest");
 const { timingSafeEqualStr } = require("../lib/timing");
 const { sendAlertWebhook, sendMonitorEmails } = require("../lib/notify");
-
-const DOC_TYPE = { 1: "norma", 2: "ato_pessoal", 3: "contrato" };
 
 function authorized(req) {
   const secret = process.env.CRON_SECRET;
@@ -41,101 +39,24 @@ module.exports = async function handler(req, res) {
     const records = await collectDou(date, agencies);
     if (records.discarded) console.log(`[ingest-dou ${date}] ${records.discarded}/${records.totalXml} atos sem match de agencia (descartados)`);
 
-    let inserted = 0;
-    let skipped = 0;
-    let directors = 0;
-    const alerts = [];
+    // A rota HTTP tem 60s (vercel.json). Duas coisas nao cabem nela e por isso
+    // ficam DESLIGADAS por padrao aqui:
+    //   - IA: analyzeAto e uma chamada Claude por ato, sequencial. ~220 atos/dia
+    //     dao ~7 min. scripts/backfill-ai.js preenche os resumos depois.
+    //   - Pessoas: processPeopleFromDoc leva 25-30s sozinho e e trabalho duplicado
+    //     do cron ingest-people-dou das 12:30.
+    // ?ia=1 e ?pessoas=1 religam, para quando a chamada vem do CLI/Actions.
+    const comIA = req.query.ia === "1";
+    const comPessoas = req.query.pessoas === "1";
+
     const monitors = await loadActiveMonitors(supabase);
-    const monitorAlerts = [];
-    const monitorHits = new Map();
+    const r = await persistDou(supabase, records, {
+      analisar: comIA ? analyzeAto : null,
+      comPessoas,
+      monitores: monitors
+    });
+    const { inserted, skipped, directors, monitorAlerts, monitorHits } = r;
 
-    for (const record of records) {
-      // Dedupe por content_hash.
-      const { data: exists } = await supabase
-        .from("documents")
-        .select("id")
-        .eq("content_hash", record.content_hash)
-        .maybeSingle();
-      if (exists) { skipped++; continue; }
-
-      const ai = await analyzeAto(record.title, record.extracted_text);
-
-      const { data: doc, error: docErr } = await supabase
-        .from("documents")
-        .insert({
-          agency_id: record.agency_id,
-          source_name: "DOU",
-          source_url: record.source_url,
-          document_type: DOC_TYPE[record.section] || "ato",
-          title: record.title,
-          published_at: record.published_at,
-          content_hash: record.content_hash,
-          extracted_text: record.extracted_text,
-          extraction_status: ai.summary ? "summarized" : "raw",
-          metadata: {
-            section: record.section,
-            orgao: record.orgao,
-            agency_acronym: record.agency_acronym,
-            ai_summary: ai.summary,
-            ai_entities: ai.entities,
-            ai_confidence: ai.confidence
-          }
-        })
-        .select("id")
-        .single();
-      if (docErr) throw docErr;
-      inserted++;
-
-      // Tema (best-effort, DESACOPLADO do insert): update separado para NAO
-      // quebrar a ingestao caso a coluna 'themes' ainda nao exista em producao
-      // (a migracao Fase M14 e aplicada manualmente). supabase-js nao lanca em
-      // erro de coluna (retorna {error}); o try/catch cobre so classifyThemes.
-      try {
-        const themes = classifyThemes(record.title, record.extracted_text);
-        if (themes.length) await supabase.from("documents").update({ themes }).eq("id", doc.id);
-      } catch { /* coluna ausente ou erro de classificacao: nao trava a ingestao */ }
-
-      // Monitores de vigilancia: testa o doc novo contra todos os ativos.
-      const hits = matchMonitorsForDoc(monitors, {
-        docId: doc.id,
-        title: record.title,
-        text: record.extracted_text,
-        agencyId: record.agency_id,
-        agencyAcronym: record.agency_acronym,
-        publishedAt: record.published_at,
-        aiEntities: ai.entities
-      });
-      for (const h of hits) {
-        monitorAlerts.push(h.alert);
-        monitorHits.set(h.monitorId, (monitorHits.get(h.monitorId) || 0) + 1);
-      }
-
-      // Nomeacoes/exoneracoes (Secao 2): alerta + extracao de diretores.
-      if (record.section === 2) {
-        alerts.push({
-          target_kind: "agency",
-          target_id: record.agency_id,
-          title: `Ato de pessoal: ${record.agency_acronym}`,
-          description: ai.summary || record.title,
-          severity: "high",
-          source_document_id: doc.id
-        });
-        const r = await processPeopleFromDoc(supabase, {
-          id: doc.id,
-          agency_id: record.agency_id,
-          agency_acronym: record.agency_acronym,
-          published_at: record.published_at,
-          title: record.title,
-          text: record.extracted_text,
-          aiEntities: ai.entities
-        });
-        directors += r.people;
-      }
-    }
-
-    if (alerts.length) {
-      await supabase.from("alerts").insert(alerts);
-    }
     await flushMonitorAlerts(supabase, monitorAlerts, monitorHits);
 
     // F2 — notificação externa (best-effort, gated por ALERT_WEBHOOK_URL): empurra
@@ -153,8 +74,12 @@ module.exports = async function handler(req, res) {
       inserted,
       skipped,
       directors,
-      alerts: alerts.length,
+      alerts: r.alerts,
       monitor_alerts: monitorAlerts.length,
+      // Declara o que NAO foi feito nesta rota, em vez de deixar o numero de
+      // resumos vazios aparecer semanas depois como "a IA nao funciona".
+      ia: comIA ? "aplicada" : `pulada (${r.pendentesDeIA} ato(s) sem resumo — use backfill:ai)`,
+      pessoas: comPessoas ? "extraidas" : "puladas (cron ingest-people-dou)",
       notified: notified.ok ? notified.sent : (notified.skipped || notified.error || false),
       emailed: emailed.ok ? emailed.sent : (emailed.skipped || emailed.error || false),
       // falhas parciais de envio nao podem sumir so porque UM destinatario deu certo

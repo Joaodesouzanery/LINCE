@@ -1,0 +1,78 @@
+# Ingestao do DOU pelo GitHub Actions.
+#
+# Por que aqui e nao so no Vercel: a funcao serverless tem 60s de teto e o INLABS
+# responde 502 de forma intermitente. Aqui ha 30 minutos, retry e cache de cookie —
+# o botao da Visao Geral continua servindo para o "quero agora", e este workflow e
+# a rede de seguranca que nao depende de ninguem clicar.
+#
+# PRE-REQUISITOS (Settings > Secrets and variables > Actions):
+#   SUPABASE_URL / SUPABASE_SERVICE_KEY   (ja usados pelos outros workflows)
+#   INLABS_EMAIL / INLABS_SENHA           (NOVOS — nenhum workflow os tinha)
+# Sem INLABS_*, o job falha no login e nao ha o que ingerir.
+#
+# A IA fica DESLIGADA: analyzeAto e uma chamada Claude por ato e multiplicaria o
+# tempo por ~50. Os resumos entram depois por scripts/backfill-ai.js.
+name: dou
+
+on:
+  schedule:
+    # 13:10 UTC (~10:10 BRT): a edicao do dia ja saiu. Reingere os 3 ultimos dias —
+    # idempotente por content_hash, entao repetir e barato e cobre o dia em que o
+    # INLABS estava fora no horario do cron.
+    - cron: "10 13 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      de:
+        description: "Data inicial (YYYY-MM-DD). Vazio = ultimos 3 dias."
+        required: false
+      ate:
+        description: "Data final (YYYY-MM-DD). Vazio = hoje."
+        required: false
+      com_ia:
+        description: "Gerar resumo por IA (lento: 1 chamada Claude por ato)"
+        type: boolean
+        default: false
+
+concurrency:
+  # Duas ingestoes do mesmo dia em paralelo brigariam pelo dedupe. Nao cancela a
+  # que ja roda: matar um backfill pela metade deixa o intervalo pela metade.
+  group: dou
+  cancel-in-progress: false
+
+jobs:
+  ingerir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      INLABS_EMAIL: ${{ secrets.INLABS_EMAIL }}
+      INLABS_SENHA: ${{ secrets.INLABS_SENHA }}
+      DOU_DEBUG: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Instalar deps do projeto
+        run: npm ci --no-audit --no-fund
+
+      - name: Definir intervalo
+        id: intervalo
+        run: |
+          # Datas em America/Sao_Paulo: o runner roda em UTC e depois das 21h BRT
+          # pediria a edicao de amanha.
+          HOJE=$(TZ=America/Sao_Paulo date +%F)
+          DE="${{ inputs.de }}"
+          ATE="${{ inputs.ate }}"
+          if [ -z "$DE" ]; then DE=$(TZ=America/Sao_Paulo date -d '3 days ago' +%F); fi
+          if [ -z "$ATE" ]; then ATE="$HOJE"; fi
+          echo "de=$DE"   >> "$GITHUB_OUTPUT"
+          echo "ate=$ATE" >> "$GITHUB_OUTPUT"
+          echo "Ingerindo $DE ate $ATE"
+
+      - name: Ingerir DOU
+        run: |
+          FLAGS=""
+          if [ "${{ inputs.com_ia }}" = "true" ]; then FLAGS="--ia"; fi
+          node scripts/backfill-dou.js "${{ steps.intervalo.outputs.de }}" "${{ steps.intervalo.outputs.ate }}" $FLAGS
