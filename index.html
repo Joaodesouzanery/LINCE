@@ -54,10 +54,6 @@
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
             <span class="nav-text">Painéis</span>
           </button>
-          <button class="nav-item" type="button" data-view="intelligence" title="Inteligência">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-            <span class="nav-text">Inteligência</span>
-          </button>
 
           <hr class="nav-sep" />
 
@@ -169,63 +165,72 @@
         </header>
 
         <section class="view active" id="view-overview">
-          <div class="data-status" id="data-status">
-            <span class="ds-text" id="ds-text">Carregando status dos dados…</span>
-            <button type="button" class="ghost-button" id="refresh-btn" title="Dispara a ingestão do DOU de hoje">Atualizar agora</button>
+          <div class="dossier-tabs" id="ov-tabs">
+            <button type="button" class="dossier-tab active" data-ov-tab="panorama">Panorama</button>
+            <button type="button" class="dossier-tab" data-ov-tab="agencias">Agências</button>
           </div>
+
+          <div id="ov-tab-panorama" style="padding-top:14px">
+          <!-- Barra de contexto. O periodo vale para a TELA INTEIRA (KPIs, resumo,
+               grafico) — antes so o grafico obedecia ao filtro. -->
+          <div class="data-status" id="ov-toolbar">
+            <div class="period-toggle" id="ov-period">
+              <button type="button" data-days="1">Hoje</button>
+              <button type="button" data-days="7" class="active">7d</button>
+              <button type="button" data-days="14">14d</button>
+              <button type="button" data-days="30">30d</button>
+              <button type="button" data-days="90">90d</button>
+            </div>
+            <span class="ds-text" id="ds-text">Carregando…</span>
+            <div class="ov-actions">
+              <span class="status-pill" id="ov-fresh" hidden></span>
+              <button type="button" class="ghost-button" id="refresh-btn" title="Busca a edição do DOU de hoje agora">⟳ Atualizar DOU</button>
+            </div>
+          </div>
+
+          <!-- Resumo deterministico: sai de contagem sobre o banco, nao de IA. -->
+          <section class="panel ov-resumo">
+            <p class="ov-lead" id="ov-lead">Lendo o acervo…</p>
+            <ul class="ov-bullets" id="ov-bullets"></ul>
+          </section>
+
           <div class="metric-grid">
             <article class="metric-card">
-              <span>Atos DOU ingeridos</span>
+              <span>Atos no período</span>
               <strong id="metric-docs">-</strong>
               <div class="metric-spark" id="spark-docs"></div>
-            </article>
-            <article class="metric-card">
-              <span>Diretores mapeados</span>
-              <strong id="metric-people">-</strong>
-              <small>Extraídos de atos de pessoal</small>
-            </article>
-            <article class="metric-card">
-              <span>Contratos a vencer</span>
-              <strong id="metric-contracts">-</strong>
-              <small>Contratos PNCP vencendo em até 90 dias</small>
+              <small id="metric-docs-delta"></small>
             </article>
             <article class="metric-card">
               <span>Alertas abertos</span>
               <strong id="metric-alerts">-</strong>
               <small id="metric-alerts-label">Nomeações e normas críticas</small>
             </article>
+            <article class="metric-card">
+              <span>Contratos a vencer</span>
+              <strong id="metric-contracts">-</strong>
+              <small id="metric-contracts-label">Próximos 90 dias</small>
+            </article>
+            <article class="metric-card">
+              <span>Monitores</span>
+              <strong id="metric-monitors">-</strong>
+              <small id="metric-monitors-label">Vigilância ativa</small>
+            </article>
           </div>
 
-          <section class="panel" id="data-health-panel" style="margin-bottom:16px">
-            <div class="panel-header">
-              <div>
-                <p class="kicker">Saúde dos dados — cobertura e lacunas</p>
-                <h2>Status da plataforma</h2>
-              </div>
-              <span class="status-pill status-ok" id="dh-fresh" hidden></span>
-            </div>
-            <div class="dh-counts" id="dh-counts"></div>
-            <div class="dh-gaps" id="dh-gaps"></div>
-          </section>
-
-          <section class="panel trend-panel" style="margin-bottom:16px">
+          <section class="panel trend-panel" style="margin-bottom:14px">
             <div class="panel-header">
               <div>
                 <p class="kicker">Tendência regulatória</p>
-                <h2>Atos publicados no DOU</h2>
+                <h2 id="trend-title">Atos publicados no DOU</h2>
               </div>
-              <div class="period-toggle" id="trend-toggle">
-                <button type="button" data-days="14">14d</button>
-                <button type="button" data-days="30" class="active">30d</button>
-                <button type="button" data-days="90">90d</button>
-              </div>
-            </div>
-            <div style="padding:16px">
               <div class="trend-legend">
                 <span><i style="background:var(--accent)"></i>Normas</span>
                 <span><i style="background:var(--purple)"></i>Atos de pessoal</span>
                 <span><i style="background:var(--yellow)"></i>Contratos</span>
               </div>
+            </div>
+            <div style="padding:16px">
               <div class="trend-chart" id="trend-chart"></div>
             </div>
           </section>
@@ -234,60 +239,74 @@
             <section class="panel">
               <div class="panel-header">
                 <div>
-                  <p class="kicker">Últimos atos</p>
-                  <h2>Atos recentes</h2>
+                  <p class="kicker">Alertas automáticos</p>
+                  <h2>O que pede atenção</h2>
                 </div>
               </div>
-              <div style="overflow-x:auto">
-                <table class="data-table" id="recent-table">
-                  <thead>
-                    <tr><th>Agência</th><th>Tipo</th><th>Ato</th><th>Data</th><th>Confiança</th></tr>
-                  </thead>
-                  <tbody id="recent-tbody"></tbody>
-                </table>
-              </div>
+              <div id="overview-alerts"><p style="opacity:.5;font-size:.85rem">Carregando alertas…</p></div>
             </section>
 
             <section class="panel">
               <div class="panel-header">
                 <div>
-                  <p class="kicker">Resumo do dia</p>
-                  <h2>Inteligência diária</h2>
+                  <p class="kicker">Vence primeiro</p>
+                  <h2>Prazos</h2>
+                </div>
+              </div>
+              <div class="ov-prazos" id="overview-prazos"></div>
+            </section>
+          </div>
+
+          <!-- Tabela de 5 colunas em largura total: em 1fr ela vivia espremida
+               com overflow-x de sintoma. -->
+          <section class="panel" style="margin-top:14px">
+            <div class="panel-header">
+              <div>
+                <p class="kicker">Últimos atos</p>
+                <h2>Atos recentes</h2>
+              </div>
+            </div>
+            <div style="overflow-x:auto">
+              <table class="data-table" id="recent-table">
+                <thead>
+                  <tr><th>Agência</th><th>Tipo</th><th>Ato</th><th>Data</th><th>Confiança</th></tr>
+                </thead>
+                <tbody id="recent-tbody"></tbody>
+              </table>
+            </div>
+          </section>
+          </div>
+
+          <div id="ov-tab-agencias" hidden style="padding-top:14px">
+            <div class="sources-grid">
+              <section class="panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="kicker">Atividade e sinais por agência</p>
+                    <h2>Mapa de poder regulatório</h2>
+                  </div>
+                </div>
+                <div class="news-list" id="intel-score"></div>
+              </section>
+              <section class="panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="kicker">Contratos a vencer</p>
+                    <h2>Radar 30 / 60 / 90 dias</h2>
+                  </div>
+                </div>
+                <div class="news-list" id="intel-radar"></div>
+              </section>
+            </div>
+
+            <section class="panel" style="margin-top:14px">
+              <div class="panel-header">
+                <div>
+                  <p class="kicker">Últimas 24h por agência</p>
+                  <h2>Movimento do dia</h2>
                 </div>
               </div>
               <div class="news-list" id="overview-daily"></div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <p class="kicker">Alertas automáticos</p>
-                  <h2>Alertas recentes</h2>
-                </div>
-              </div>
-              <div id="overview-alerts"><p style="opacity:.5;font-size:.85rem">Carregando alertas...</p></div>
-            </section>
-          </div>
-        </section>
-
-        <section class="view" id="view-intelligence">
-          <div class="sources-grid">
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <p class="kicker">Score de risco por agência</p>
-                  <h2>Mapa de poder regulatório</h2>
-                </div>
-              </div>
-              <div class="news-list" id="intel-score"></div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <p class="kicker">Contratos a vencer</p>
-                  <h2>Radar 30 / 60 / 90 dias</h2>
-                </div>
-              </div>
-              <div class="news-list" id="intel-radar"></div>
             </section>
           </div>
         </section>

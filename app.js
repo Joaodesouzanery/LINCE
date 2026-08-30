@@ -469,6 +469,13 @@ function sourceLabel(status) {
 }
 
 function setView(view) {
+  // "Inteligencia" virou a aba Agencias da Visao Geral: redireciona em vez de
+  // quebrar deep-links (#view=intelligence) e chamadas antigas.
+  if (view === "intelligence") {
+    setView("overview");
+    abrirAbaOverview("agencias");
+    return;
+  }
   state.activeView = view;
   document.querySelectorAll(".view").forEach((section) => {
     section.classList.toggle("active", section.id === `view-${view}`);
@@ -488,7 +495,6 @@ function setView(view) {
     directors: ["Dossie de dirigentes", "Diretores"],
     votacao: ["Voto do colegiado (M19)", "Votação"],
     graph: ["Rede de influencia (M7)", "Grafo Nacional"],
-    intelligence: ["Inteligencia regulatoria", "Inteligencia Nacional"],
     consultas: ["Participacao social (M5)", "Consultas Publicas"],
     agenda: ["Calendario regulatorio (M8)", "Agenda e Pautas"],
     "agenda-reg": ["Pipeline regulatorio (M8+)", "Agenda Regulatoria"],
@@ -504,7 +510,6 @@ function setView(view) {
   if (view === "directors") loadDirectors();
   if (view === "graph") loadNationalGraph();
   if (view === "votacao") loadVotacao();
-  if (view === "intelligence") loadIntelligence();
   if (view === "consultas") loadConsultas();
   if (view === "agenda") loadAgenda();
   if (view === "agenda-reg") loadAgendaRegulatoria();
@@ -568,7 +573,6 @@ async function runSearch(cnpjInput) {
   if (!cnpjResult.ok || !cnpjResult.value?.data) {
     setLoading(false);
     renderSources();
-    renderOverview();
     renderGraph();
     renderDossier();
     showInspectorMessage(
@@ -1295,30 +1299,12 @@ function clearResult() {
 }
 
 function renderAll() {
-  renderOverview();
   renderSources();
   renderGraph();
   renderInspector();
   renderDossier();
 }
 
-function renderOverview() {
-  // Overview agora é orientado a dados regulatorios (ver loadOverviewMetrics).
-  // Mantido defensivo caso elementos antigos nao existam.
-  const last = $("#metric-last");
-  if (last) last.textContent = state.target ? formatCnpj(state.target.cnpj) : "-";
-  const lastLabel = $("#metric-last-label");
-  if (lastLabel) lastLabel.textContent = state.target?.legalName || "Nenhum CNPJ consultado";
-  const sourceList = $("#overview-source-list");
-  if (sourceList) {
-    sourceList.innerHTML = sourceStatus.map((source) => {
-      const runtime = state.sources[source.id];
-      const status = runtime?.status || source.status;
-      const detail = runtime?.detail || source.help;
-      return `<article class="source-row"><span class="status-pill ${sourceClass(status)}">${sourceLabel(status)}</span><div><strong>${source.name}</strong><p class="status-help">${detail}</p></div></article>`;
-    }).join("");
-  }
-}
 
 function renderSources() {
   $("#source-grid").innerHTML = sourceStatus
@@ -4587,29 +4573,44 @@ function wireEvents() {
   // Agenda Regulatória: filtro de setor recarrega o board.
   $("#agreg-filter")?.addEventListener("change", () => loadAgendaRegulatoria());
 
-  // B3 — "Atualizar agora": dispara a ingestão do DOU de hoje (via type=refresh,
-  // JWT-gated; repassa o CRON_SECRET server-side). Pode demorar; feedback no status.
+  // Ingestao do DOU sob demanda. days=1 por clique: 1 login, 1 dia — o antigo
+  // days=3 fazia 3 logins e nao cabia nos 60s do plano. O cronometro existe
+  // porque uma barra parada por 40s e indistinguivel de uma tela travada.
   $("#refresh-btn")?.addEventListener("click", async () => {
     const btn = $("#refresh-btn"), ds = $("#ds-text");
-    const prev = btn.textContent;
-    btn.disabled = true; btn.textContent = "Atualizando…";
-    if (ds) ds.textContent = "Disparando ingestão do DOU (últimos dias)… (pode levar até 1 min)";
+    const rotulo = btn.textContent;
+    btn.disabled = true;
+    const t0 = Date.now();
+    const cronometro = setInterval(() => {
+      const s = Math.round((Date.now() - t0) / 1000);
+      btn.textContent = `Buscando… ${s}s`;
+      if (ds) ds.textContent = `Baixando a edição do DOU — ${s}s decorridos (limite 60s).`;
+    }, 1000);
+    btn.textContent = "Buscando… 0s";
+    if (ds) ds.textContent = "Baixando a edição do DOU…";
     try {
-      // days=3: cobre buracos de fim de semana/feriado sem depender do CLI.
-      const r = await postJson("/api/intelligence?type=refresh&days=3", {});
+      const r = await postJson("/api/intelligence?type=refresh&days=1", {});
+      const s = Math.round((Date.now() - t0) / 1000);
       if (ds) {
         if (r?.ok) {
-          const warn = (r.warnings || []).length ? ` (${r.warnings.length} dia(s) anterior(es) com falha — use o CLI backfill:dou)` : "";
-          ds.textContent = `Ingestão concluída (${(r.dates || []).length} dia(s)): ${r.inserted ?? 0} novo(s) ato(s).${warn}`;
+          const n = r.inserted ?? 0;
+          const avisos = (r.warnings || []).length ? ` · ${r.warnings.length} aviso(s)` : "";
+          ds.textContent = n > 0
+            ? `${n} ato(s) novo(s) em ${s}s.${avisos}`
+            : `Nada novo — a edição de hoje já estava no acervo (${s}s).${avisos}`;
         } else {
-          ds.textContent = `Falha na ingestão: ${r?.error || "erro"}`;
+          ds.textContent = `Falha na ingestão: ${r?.error || "erro desconhecido"}`;
         }
       }
-      loadOverviewMetrics();
+      // Cache-buster: o branch overview tem s-maxage=120 na borda e sem isso a
+      // tela recarregaria a resposta ANTERIOR a ingestao.
+      loadOverview(periodoOverview(), { semCache: true });
     } catch (e) {
       if (ds) ds.textContent = `Falha ao atualizar: ${e.message}`;
     } finally {
-      btn.disabled = false; btn.textContent = prev;
+      clearInterval(cronometro);
+      btn.disabled = false;
+      btn.textContent = rotulo;
     }
   });
 }
@@ -4675,140 +4676,248 @@ function renderRecentActs(items) {
     </tr>`).join("");
 }
 
-async function loadTrend(days = 30) {
-  const trend = await requestJson(`/api/intelligence?type=trend&days=${days}`).catch(() => null);
-  if (trend?.series) { renderTrendChart(trend.series); renderSparkline(trend.series); }
-  const docEl = $("#metric-docs");
-  if (docEl && trend) docEl.textContent = `${trend.total}${trend.truncated ? "+" : ""}`; // F-INT1: janela truncada visivel
+
+
+
+
+// ══════════════════ Visão Geral (M31) ═════════════════════════════════════
+// Uma requisição (type=overview) no lugar das 7 que a tela disparava. O período
+// escolhido vale para a tela toda — KPIs, resumo e gráfico — e não só para o
+// gráfico, como antes.
+
+const OV_PERIODOS = [1, 7, 14, 30, 90];
+let ovSeq = 0; // token de sequência: clicar 90d e logo 7d chegava fora de ordem
+
+function periodoOverview() {
+  const salvo = Number(localStorage.getItem("lince-ov-periodo"));
+  return OV_PERIODOS.includes(salvo) ? salvo : 7;
 }
 
-// Painel "Saúde dos dados" (cobertura + lacunas acionáveis). Reusa type=data_health.
-async function loadDataHealth() {
-  const countsEl = $("#dh-counts"), gapsEl = $("#dh-gaps"), fresh = $("#dh-fresh");
-  if (!countsEl) return;
+async function loadOverview(days = periodoOverview(), opcoes = {}) {
+  const meu = ++ovSeq;
+  const url = `/api/intelligence?type=overview&days=${days}`
+    + (opcoes.semCache ? `&t=${Date.now()}` : "");
+  let d;
   try {
-    const d = await requestJson("/api/intelligence?type=data_health");
-    const c = d.counts || {};
-    const cell = (label, val) => `<div class="dh-cell"><strong>${val == null ? "—" : val}</strong><span>${escapeHtml(label)}</span></div>`;
-    countsEl.innerHTML = [
-      cell("Atos DOU", c.documents), cell("Sem resumo IA", c.raw), cell("Diretores", c.people),
-      cell("Empresas", c.companies), cell("Contratos", c.contracts), cell("Vínculos", c.relationships),
-      cell("Vínc. partidário", c.party_links), cell("Patrimônio TSE", c.assets),
-      cell("Proposições", c.proposicoes), cell("Deliberações", c.deliberations),
-      cell("Agenda (temas)", c.regulatory_agenda), cell("Monitores", c.monitors)
-    ].join("");
-    if (fresh) {
-      const stale = d.days_stale;
-      fresh.hidden = false;
-      fresh.textContent = d.last_ingest ? `DOU ${d.last_ingest}${stale != null ? ` · ${stale}d` : ""}` : "sem ingestão";
-      fresh.className = "status-pill " + (stale != null && stale > 3 ? "status-key" : "status-ok");
-    }
-    // F-INT1 (F4): frescor POR FONTE — o que envelhece em silêncio agora aparece.
-    // erro de leitura ≠ "nunca rodou" (diagnósticos diferentes).
-    const freshRows = (d.freshness || []).map((f) => `<li style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;font-size:.78rem">
-      <span>${f.stale ? "🔴" : "🟢"} ${escapeHtml(f.source)}</span>
-      <span style="opacity:.7">${f.error ? "⚠ erro na leitura" : (f.last ? `${escapeHtml(String(f.last).slice(0, 10))} · ${f.days_stale}d` : "nunca rodou")}</span>
-    </li>`).join("");
-    const freshBlock = freshRows ? `<div style="margin-top:8px"><strong style="font-size:.8rem">Frescor por fonte</strong><ul style="list-style:none;margin:4px 0 0;padding:0">${freshRows}</ul></div>` : "";
-    gapsEl.innerHTML = ((d.gaps || []).length
-      ? `<ul class="dh-gap-list">${d.gaps.map((g) => `<li>⚠ ${escapeHtml(g)}</li>`).join("")}</ul>`
-      : `<p class="dh-ok">✓ Sem lacunas críticas.</p>`) + freshBlock;
+    d = await requestJson(url);
   } catch (e) {
-    if (gapsEl) gapsEl.innerHTML = emptyCard("Saúde dos dados", `Falha: ${e.message}`);
+    if (meu !== ovSeq) return;
+    const lead = $("#ov-lead");
+    if (lead) lead.textContent = `Não foi possível carregar o panorama: ${e.message}`;
+    return;
+  }
+  if (meu !== ovSeq) return; // uma resposta mais nova já pintou a tela
+
+  renderOvResumo(d);
+  // Recarga vinda do botao Atualizar nao pode pisar na mensagem de resultado
+  // ("3 atos novos em 12s") que o proprio botao acabou de escrever.
+  renderOvKpis(d, { manterStatus: !!opcoes.semCache });
+  renderOvChart(d);
+  renderSparkline(d.series);
+  renderRecentActs(d.recentes);
+  renderOvAlertas(d.alertas);
+  renderOvPrazos(d.prazos);
+
+}
+
+// Em "Hoje" a série tem uma coluna só — um gráfico temporal de um ponto não diz
+// nada. O corte útil naquele recorte é POR AGÊNCIA: quem publicou hoje.
+function renderOvChart(d) {
+  const porDia = d.periodo?.days !== 1;
+  const titulo = $("#trend-title");
+  if (titulo) {
+    titulo.textContent = porDia
+      ? `Atos publicados no DOU · ${d.periodo?.rotulo || ""}`
+      : "Atos de hoje por agência";
+  }
+  if (porDia) return renderTrendChart(d.series);
+
+  const chart = $("#trend-chart");
+  if (!chart) return;
+  const linhas = (d.por_agencia || []).slice(0, 12);
+  if (!linhas.length) {
+    chart.innerHTML = `<p style="color:var(--faint);padding:20px">Nenhum ato hoje. Use “Atualizar DOU” para buscar a edição.</p>`;
+    return;
+  }
+  const maxTotal = Math.max(...linhas.map((a) => a.total), 1);
+  const escala = Math.min(1, TREND_MAX_CELLS / maxTotal);
+  chart.innerHTML = linhas.map((a) => {
+    const celula = (tipo, n) => Array.from({ length: Math.round(n * escala) }, () => `<i class="trend-cell ${tipo}"></i>`).join("");
+    const pilha = celula("contrato", a.contrato) + celula("ato_pessoal", a.ato_pessoal) + celula("norma", a.norma);
+    return `<div class="trend-col" title="${escapeHtml(a.acronym)}: ${a.total} atos">
+      <div class="trend-stack">${pilha || '<i class="trend-cell" style="background:#222"></i>'}</div>
+      <span class="trend-x">${escapeHtml(a.acronym)}</span>
+    </div>`;
+  }).join("");
+}
+
+function renderOvResumo(d) {
+  const lead = $("#ov-lead"), ul = $("#ov-bullets");
+  if (lead) lead.textContent = d.resumo?.lead || "";
+  if (!ul) return;
+  const bullets = d.resumo?.bullets || [];
+  // O resumo passou a conter nome de fornecedor e de dirigente vindos do banco:
+  // escapa tudo, mesmo sendo texto que o próprio backend montou.
+  ul.innerHTML = bullets.length
+    ? bullets.map((b) => `<li class="ov-b ${escapeHtml(b.tom || "neutro")}">${escapeHtml(b.texto)}</li>`).join("")
+    : `<li class="ov-b neutro">Sem sinais fora do padrão no período.</li>`;
+}
+
+function renderOvKpis(d, opcoes = {}) {
+  const k = d.kpis || {};
+  const set = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
+
+  set("#metric-docs", `${k.atos?.valor ?? 0}${k.atos?.truncado ? "+" : ""}`);
+  const delta = $("#metric-docs-delta");
+  if (delta) {
+    const p = k.atos?.delta_pct;
+    if (p == null) {
+      // null tem três causas distintas e o usuário precisa saber qual é a dele.
+      delta.textContent = d.frescor?.dias_parado > 2
+        ? "sem comparação — ingestão parada"
+        : (k.atos?.truncado ? "janela truncada" : "sem base anterior");
+      delta.className = "ov-delta neutro";
+    } else {
+      delta.textContent = `${p > 0 ? "+" : ""}${p}% vs. período anterior`;
+      delta.className = "ov-delta " + (p > 0 ? "sobe" : p < 0 ? "desce" : "neutro");
+    }
+  }
+
+  set("#metric-alerts", k.alertas?.valor ?? 0);
+  set("#metric-alerts-label", k.alertas?.altos ? `${k.alertas.altos} de alta severidade` : "Nenhum de alta severidade");
+
+  set("#metric-contracts", k.contratos_90d?.valor ?? 0);
+  const semValor = k.contratos_90d?.sem_valor;
+  set("#metric-contracts-label",
+    `${formatarMoedaCurta(k.contratos_90d?.montante)} em 90 dias`
+    + (semValor ? ` · ${semValor} sem valor` : ""));
+
+  set("#metric-monitors", k.monitores?.valor ?? 0);
+  set("#metric-monitors-label", k.monitores?.valor
+    ? `${k.monitores.disparados || 0} com disparo no período`
+    : "Nenhum monitor configurado");
+
+  const chip = $("#ov-fresh");
+  if (chip) {
+    const f = d.frescor || {};
+    chip.hidden = false;
+    chip.textContent = f.ultima_ingestao
+      ? `DOU até ${f.ultima_ingestao.slice(8, 10)}/${f.ultima_ingestao.slice(5, 7)}${f.dias_parado != null ? ` · ${f.dias_parado}d` : ""}`
+      : "sem ingestão";
+    chip.className = "status-pill " + (f.estado === "ok" ? "status-ok" : f.estado === "atencao" ? "status-key" : "status-error");
+  }
+  const ds = $("#ds-text");
+  if (ds && !opcoes.manterStatus) ds.textContent = `${d.periodo?.de || ""} a ${d.periodo?.ate || ""}`;
+}
+
+// Mesma escala do backend (lib/overview.js): "R$ 412,7 mi" em vez de 9 dígitos.
+function formatarMoedaCurta(v) {
+  const n = Number(v) || 0;
+  if (n >= 1e9) return `R$ ${(n / 1e9).toFixed(1).replace(".", ",")} bi`;
+  if (n >= 1e6) return `R$ ${(n / 1e6).toFixed(1).replace(".", ",")} mi`;
+  if (n >= 1e3) return `R$ ${(n / 1e3).toFixed(0)} mil`;
+  return `R$ ${n.toFixed(0)}`;
+}
+
+function renderOvAlertas(items) {
+  const el = $("#overview-alerts");
+  if (!el) return;
+  if (!items?.length) {
+    el.innerHTML = `<p style="color:var(--green);font-size:.85rem">✓ Nenhum alerta pendente.</p>`;
+    return;
+  }
+  el.innerHTML = items.map((a) => `
+    <div class="activity-alert${a.severity !== "high" ? " info" : ""}" data-alert-card="${escapeHtml(a.id)}">
+      <span class="alert-icon">${a.severity === "high" ? "⚠" : "ℹ"}</span>
+      <div style="flex:1;min-width:0">
+        <p style="margin:0;font-size:.78rem;font-weight:700">${escapeHtml(a.title || "")}</p>
+        ${a.body ? `<p style="margin:2px 0 0;font-size:.72rem;opacity:.65">${escapeHtml(a.body.slice(0, 120))}</p>` : ""}
+        <p style="margin:2px 0 0;font-size:.68rem;opacity:.45">${escapeHtml(a.alert_type || "")} · ${escapeHtml((a.created_at || "").slice(0, 10))}</p>
+        <div class="alert-actions">
+          <button type="button" class="alert-btn primary overview-alert-view">Ver atos</button>
+          <button type="button" class="alert-btn overview-alert-dismiss" data-alert-id="${escapeHtml(a.id)}">Dispensar</button>
+        </div>
+      </div>
+    </div>`).join("");
+  el.querySelectorAll(".overview-alert-dismiss").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true; btn.textContent = "…";
+      await requestJson(`/api/intelligence?type=dismiss_alert&id=${encodeURIComponent(btn.dataset.alertId)}`).catch(() => {});
+      const card = el.querySelector(`[data-alert-card="${btn.dataset.alertId}"]`);
+      if (card) { card.style.transition = "opacity .3s"; card.style.opacity = "0"; setTimeout(() => card.remove(), 320); }
+    });
+  });
+  el.querySelectorAll(".overview-alert-view").forEach((btn) => {
+    btn.addEventListener("click", () => setView("dou"));
+  });
+}
+
+function renderOvPrazos(prazos) {
+  const el = $("#overview-prazos");
+  if (!el) return;
+  if (!prazos?.length) {
+    el.innerHTML = `<p style="color:var(--faint);font-size:.85rem">Nada vencendo nos próximos 90 dias.</p>`;
+    return;
+  }
+  el.innerHTML = prazos.map((p) => {
+    const dias = Math.round((Date.parse(`${p.data}T00:00:00Z`) - Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`)) / 86400000);
+    const urgente = dias <= 15;
+    return `<div class="ov-prazo${urgente ? " urgente" : ""}">
+      <div class="ov-prazo-dias"><strong>${dias}</strong><span>dias</span></div>
+      <div style="flex:1;min-width:0">
+        <p class="ov-prazo-titulo">${escapeHtml(p.titulo || "")}</p>
+        <p class="ov-prazo-meta">${escapeHtml(p.agencia || "—")}${p.detalhe ? ` · ${escapeHtml(p.detalhe.slice(0, 40))}` : ""}${p.valor != null ? ` · ${formatarMoedaCurta(p.valor)}` : ""}</p>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+// Abas da Visão Geral: "Panorama" (o dia a dia) e "Agências" (o antigo módulo
+// Inteligência). loadIntelligence só roda quando a aba abre — não faz sentido
+// pagar 3 requisições por uma aba que talvez ninguém visite.
+let ovIntelCarregada = false;
+
+function abrirAbaOverview(aba) {
+  const tabs = $("#ov-tabs");
+  if (!tabs) return;
+  tabs.querySelectorAll("[data-ov-tab]").forEach((b) => b.classList.toggle("active", b.dataset.ovTab === aba));
+  const painel = $("#ov-tab-panorama"), agencias = $("#ov-tab-agencias");
+  if (painel) painel.hidden = aba !== "panorama";
+  if (agencias) agencias.hidden = aba !== "agencias";
+  if (aba === "agencias" && !ovIntelCarregada) {
+    ovIntelCarregada = true;
+    loadIntelligence();
   }
 }
 
-async function loadOverviewMetrics() {
-  try {
-    loadTrend(30);
-    loadDataHealth();
-    requestJson("/api/intelligence?type=recent&limit=20").then((r) => {
-      renderRecentActs(r?.items);
-      const ds = $("#ds-text");
-      const last = r?.items?.[0]?.date;
-      if (ds) ds.textContent = last ? `Ato mais recente no acervo: ${last}` : "Sem atos ingeridos ainda — use “Atualizar agora”.";
-    }).catch(() => {});
-
-    const [score, daily] = await Promise.all([
-      requestJson("/api/intelligence?type=score").catch(() => null),
-      requestJson("/api/intelligence?type=daily").catch(() => null)
-    ]);
-    if (score?.scores) {
-      const people = score.scores.reduce((s, a) => s + a.active_directors, 0);
-      const alerts = score.scores.reduce((s, a) => s + a.open_alerts, 0);
-      const ppEl = $("#metric-people"), alEl = $("#metric-alerts");
-      if (ppEl) ppEl.textContent = people;
-      if (alEl) alEl.textContent = alerts;
-    }
-    const dailyEl = $("#overview-daily");
-    if (dailyEl && daily?.by_agency) {
-      const entries = Object.entries(daily.by_agency);
-      dailyEl.innerHTML = entries.length
-        ? entries.map(([ac, d]) => `<article class="news-card"><span class="source-meta">${escapeHtml(ac)}</span><strong>${d.normas} normas · ${d.pessoal} atos pessoal · ${d.contratos} contratos</strong>${(d.destaques||[]).slice(0,1).map(s=>`<p>${escapeHtml(s)}</p>`).join("")}</article>`).join("")
-        : emptyCard("Diario", "Nenhum ato nas ultimas 24h.");
-      if (entries.length && daily.truncated) dailyEl.innerHTML += `<p class="card-sub" style="opacity:.7">⚠ Amostra truncada — contagens parciais.</p>`; // F-INT1
-    }
-    const contracts = await requestJson("/api/intelligence?type=radar").catch(() => null);
-    if (contracts) {
-      // So contratos vencendo 90d (o radar tambem traz fim de mandato -> nao contar aqui).
-      const buckets = [contracts.radar?.["30d"], contracts.radar?.["60d"], contracts.radar?.["90d"]];
-      const total = buckets.reduce((s, arr) => s + (arr || []).filter((e) => e.type === "contrato").length, 0);
-      const el = $("#metric-contracts");
-      if (el) el.textContent = total;
-    }
-
-    const alertsData = await requestJson("/api/intelligence?type=alerts&limit=10").catch(() => null);
-    const alertsEl = $("#overview-alerts");
-    if (alertsEl && alertsData?.items?.length) {
-      alertsEl.innerHTML = alertsData.items.map((a) => `
-        <div class="activity-alert${a.severity !== "high" ? " info" : ""}" data-alert-card="${escapeHtml(a.id)}">
-          <span class="alert-icon">${a.severity === "high" ? "⚠" : "ℹ"}</span>
-          <div style="flex:1;min-width:0">
-            <p style="margin:0;font-size:.78rem;font-weight:700">${escapeHtml(a.title || "")}</p>
-            ${a.body ? `<p style="margin:2px 0 0;font-size:.72rem;opacity:.65">${escapeHtml(a.body.slice(0, 120))}</p>` : ""}
-            <p style="margin:2px 0 0;font-size:.68rem;opacity:.45">${escapeHtml(a.alert_type || "")} · ${escapeHtml((a.created_at || "").slice(0, 10))}</p>
-            <div class="alert-actions">
-              <button type="button" class="alert-btn primary overview-alert-view">Ver atos</button>
-              <button type="button" class="alert-btn overview-alert-dismiss" data-alert-id="${escapeHtml(a.id)}">Dispensar</button>
-            </div>
-          </div>
-        </div>`).join("");
-      // Wire action buttons
-      alertsEl.querySelectorAll(".overview-alert-dismiss").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          btn.disabled = true; btn.textContent = "...";
-          await requestJson(`/api/intelligence?type=dismiss_alert&id=${encodeURIComponent(btn.dataset.alertId)}`).catch(() => {});
-          const card = alertsEl.querySelector(`[data-alert-card="${btn.dataset.alertId}"]`);
-          if (card) { card.style.transition = "opacity .3s"; card.style.opacity = "0"; setTimeout(() => card.remove(), 320); }
-        });
-      });
-      alertsEl.querySelectorAll(".overview-alert-view").forEach((btn) => {
-        btn.addEventListener("click", () => setView("dou"));
-      });
-      // (P4) NAO sobrescrever #metric-alerts aqui — o valor de type=score (alertas
-      // bucketaveis por agencia, janela de 180d) ja foi setado; este feed e capado em 10.
-    } else if (alertsEl) {
-      alertsEl.innerHTML = `<p style="color:var(--green);font-size:.85rem">✓ Nenhum alerta pendente.</p>`;
-    }
-  } catch { /* sem dados ainda */ }
+function wireOverviewTabs() {
+  $("#ov-tabs")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-ov-tab]");
+    if (btn) abrirAbaOverview(btn.dataset.ovTab);
+  });
 }
 
-function wireTrendToggle() {
-  const toggle = $("#trend-toggle");
+function wireOverviewPeriod() {
+  const toggle = $("#ov-period");
   if (!toggle) return;
+  const atual = periodoOverview();
+  toggle.querySelectorAll("button").forEach((b) => b.classList.toggle("active", Number(b.dataset.days) === atual));
   toggle.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-days]");
     if (!btn) return;
+    const days = Number(btn.dataset.days);
+    localStorage.setItem("lince-ov-periodo", String(days));
     toggle.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
-    loadTrend(Number(btn.dataset.days));
+    loadOverview(days);
   });
 }
 
 function init() {
   renderAll();
   wireEvents();
-  wireTrendToggle();
-  loadOverviewMetrics();
+  wireOverviewPeriod();
+  wireOverviewTabs();
+  loadOverview();
   // Deep-link/QA: #view=monitors abre a view direto (não há roteamento por URL).
   const hashParams = new URLSearchParams(location.hash.slice(1));
   if (hashParams.get("view")) setView(hashParams.get("view"));

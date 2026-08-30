@@ -2292,6 +2292,40 @@ button.entity-pill:hover {
 }
 .data-status .ds-text { color: var(--muted); font-size: 12.5px; font-family: var(--font-mono); min-width: 0; }
 
+/* ── Visão Geral (M31) ────────────────────────────────────────────────────── */
+/* A barra de contexto agrupa período, janela e ação: o filtro vale para a tela
+   inteira, então ele abre a linha em vez de morar dentro do card do gráfico. */
+.ov-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+
+/* Resumo determinístico: lead grande, bullets em coluna, sem card dentro de card. */
+.ov-resumo { padding: 16px 18px; margin-bottom: 14px; }
+.ov-lead { margin: 0; font-size: 15px; line-height: 1.5; color: var(--text); text-wrap: pretty; }
+.ov-bullets { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+/* A cor é o único código visual do bullet: o texto já diz tudo, ela só sustenta
+   a leitura em diagonal sem virar semáforo decorativo. */
+.ov-b { font-size: 13px; line-height: 1.45; color: var(--muted); padding-left: 16px; position: relative; }
+.ov-b::before { content: ""; position: absolute; left: 0; top: 7px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.ov-b.alerta { color: var(--red); }
+.ov-b.atencao { color: var(--yellow); }
+.ov-b.neutro { color: var(--muted); }
+
+.ov-delta { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; }
+.ov-delta.sobe { color: var(--green); }
+.ov-delta.desce { color: var(--red); }
+.ov-delta.neutro { color: var(--faint); }
+
+/* Prazos: a contagem de dias decide a ação, então vem antes do texto. */
+.ov-prazos { display: grid; gap: 8px; padding: 14px 16px; }
+.ov-prazo { display: flex; align-items: center; gap: 12px; padding: 8px 10px; background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 6px; }
+.ov-prazo.urgente { border-left-color: var(--red); }
+.ov-prazo-dias { display: flex; flex-direction: column; align-items: center; min-width: 40px; font-family: var(--font-mono); }
+.ov-prazo-dias strong { font-size: 18px; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+.ov-prazo-dias span { font-size: 9px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.1em; }
+.ov-prazo-titulo { margin: 0; font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-prazo-meta { margin: 2px 0 0; font-size: 11px; color: var(--muted); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 1100px) { .ov-actions { margin-left: 0; } }
+
 /* Agenda Regulatória — board por agência */
 .agreg-board { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; margin-top: 14px; }
 @media (max-width: 860px) { .agreg-board { grid-template-columns: 1fr; } }
@@ -2309,9 +2343,6 @@ button.entity-pill:hover {
 .dh-cell { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 8px 6px; text-align: center; }
 .dh-cell strong { display: block; font-size: 18px; color: var(--text); font-variant-numeric: tabular-nums; }
 .dh-cell span { font-size: 10px; color: var(--muted); font-family: var(--font-mono); }
-.dh-gap-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
-.dh-gap-list li { font-size: 12.5px; color: var(--yellow); }
-.dh-ok { color: var(--green); font-size: 13px; margin: 0; }
 
 /* M19 — painel Votação do Colegiado */
 .votacao-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }

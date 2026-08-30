@@ -2,10 +2,11 @@
 // radar de normas dos proximos 30/60/90 dias, resumo executivo diario,
 // monitores de vigilancia (CRUD), Gerador de Dossie Comercial (landscape por
 // tema, dossie de deal e narrativa IA) e resumo executivo de dossie por IA.
-// GET /api/intelligence?type=radar|score|daily|landscape|deal_dossier|monitors|monitor_alerts|holdings
+// GET /api/intelligence?type=overview|radar|score|daily|landscape|deal_dossier|monitors|monitor_alerts|holdings
 // POST /api/intelligence?type=monitor_save|monitor_toggle|monitor_delete|deal_narrative|exec_summary
 const { getSupabase } = require("../lib/supabase");
 const { normalizeName, onlyDigits, isSituacaoAtiva } = require("../lib/text");
+const { buildOverview } = require("../lib/overview");
 
 // Mutacoes e listas de monitor aceitam POST (body JSON) ou GET (querystring).
 function params(req) {
@@ -427,6 +428,16 @@ module.exports = async function handler(req, res) {
         },
         gaps, fetchedAt: new Date().toISOString()
       });
+    }
+
+    if (type === "overview") {
+      // M31 — payload unico da Visao Geral. Substitui as 7 chamadas que a tela
+      // fazia (trend + data_health + recent + score + daily + radar + alerts).
+      // s-maxage curto: a tela e a primeira coisa que abre e o usuario espera
+      // ver o efeito do botao "Atualizar" (que manda ?t= para furar a borda).
+      res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=600");
+      const payload = await buildOverview(supabase, { days: req.query.days });
+      return res.status(200).json({ ...payload, type: "overview" });
     }
 
     if (type === "trend") {
@@ -2063,7 +2074,7 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ ok: true, type: "alerts", items: alerts || [] });
     }
 
-    return res.status(400).json({ ok: false, error: "type invalido. Use: radar, radar_intel, correlations, trends_anomalies, landscape, deal_dossier, deal_narrative, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary, auth_config, refresh, data_health" });
+    return res.status(400).json({ ok: false, error: "type invalido. Use: overview, radar, radar_intel, correlations, trends_anomalies, landscape, deal_dossier, deal_narrative, score, daily, trend, recent, giratoria, political_risk, search, alerts, agency_stats, dismiss_alert, monitors, monitor_save, monitor_toggle, monitor_delete, monitor_alerts, holdings, exec_summary, auth_config, refresh, data_health" });
   } catch (error) {
     return res.status(502).json({ ok: false, error: error.message });
   }
