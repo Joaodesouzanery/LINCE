@@ -127,6 +127,8 @@ a {
   align-self: start;
   max-height: 100vh;
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
   transition: width 0.16s ease, padding 0.16s ease;
 }
 
@@ -164,7 +166,12 @@ a {
   padding: 10px 10px;
 }
 .sidebar.expanded .nav-text {
-  display: inline;
+  display: block;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .sidebar.expanded .brand-text {
   display: flex;
@@ -179,6 +186,7 @@ a {
 }
 .sidebar.expanded .nav-item {
   width: 100%;
+  min-width: 0;
   justify-content: flex-start;
   gap: 12px;
   padding: 0 10px;
@@ -300,9 +308,11 @@ a {
 .nav-item[data-view="directors"] {
   color: var(--red);
 }
-.nav-item[data-view="graph"],
-.nav-item[data-view="dossier"] {
+.nav-item[data-view="graph"] {
   color: var(--purple);
+}
+.nav-item[data-view="monitors"] {
+  color: var(--yellow);
 }
 .nav-item:hover,
 .nav-item.active {
@@ -1256,7 +1266,7 @@ button.entity-pill:hover {
   margin: 6px 0;
 }
 
-/* ── Sidebar: labels de grupo (invisíveis no rail, usados no responsivo) ──── */
+/* ── Sidebar: labels de grupo (invisíveis no rail, visíveis no expandido) ─── */
 .nav-group-label {
   display: none;
   color: var(--faint);
@@ -1265,6 +1275,14 @@ button.entity-pill:hover {
   font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
+}
+.sidebar.expanded .nav-group-label {
+  display: block;
+  padding: 10px 10px 4px;
+}
+/* No expandido o rótulo já separa os grupos; a régua vira ruído. */
+.sidebar.expanded .nav-sep {
+  display: none;
 }
 
 /* ── Metric cards com sparkline ───────────────────────────────────────────── */
@@ -1678,9 +1696,6 @@ button.entity-pill:hover {
   color: var(--muted);
 }
 
-.nav-item[data-view="monitors"] {
-  color: var(--yellow);
-}
 
 /* ── Screening PEP/Sanções ────────────────────────────────────────────────── */
 .screening-grid {

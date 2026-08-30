@@ -473,11 +473,14 @@ function setView(view) {
   document.querySelectorAll(".view").forEach((section) => {
     section.classList.toggle("active", section.id === `view-${view}`);
   });
+  // Dossie e company sairam do menu: sao o resultado de "Investigar CNPJ", nao um
+  // destino. Herdam o destaque dele para a sidebar nao ficar sem nada aceso.
+  const navAtivo = { dossier: "investigate", company: "investigate", person: "directors" }[view] || view;
   document.querySelectorAll(".nav-item").forEach((button) => {
-    button.classList.toggle("active", button.dataset.view === view);
+    button.classList.toggle("active", button.dataset.view === navAtivo);
   });
   const titles = {
-    overview: ["Dados reais", "Overview"],
+    overview: ["Panorama regulatorio", "Visão Geral"],
     investigate: ["Grafo interativo", "Investigar"],
     dossier: ["Relatorio do alvo", "Dossie"],
     sources: ["Conectores", "Fontes reais"],
