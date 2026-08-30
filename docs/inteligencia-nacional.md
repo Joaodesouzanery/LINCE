@@ -12,8 +12,8 @@ diário (Actions) · QSA incremental diário · eventos/pauta da Câmara + diges
 parlamentares/proposições/votações/comissões **semanal** (segunda).
 
 **SEM automação (congela na data do último run manual):** `ingest:pncp` (**contratos** — alimentam grafo,
-radar, giratória, score de patrocinador), `load:agenda` (agenda regulatória formal), `backfill:themes` (temas),
-`load:tse-*` (doações/bens/filiação), `load:tcu` (jurisprudence), `load:receita-socio`, `score:sponsors`.
+radar, giratória), `load:agenda` (agenda regulatória formal), `backfill:themes` (temas),
+`load:tse-*` (doações/bens/filiação), `load:tcu` (jurisprudence) e `load:receita-socio`.
 Único indicador de frescor na UI é o pill do DOU (`app.js:5899`); PNCP parado há meses é indistinguível de
 PNCP de ontem.
 

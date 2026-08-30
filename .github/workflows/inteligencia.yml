@@ -1,6 +1,6 @@
 # F-INT1 (Frente 4) — alimentadores da camada de inteligência que ANTES eram só
-# manuais e envelheciam em silêncio: contratos PNCP (grafo/radar/giratória/score de
-# patrocinador), temas dos atos, agenda regulatória formal e dumps do TSE.
+# manuais e envelheciam em silêncio: contratos PNCP (grafo/radar/giratória), temas
+# dos atos, agenda regulatória formal e dumps do TSE.
 # Roda AQUI (GitHub Actions): os 2 crons e as 12 funções do Vercel Hobby já estão no limite.
 #
 # PRÉ-REQUISITOS (uma vez): Settings > Secrets and variables > Actions:

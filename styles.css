@@ -632,8 +632,7 @@ h1 {
 #view-dou .sources-grid,
 #view-directors .sources-grid,
 #view-legislativo .sources-grid,
-#view-paineis .sources-grid,
-#view-evento .sources-grid {
+#view-paineis .sources-grid {
   grid-template-columns: minmax(0, 1fr);
 }
 
