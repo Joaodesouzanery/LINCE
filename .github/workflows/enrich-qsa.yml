@@ -15,13 +15,16 @@ name: enriquecer-qsa
 
 on:
   schedule:
-    - cron: "42 9 * * *" # todo dia ~09:42 UTC (~06:42 BRT), apos os crons de ingestao
+    # 2x/dia. A fila e grande e o gargalo e o throttle do CNPJ.ws (~21s/empresa),
+    # nao o runner: 130 empresas ~= 46 min, dentro do timeout de 60.
+    - cron: "42 9 * * *"  # ~06:42 BRT, apos os crons de ingestao
+    - cron: "42 21 * * *" # ~18:42 BRT
   workflow_dispatch:
     inputs:
       limit:
         description: "Maximo de empresas por rodada (throttle ~21s/empresa)"
         required: false
-        default: "30"
+        default: "130"
 
 concurrency:
   group: enriquecer-qsa
@@ -30,7 +33,7 @@ concurrency:
 jobs:
   enriquecer:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -42,4 +45,26 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: node scripts/backfill-qsa.js --only-empty --limit ${{ github.event.inputs.limit || '30' }}
+        run: node scripts/backfill-qsa.js --only-empty --limit ${{ github.event.inputs.limit || '130' }}
+
+      # Quanto ainda falta. Sem isso nao da para saber se a fila esta andando ou
+      # parada -- e "fila parada em silencio" foi exatamente a causa do furo do
+      # acervo do DOU.
+      - name: Reportar fila restante
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          node -e "
+          require('dotenv').config();
+          const { createClient } = require('@supabase/supabase-js');
+          const s = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+          (async () => {
+            const { count: total } = await s.from('companies').select('id',{count:'exact',head:true});
+            const { count: vazias } = await s.from('companies').select('id',{count:'exact',head:true}).eq('shareholding','[]');
+            const feitas = total - vazias;
+            console.log('QSA: ' + feitas + '/' + total + ' empresas enriquecidas (' + Math.round(100*feitas/total) + '%). Faltam ' + vazias + '.');
+            if (vazias > 0) console.log('Restam ~' + Math.ceil(vazias/130) + ' rodada(s) (2 por dia).');
+          })();
+          "

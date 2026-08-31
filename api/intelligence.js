@@ -1597,9 +1597,22 @@ module.exports = async function handler(req, res) {
       const opportunities = [...val(contractsP), ...val(consultasP)];
       const legislative = val(legisP);
 
+      // Cobertura da base societaria. O Radar depende do QSA para achar
+      // self-dealing e porta-giratoria; sem este numero a tela so consegue dizer
+      // "nada encontrado", que confunde ausencia de SINAL com ausencia de DADO.
+      let qsa = null;
+      try {
+        const [{ count: totalEmp }, { count: semQsa }] = await Promise.all([
+          supabase.from("companies").select("id", { count: "exact", head: true }),
+          supabase.from("companies").select("id", { count: "exact", head: true }).eq("shareholding", "[]")
+        ]);
+        if (totalEmp != null) qsa = { total: totalEmp, faltam: semQsa ?? 0 };
+      } catch { /* cobertura e informativa: nao derruba o radar */ }
+
       return res.status(200).json({
         ok: true, type: "radar_intel",
         counts: { opportunities: opportunities.length, legislative: legislative.length },
+        qsa_cobertura: qsa,
         // riscos: usar type=giratoria (motor com contratos/severity) — campo mantido
         // vazio p/ compat de payload.
         risks: [], risks_source: "giratoria",

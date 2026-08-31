@@ -2576,6 +2576,10 @@ async function loadRadar() {
     requestJson("/api/intelligence?type=trends_anomalies")
   ]);
 
+  // Cobertura do QSA ANTES de renderizar: e ela que permite a mensagem de vazio
+  // distinguir "nao ha sinal" de "a base ainda esta enchendo".
+  if (radarRes.status === "fulfilled") state.qsaCobertura = radarRes.value.qsa_cobertura || null;
+
   if (giraRes.status === "fulfilled") {
     const cases = giraRes.value.cases || [];
     renderRadarRisks(cases.slice(0, 20));
@@ -2616,10 +2620,23 @@ async function loadRadar() {
 }
 
 // Conexões críticas: correlações de sinais com evidências rastreáveis.
+// Mensagem de vazio honesta. A antiga mandava "rode as ingestões e backfill:qsa" —
+// instrução de terminal para quem está numa tela, e sem dizer o quanto falta. Agora
+// diz o número real e que o job noturno está cuidando disso.
+function mensagemBaseRala(prefixo) {
+  const c = state.qsaCobertura;
+  if (!c || !c.total) return `${prefixo} com os dados atuais.`;
+  if (!c.faltam) return `${prefixo}. A base societária está completa (${c.total} empresas), então isto é ausência de sinal, não falta de dado.`;
+  const pct = Math.round((100 * (c.total - c.faltam)) / c.total);
+  return `${prefixo}. A base societária está ${pct}% completa — faltam ${c.faltam} de ${c.total} empresas.`
+    + ` O enriquecimento roda 2x/dia automaticamente (a API pública limita a ~3 consultas/min);`
+    + ` novas conexões devem aparecer conforme a fila anda.`;
+}
+
 function renderRadarCorrelations(items) {
   const el = $("#radar-correlations");
   if (!el) return;
-  if (!items.length) { el.innerHTML = emptyCard("Conexões", "Nenhuma correlação crítica com os dados atuais (rode as ingestões e backfill:qsa para ampliar a base)."); return; }
+  if (!items.length) { el.innerHTML = emptyCard("Conexões", mensagemBaseRala("Nenhuma correlação crítica encontrada")); return; }
   const KIND_LABEL = {
     nomeacao_x_fornecedor: "nomeação × fornecedor",
     dirigente_x_inapta: "dirigente × empresa inapta",
@@ -2689,7 +2706,7 @@ function renderRadarAnomalies(items) {
 const GIRA_SEV = { critical: ["CRÍTICO", "var(--red)", "high"], high: ["ALTO", "var(--red)", "high"], medium: ["MÉDIO", "var(--yellow)", "mid"] };
 function renderRadarRisks(items) {
   const el = $("#radar-risks");
-  if (!items.length) { el.innerHTML = emptyCard("Riscos", "Nenhum risco de captura detectado (ou faltam dados de mandatos/sócios/contratos)."); return; }
+  if (!items.length) { el.innerHTML = emptyCard("Riscos", mensagemBaseRala("Nenhum risco de captura detectado")); return; }
   el.innerHTML = items.map((x) => {
     const [lbl, cor, cls] = GIRA_SEV[x.severity] || GIRA_SEV.medium;
     return `
