@@ -31,21 +31,46 @@ async function main() {
   // Empresas com CNPJ completo (14 digitos) — o CNPJ.ws precisa do numero cheio.
   // Pagina em blocos de 1000 (o PostgREST limita cada resposta), senao empresas
   // alem da 1000a nunca receberiam QSA.
+  // qsa_checked_at pode nao existir ainda (migracao aplicada a mao pelo operador).
+  // Degrada em vez de quebrar: sem a coluna o script volta ao comportamento antigo.
+  let temColunaQsa = true;
   const companies = [];
   const PAGE = 1000;
   for (let from = 0; ; from += PAGE) {
+    const cols = temColunaQsa ? "id, cnpj, legal_name, qsa_checked_at" : "id, cnpj, legal_name";
     const { data, error } = await supabase
       .from("companies")
-      .select("id, cnpj, legal_name")
+      .select(cols)
       .not("cnpj", "is", null)
       .order("created_at", { ascending: true })
       .range(from, from + PAGE - 1);
-    if (error) { console.error("Erro ao listar empresas:", error.message); process.exit(1); }
+    if (error) {
+      if (temColunaQsa && /qsa_checked_at/.test(error.message)) {
+        console.warn("! coluna qsa_checked_at ausente — rode a migracao para a fila parar de reciclar empresas ja consultadas.");
+        temColunaQsa = false;
+        from -= PAGE; // refaz esta pagina sem a coluna
+        continue;
+      }
+      console.error("Erro ao listar empresas:", error.message);
+      process.exit(1);
+    }
     companies.push(...(data || []));
     if (!data || data.length < PAGE) break;
   }
 
+  // CNPJ de 14 digitos: o PNCP injeta `niFornecedor` cru, e vem fornecedor
+  // estrangeiro ("EXANVS016") e CPF de 11. Eles nunca serao consultaveis, entao
+  // ficavam presos na fila para sempre.
   let candidates = companies.filter((c) => onlyDigits(c.cnpj).length === 14);
+
+  // Ja consultada nao volta para a fila, mesmo que tenha voltado SEM socios (MEI,
+  // empresario individual). Antes so se olhava a ausencia de aresta 'socio', entao
+  // essas eram reconsultadas 2x/dia indefinidamente.
+  const antesDoFiltro = candidates.length;
+  candidates = candidates.filter((c) => !c.qsa_checked_at);
+  if (antesDoFiltro !== candidates.length) {
+    console.log(`Ignoradas ${antesDoFiltro - candidates.length} ja consultadas (qsa_checked_at).`);
+  }
 
   // --only-empty: descarta empresas que ja tem alguma aresta 'socio' apontando p/ elas.
   // Chunka o .in() (o PostgREST limita a resposta) e ABORTA se a query falhar,
@@ -71,7 +96,7 @@ async function main() {
   console.log(`Empresas elegiveis: ${candidates.length} (limit=${limit}${onlyEmpty ? ", only-empty" : ""})`);
   if (!candidates.length) return;
 
-  let ok = 0, edges = 0, failed = 0;
+  let ok = 0, edges = 0, failed = 0, avisouColuna = false;
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
     const cnpj = onlyDigits(c.cnpj);
@@ -83,7 +108,17 @@ async function main() {
       else {
         const data = await resp.json().catch(() => null);
         const r = data ? await persistCnpj(data) : { ok: false, error: "json vazio" };
-        if (r.ok) { ok++; edges += r.edges_created || 0; console.log(`  + ${cnpj} ${c.legal_name || ""} -> ${r.socios} socios, ${r.edges_created} aresta(s)`); }
+        if (r.ok) {
+          ok++; edges += r.edges_created || 0;
+          // Marca a consulta MESMO quando volta sem socios: e justamente esse caso
+          // (MEI, empresario individual) que ficava reciclando na fila para sempre.
+          const { error: eMark } = await supabase
+            .from("companies").update({ qsa_checked_at: new Date().toISOString() }).eq("id", c.id);
+          // Coluna ausente (migracao nao aplicada): avisa uma vez e segue — sem ela o
+          // script volta ao comportamento antigo, que funciona, so nao economiza quota.
+          if (eMark && !avisouColuna) { avisouColuna = true; console.warn(`  ! qsa_checked_at indisponivel (${eMark.message}) — rode a migracao para a fila parar de reciclar.`); }
+          console.log(`  + ${cnpj} ${c.legal_name || ""} -> ${r.socios} socios, ${r.edges_created} aresta(s)`);
+        }
         else { failed++; console.log(`  x ${cnpj} ${r.error}`); }
       }
     } catch (e) { failed++; console.log(`  x ${cnpj} ${e.message}`); }

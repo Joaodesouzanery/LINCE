@@ -1414,9 +1414,16 @@ async function loadDouFeed(days = periodoDou()) {
     const per = payload.periodo || {};
     const janela = per.de === per.ate ? per.de : `${per.de} a ${per.ate}`;
     if (!items.length) {
+      // So afirma "fim de semana" se a data REALMENTE for sabado ou domingo. A versao
+      // anterior colava essa explicacao em todo vazio de "Hoje" — inclusive numa
+      // terca de manha antes do cron, dizendo que estava tudo normal quando a
+      // ingestao podia estar quebrada.
+      const dow = per.ate ? new Date(`${per.ate}T12:00:00Z`).getUTCDay() : -1;
+      const ehFimDeSemana = dow === 0 || dow === 6;
       list.innerHTML = emptyCard("Monitor DOU",
         `Nenhum ato de agência reguladora em ${escapeHtml(janela || "período selecionado")}.`
-        + (per.days === 1 ? " O DOU não circula em fim de semana e feriado; tente uma janela maior." : ""));
+        + (ehFimDeSemana ? " O DOU não circula em fim de semana." : "")
+        + (!ehFimDeSemana && per.days === 1 ? " A edição costuma sair pela manhã; se já passou disso, verifique a ingestão." : ""));
       return;
     }
     // Carimbo de janela e truncamento. Sem ele, "90d" mostrando 500 de 9.970 seria
@@ -1448,8 +1455,13 @@ async function loadDouFeed(days = periodoDou()) {
         </article>
       `)
       .join("");
-    if (payload.truncated) list.innerHTML += `<p class="card-sub" style="opacity:.7">⚠ Mostrando os 100 mais recentes — refine por data ou agência p/ ver o restante.</p>`;
+    // (O rodape antigo dizia "Mostrando os 100 mais recentes" com o numero fixo,
+    // contradizendo o cabecalho novo — o teto virou 500 e o front nunca manda ?limit.
+    // O cabecalho de cima ja declara janela, total e truncamento.)
   } catch (error) {
+    // Mesma guarda do caminho de sucesso: sem ela, o 502 de um filtro abandonado
+    // apagava a lista boa que o filtro novo ja tinha pintado.
+    if (meu !== douSeq) return;
     list.innerHTML = emptyCard("Monitor DOU", `Falha ao carregar: ${error.message}`);
   }
 }
@@ -2786,10 +2798,13 @@ function periodoMonitor() {
   return MON_PERIODOS.includes(salvo) ? salvo : 7;
 }
 
+let monSeq = 0; // token anti-corrida: 3o period-toggle do repo, o unico sem guarda
+
 async function loadMonitors() {
   const list = $("#monitors-list");
   const feed = $("#monitor-alerts");
   if (!list) return;
+  const meu = ++monSeq;
   list.innerHTML = emptyCard("Monitores", "Carregando monitores...");
   if (feed) feed.innerHTML = emptyCard("Alertas", "Carregando disparos...");
   const dias = periodoMonitor();
@@ -2797,6 +2812,7 @@ async function loadMonitors() {
     requestJson("/api/intelligence?type=monitors"),
     requestJson(`/api/intelligence?type=monitor_alerts&days=${dias}`)
   ]);
+  if (meu !== monSeq) return; // clicar 90d e logo Hoje pintava a resposta lenta
   if (monitors.status === "fulfilled") {
     renderMonitorCards(monitors.value.items || []);
   } else {
@@ -2893,6 +2909,11 @@ async function ajustarCamposMonitor() {
   if (fAgencia) fAgencia.hidden = !ehAgencia;
   const inp = $("#mon-pattern");
   if (inp) inp.required = !ehAgencia; // required num campo hidden trava o submit
+  // O select fica VISIVEL no ramo agency, entao pode ser required: a validacao
+  // nativa bloqueia com mensagem. Sem isso, select vazio (lista ainda carregando)
+  // caia no `if (!pattern) return` mudo — clique sem nenhum retorno na tela.
+  const selAg = $("#mon-agency");
+  if (selAg) selAg.required = ehAgencia;
   if (!ehAgencia) return;
   const sel = $("#mon-agency");
   if (!sel || sel.dataset.populado === "1") return;
@@ -2974,7 +2995,9 @@ async function saveMonitorFromForm(event) {
     $("#monitors-list").insertAdjacentHTML("afterbegin", `<div class="activity-alert"><span class="alert-icon">⚠</span><span style="font-size:.78rem">${escapeHtml(error.message)}</span></div>`);
   } finally {
     button.disabled = false;
-    if (!$("#mon-id")?.value) button.textContent = "Criar monitor";
+    // O finally so restaurava o rotulo quando #mon-id estava vazio — nunca o caso
+    // numa edicao que falhou, entao o botao ficava "Salvando..." para sempre.
+    button.textContent = $("#mon-id")?.value ? "Salvar alterações" : "Criar monitor";
   }
 }
 
@@ -4200,9 +4223,20 @@ function wireVigiarButtons(container) {
     const title = btn.dataset.vigiarTitle || "";
     setView("monitors");
     setTimeout(() => {
+      // Zera o formulario ANTES de preencher. Sem isto, dois estados vazavam:
+      //  (a) se o usuario tinha deixado Tipo=Agência, o campo do termo continuava
+      //      hidden ([hidden]{display:none!important}) — o termo era gravado
+      //      invisivel e o focus() virava no-op;
+      //  (b) se ele estava EDITANDO um monitor, #mon-id ainda estava preenchido e o
+      //      submit faria UPDATE, destruindo o monitor existente com um pattern que
+      //      ele nunca viu.
+      // cancelarEdicaoMonitor faz reset, limpa #mon-id, restaura o rotulo do botao e
+      // chama ajustarCamposMonitor() — atribuir .value nao dispara 'change'.
+      cancelarEdicaoMonitor();
       const name = $("#mon-name"), type = $("#mon-type"), pattern = $("#mon-pattern");
       if (name) name.value = title.slice(0, 80);
       if (type) type.value = "keyword";
+      ajustarCamposMonitor();
       // Sugere o miolo do título como termo (sem o boilerplate de "consulta pública").
       // Sem 'n' solto na classe (comia o "n" de "novo..."); "nº 15/2026" sai como grupo.
       if (pattern) { pattern.value = title.replace(/consulta p[úu]blica|audi[êe]ncia p[úu]blica|tomada de subs[íi]dios/gi, "").replace(/^[\s\-–—:0-9\/.]*(?:n[º°.]\s*[0-9\/.-]*)?[\s\-–—:0-9\/.]*/i, "").trim().slice(0, 60); pattern.focus(); }

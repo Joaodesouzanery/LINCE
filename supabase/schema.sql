@@ -394,6 +394,16 @@ create index if not exists monitors_active_idx on monitors (active) where active
 -- tinha e-mail; o monitor (watchlist do cliente) so tinha webhook global.
 alter table monitors add column if not exists owner_email text;
 
+-- Marca a ULTIMA consulta de QSA na empresa. Sem isso, "nunca consultada" e
+-- "consultada e legitimamente sem socios" (MEI, EI) sao indistinguiveis: a fila do
+-- backfill reconsultava para sempre as mesmas empresas vazias, queimando a quota do
+-- CNPJ.ws (~21s por consulta), e a tela contava como "faltando" um piso que nunca
+-- sairia. Medido em 31/08/2026: das 403 tidas como faltando, 43 ja tinham sido
+-- consultadas e 36 tem CNPJ invalido (fornecedor estrangeiro do PNCP).
+alter table companies add column if not exists qsa_checked_at timestamptz;
+create index if not exists companies_qsa_pendente_idx
+  on companies (qsa_checked_at) where qsa_checked_at is null;
+
 -- Bens declarados ao TSE (bem_candidato x consulta_cand). Sem CPF do candidato
 -- (LGPD): o vinculo forte ja esta em person_id; match_method registra a confianca.
 create table if not exists assets (

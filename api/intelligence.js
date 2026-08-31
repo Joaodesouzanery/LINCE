@@ -1608,14 +1608,21 @@ module.exports = async function handler(req, res) {
       // Cobertura da base societaria. O Radar depende do QSA para achar
       // self-dealing e porta-giratoria; sem este numero a tela so consegue dizer
       // "nada encontrado", que confunde ausencia de SINAL com ausencia de DADO.
+      // Nao basta o try/catch: postgrest-js NAO rejeita — erro vira { count: null,
+      // error }. A versao anterior fazia `semQsa ?? 0`, ou seja convertia "nao sei"
+      // em "faltam zero", e a tela passava a AFIRMAR "a base societaria esta
+      // completa" — a frase mais forte que ela sabe dizer — por causa de um blip de
+      // rede. Com s-maxage=600 isso ficaria fixado na borda por 10 minutos.
+      // So publica a cobertura quando as DUAS leituras deram certo.
       let qsa = null;
-      try {
-        const [{ count: totalEmp }, { count: semQsa }] = await Promise.all([
-          supabase.from("companies").select("id", { count: "exact", head: true }),
-          supabase.from("companies").select("id", { count: "exact", head: true }).eq("shareholding", "[]")
-        ]);
-        if (totalEmp != null) qsa = { total: totalEmp, faltam: semQsa ?? 0 };
-      } catch { /* cobertura e informativa: nao derruba o radar */ }
+      const [rTotal, rSem] = await Promise.all([
+        supabase.from("companies").select("id", { count: "exact", head: true }),
+        supabase.from("companies").select("id", { count: "exact", head: true })
+          .not("cnpj", "is", null).eq("shareholding", "[]")
+      ]);
+      if (!rTotal.error && !rSem.error && rTotal.count != null && rSem.count != null) {
+        qsa = { total: rTotal.count, faltam: rSem.count };
+      }
 
       return res.status(200).json({
         ok: true, type: "radar_intel",
