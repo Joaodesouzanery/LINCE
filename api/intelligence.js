@@ -963,13 +963,21 @@ module.exports = async function handler(req, res) {
       const DIAS = [1, 7, 15, 30, 90];
       const pedido = Number(req.query.days);
       const days = DIAS.includes(pedido) ? pedido : 7;
-      const desde = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+      // Data em America/Sao_Paulo, e o instante UTC correspondente ao INICIO do dia
+      // em Brasilia (UTC-3 -> T03:00:00Z). Com toISOString() puro, entre 21h e
+      // meia-noite BRT o "hoje" ja e o dia seguinte em UTC e "Hoje" perderia os
+      // alertas da noite. created_at e timestamptz, entao a comparacao e em instante.
+      const diaSP = (d) => new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit"
+      }).format(d);
+      const desde = diaSP(new Date(Date.now() - (days - 1) * 86400000));
+      const desdeInstante = `${desde}T03:00:00Z`;
 
       let q = supabase
         .from("alerts")
         .select("id, alert_type, severity, title, body, created_at, metadata, acknowledged_at")
         .eq("alert_type", "monitor")
-        .gte("created_at", `${desde}T00:00:00Z`)
+        .gte("created_at", desdeInstante)
         .order("created_at", { ascending: false })
         .limit(limit);
       const { data, error } = await q;
@@ -978,7 +986,7 @@ module.exports = async function handler(req, res) {
       // exibido como se fosse o universo.
       const { count } = await supabase
         .from("alerts").select("id", { count: "exact", head: true })
-        .eq("alert_type", "monitor").gte("created_at", `${desde}T00:00:00Z`);
+        .eq("alert_type", "monitor").gte("created_at", desdeInstante);
       return res.status(200).json({
         ok: true, days, desde, total: count ?? (data || []).length,
         truncated: (data || []).length >= limit, items: data || []
