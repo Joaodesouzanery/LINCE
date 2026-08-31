@@ -956,15 +956,33 @@ module.exports = async function handler(req, res) {
 
     if (type === "monitor_alerts") {
       res.setHeader("Cache-Control", "no-store");
-      const limit = Math.min(Number(req.query.limit) || 30, 100);
-      const { data, error } = await supabase
+      const limit = Math.min(Number(req.query.limit) || 50, 200);
+      // Janela relativa. Whitelist para valor invalido cair no default em vez de
+      // virar NaN na comparacao de data. created_at e a hora da COLETA (nao do fato)
+      // — aqui e o correto: o feed responde "o que meus monitores dispararam".
+      const DIAS = [1, 7, 15, 30, 90];
+      const pedido = Number(req.query.days);
+      const days = DIAS.includes(pedido) ? pedido : 7;
+      const desde = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+
+      let q = supabase
         .from("alerts")
         .select("id, alert_type, severity, title, body, created_at, metadata, acknowledged_at")
         .eq("alert_type", "monitor")
+        .gte("created_at", `${desde}T00:00:00Z`)
         .order("created_at", { ascending: false })
         .limit(limit);
+      const { data, error } = await q;
       if (error) return res.status(500).json({ ok: false, error: error.message });
-      return res.status(200).json({ ok: true, items: data || [] });
+      // total do periodo por COUNT: sem ele, "50 alertas" seria o teto do limit
+      // exibido como se fosse o universo.
+      const { count } = await supabase
+        .from("alerts").select("id", { count: "exact", head: true })
+        .eq("alert_type", "monitor").gte("created_at", `${desde}T00:00:00Z`);
+      return res.status(200).json({
+        ok: true, days, desde, total: count ?? (data || []).length,
+        truncated: (data || []).length >= limit, items: data || []
+      });
     }
 
     // ── M21: Paineis curados (NOMOS F1). CRUD multiplexado, molde monitor_*. ──

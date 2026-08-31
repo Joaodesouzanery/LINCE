@@ -2762,15 +2762,23 @@ function renderRadarLegislative(items) {
   }).join("");
 }
 
+const MON_PERIODOS = [1, 7, 15, 30, 90];
+
+function periodoMonitor() {
+  const salvo = Number(localStorage.getItem("lince-mon-periodo"));
+  return MON_PERIODOS.includes(salvo) ? salvo : 7;
+}
+
 async function loadMonitors() {
   const list = $("#monitors-list");
   const feed = $("#monitor-alerts");
   if (!list) return;
   list.innerHTML = emptyCard("Monitores", "Carregando monitores...");
   if (feed) feed.innerHTML = emptyCard("Alertas", "Carregando disparos...");
+  const dias = periodoMonitor();
   const [monitors, alerts] = await Promise.allSettled([
     requestJson("/api/intelligence?type=monitors"),
-    requestJson("/api/intelligence?type=monitor_alerts&limit=30")
+    requestJson(`/api/intelligence?type=monitor_alerts&days=${dias}`)
   ]);
   if (monitors.status === "fulfilled") {
     renderMonitorCards(monitors.value.items || []);
@@ -2778,10 +2786,21 @@ async function loadMonitors() {
     list.innerHTML = emptyCard("Monitores", `Falha: ${monitors.reason?.message || "erro"}. A tabela monitors existe? Rode a migração (Fase 5) no Supabase.`);
   }
   if (feed) {
-    if (alerts.status === "fulfilled") renderMonitorAlerts(alerts.value.items || []);
-    else feed.innerHTML = emptyCard("Alertas", `Falha: ${alerts.reason?.message || "erro"}`);
+    if (alerts.status === "fulfilled") {
+      const a = alerts.value;
+      renderMonitorAlerts(a.items || []);
+      // Carimbo de janela: sem ele "12 alertas" nao diz de quando, e um feed vazio
+      // parece "nada aconteceu" quando pode ser so a janela curta.
+      const cab = `<p class="card-sub" style="opacity:.75;margin:0 0 4px">${a.total ?? 0} disparo(s) desde ${escapeHtml(a.desde || "")}`
+        + (a.truncated ? " · lista truncada" : "") + `</p>`;
+      feed.innerHTML = cab + feed.innerHTML;
+    } else {
+      feed.innerHTML = emptyCard("Alertas", `Falha: ${alerts.reason?.message || "erro"}`);
+    }
   }
 }
+
+const MONITOR_SEV_LABEL = { info: "informativa", medium: "média", high: "alta" };
 
 function renderMonitorCards(monitors) {
   const list = $("#monitors-list");
@@ -2803,7 +2822,7 @@ function renderMonitorCards(monitors) {
             ${TARGET_ICO}
             <div>
               <strong>${escapeHtml(m.label)}</strong>
-              <span class="card-sub">${escapeHtml(MONITOR_TYPE_LABEL[m.kind] || m.kind)} · <code>${escapeHtml(m.pattern)}</code></span>
+              <span class="card-sub">${escapeHtml(MONITOR_TYPE_LABEL[m.kind] || m.kind)} · <code>${escapeHtml(m.pattern)}</code> · ${escapeHtml(MONITOR_SEV_LABEL[m.severity] || m.severity || "média")}</span>
             </div>
             <span class="card-prio">${m.hit_count ?? 0} hit${(m.hit_count ?? 0) === 1 ? "" : "s"}</span>
           </div>
@@ -2813,6 +2832,7 @@ function renderMonitorCards(monitors) {
               <input type="checkbox" class="mon-toggle" ${m.active ? "checked" : ""} />
               <span class="switch"></span>
             </label>
+            <button type="button" class="alert-btn mon-edit">Editar</button>
             <button type="button" class="alert-btn mon-delete">Excluir</button>
           </div>
         </div>
@@ -2846,24 +2866,82 @@ function renderMonitorAlerts(items) {
     .join("");
 }
 
+// Alterna os campos conforme o tipo. Para kind=agency o backend resolve a SIGLA e
+// devolve 400 se ela nao existir — digitar a mao era chute, aqui vira escolha.
+async function ajustarCamposMonitor() {
+  const kind = $("#mon-type")?.value;
+  const ehAgencia = kind === "agency";
+  const fPattern = $("#mon-pattern-field"), fAgencia = $("#mon-agency-field");
+  if (fPattern) fPattern.hidden = ehAgencia;
+  if (fAgencia) fAgencia.hidden = !ehAgencia;
+  const inp = $("#mon-pattern");
+  if (inp) inp.required = !ehAgencia; // required num campo hidden trava o submit
+  if (!ehAgencia) return;
+  const sel = $("#mon-agency");
+  if (!sel || sel.dataset.populado === "1") return;
+  const lista = await ensureAgenciesList();
+  sel.innerHTML = lista.length
+    ? lista.map((a) => `<option value="${escapeHtml(a.acronym)}">${escapeHtml(a.acronym)} — ${escapeHtml(a.name || "")}</option>`).join("")
+    : `<option value="" disabled>(falha ao carregar: ${escapeHtml(state.agenciesErro || "desconhecida")})</option>`;
+  if (lista.length) sel.dataset.populado = "1";
+}
+
+// Carrega um monitor existente no formulario. O backend ja faz UPDATE quando recebe
+// `id` (intelligence.js) — so faltava o front mandar.
+async function editarMonitor(id) {
+  const r = await requestJson("/api/intelligence?type=monitors").catch(() => null);
+  const m = (r?.items || []).find((x) => x.id === id);
+  if (!m) return;
+  $("#mon-id").value = m.id;
+  $("#mon-name").value = m.label || "";
+  $("#mon-type").value = m.kind || "keyword";
+  await ajustarCamposMonitor();
+  if (m.kind === "agency") { const a = $("#mon-agency"); if (a) a.value = m.pattern || ""; }
+  else $("#mon-pattern").value = m.pattern || "";
+  $("#mon-severity").value = m.severity || "medium";
+  $("#mon-email").value = m.owner_email || "";
+  $("#mon-active").checked = m.active !== false;
+  $("#monitor-form-titulo").textContent = "Editar monitor";
+  $("#mon-submit").textContent = "Salvar alterações";
+  $("#mon-cancel").hidden = false;
+  $("#monitor-form")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function cancelarEdicaoMonitor() {
+  const f = $("#monitor-form");
+  if (f) f.reset();
+  $("#mon-id").value = "";
+  $("#monitor-form-titulo").textContent = "Novo monitor";
+  $("#mon-submit").textContent = "Criar monitor";
+  $("#mon-cancel").hidden = true;
+  $("#mon-active").checked = true;
+  ajustarCamposMonitor();
+}
+
 async function saveMonitorFromForm(event) {
   event.preventDefault();
   const button = event.target.querySelector("button[type=submit]");
   const label = $("#mon-name")?.value?.trim();
   const kind = $("#mon-type")?.value;
-  const pattern = $("#mon-pattern")?.value?.trim();
+  // Em kind=agency o padrao vem do select, nao do input (que fica escondido).
+  const pattern = kind === "agency"
+    ? ($("#mon-agency")?.value || "").trim()
+    : ($("#mon-pattern")?.value || "").trim();
   if (!pattern) return;
+  const editando = ($("#mon-id")?.value || "").trim();
   button.disabled = true;
-  button.textContent = "Criando...";
+  button.textContent = editando ? "Salvando..." : "Criando...";
   try {
     // F-INT1: CNPJ/CPF digitado vira cpf_cnpj (antes o padrão normalizado "12 345 678..."
     // jamais casava com o texto do DOU — monitor por CNPJ era decorativo).
     const digits = onlyDigits(pattern);
     const cpfCnpj = (digits.length === 11 || digits.length === 14) ? digits : null;
     const saved = await postJson("/api/intelligence?type=monitor_save", {
+      ...(editando ? { id: editando } : {}),
       kind,
       label: label || pattern,
       pattern,
+      severity: $("#mon-severity")?.value || "medium",
       ...(cpfCnpj ? { cpf_cnpj: cpfCnpj } : {}),
       owner_email: $("#mon-email")?.value?.trim() || "",
       active: $("#mon-active")?.checked ?? true
@@ -2873,19 +2951,23 @@ async function saveMonitorFromForm(event) {
       ? `Monitor criado, mas o backfill falhou: ${saved.backfill_error}`
       : (saved?.backfill_hits ? `✓ Monitor criado — ${saved.backfill_hits} ocorrência(s) encontradas nos últimos 90 dias.` : null);
     if (bfMsg) $("#monitors-list")?.insertAdjacentHTML("afterbegin", `<div class="activity-alert${saved?.backfill_error ? "" : " info"}"><span class="alert-icon">${saved?.backfill_error ? "⚠" : "✓"}</span><span style="font-size:.78rem">${escapeHtml(bfMsg)}</span></div>`);
-    event.target.reset();
-    const active = $("#mon-active");
-    if (active) active.checked = true;
+    cancelarEdicaoMonitor();
     await loadMonitors();
   } catch (error) {
     $("#monitors-list").insertAdjacentHTML("afterbegin", `<div class="activity-alert"><span class="alert-icon">⚠</span><span style="font-size:.78rem">${escapeHtml(error.message)}</span></div>`);
   } finally {
     button.disabled = false;
-    button.textContent = "Criar monitor";
+    if (!$("#mon-id")?.value) button.textContent = "Criar monitor";
   }
 }
 
 function wireMonitorList() {
+  $("#monitors-list")?.addEventListener("click", (e) => {
+    const btn = e.target.closest(".mon-edit");
+    if (!btn) return;
+    const card = btn.closest("[data-monitor-id]");
+    if (card) editarMonitor(card.dataset.monitorId);
+  });
   const list = $("#monitors-list");
   if (!list) return;
   list.addEventListener("change", async (event) => {
@@ -4635,6 +4717,22 @@ function wireEvents() {
   });
 
   $("#monitor-form")?.addEventListener("submit", saveMonitorFromForm);
+  // Tipo "Agência" troca o input livre por um select de agências.
+  $("#mon-type")?.addEventListener("change", () => ajustarCamposMonitor());
+  $("#mon-cancel")?.addEventListener("click", () => cancelarEdicaoMonitor());
+  $("#mon-period")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-days]");
+    if (!btn) return;
+    const days = Number(btn.dataset.days);
+    if (!MON_PERIODOS.includes(days)) return;
+    localStorage.setItem("lince-mon-periodo", String(days));
+    e.currentTarget.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
+    loadMonitors();
+  });
+  {
+    const t = $("#mon-period"), atual = periodoMonitor();
+    if (t) t.querySelectorAll("button").forEach((b) => b.classList.toggle("active", Number(b.dataset.days) === atual));
+  }
   $("#leg-form")?.addEventListener("submit", (e) => { e.preventDefault(); loadLegislativo($("#leg-search")?.value); });
   // M20: clique no AUTOR de uma proposição (parlamentar) abre o dossiê investigativo.
   // Suprime o autoload da lista de diretores p/ não sobrescrever o dossiê (race).

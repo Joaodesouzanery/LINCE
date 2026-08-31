@@ -702,12 +702,15 @@
             <section class="panel">
               <div class="panel-header">
                 <div>
-                  <p class="kicker">Criação rápida (M10)</p>
-                  <h2>Monitores de vigilância</h2>
+                  <p class="kicker">Cadastre aqui o que quer vigiar (M10)</p>
+                  <h2 id="monitor-form-titulo">Novo monitor</h2>
                 </div>
                 <span class="status-pill status-ok" id="monitors-count" hidden>0 ativos</span>
               </div>
               <form class="monitor-form" id="monitor-form">
+                <!-- id preenchido só ao EDITAR: o backend faz UPDATE quando recebe id,
+                     INSERT quando não recebe. -->
+                <input type="hidden" id="mon-id" value="" />
                 <div class="field">
                   <label for="mon-name">Nome</label>
                   <input id="mon-name" class="dou-date" maxlength="80" placeholder="Ex.: Sanções ANEEL" />
@@ -721,9 +724,23 @@
                     <option value="agency">Agência</option>
                   </select>
                 </div>
-                <div class="field">
+                <div class="field" id="mon-pattern-field">
                   <label for="mon-pattern">Padrão de busca</label>
                   <input id="mon-pattern" class="dou-date" required placeholder="termo, nome, CNPJ ou sigla" />
+                </div>
+                <!-- Para kind=agency o backend resolve a SIGLA e devolve 400 se errar.
+                     Digitar à mão era chute; aqui vira escolha. -->
+                <div class="field" id="mon-agency-field" hidden>
+                  <label for="mon-agency">Agência</label>
+                  <select id="mon-agency" class="dou-date"></select>
+                </div>
+                <div class="field">
+                  <label for="mon-severity">Severidade</label>
+                  <select id="mon-severity" class="dou-date">
+                    <option value="info">Informativa</option>
+                    <option value="medium" selected>Média</option>
+                    <option value="high">Alta</option>
+                  </select>
                 </div>
                 <div class="field">
                   <label for="mon-email">E-mail de alerta (opcional)</label>
@@ -734,7 +751,8 @@
                   <span class="switch"></span>
                   <span class="switch-label">Ativo</span>
                 </label>
-                <button type="submit" class="primary-button">Criar monitor</button>
+                <button type="submit" class="primary-button" id="mon-submit">Criar monitor</button>
+                <button type="button" class="ghost-button" id="mon-cancel" hidden>Cancelar</button>
               </form>
               <div class="news-list" id="monitors-list"></div>
             </section>
@@ -743,6 +761,13 @@
                 <div>
                   <p class="kicker">Feed por monitor</p>
                   <h2>Alertas disparados</h2>
+                </div>
+                <div class="period-toggle" id="mon-period">
+                  <button type="button" data-days="1">Hoje</button>
+                  <button type="button" data-days="7" class="active">7d</button>
+                  <button type="button" data-days="15">15d</button>
+                  <button type="button" data-days="30">30d</button>
+                  <button type="button" data-days="90">90d</button>
                 </div>
               </div>
               <div class="news-list" id="monitor-alerts"></div>
