@@ -520,6 +520,9 @@ function setView(view) {
   if (view === "gerador") loadGerador();
   $("#view-kicker").textContent = kicker;
   $("#view-title").textContent = title;
+  // Trocar de view mantendo a rolagem faz a tela nova abrir no meio. Nao era o bug
+  // das views orfas (esse era HTML), mas agravava a percepcao de "conteudo la embaixo".
+  window.scrollTo({ top: 0, behavior: "instant" });
 }
 
 function setLoading(isLoading) {
