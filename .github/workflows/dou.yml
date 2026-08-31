@@ -7,8 +7,11 @@
 #
 # PRE-REQUISITOS (Settings > Secrets and variables > Actions):
 #   SUPABASE_URL / SUPABASE_SERVICE_KEY   (ja usados pelos outros workflows)
-#   INLABS_EMAIL / INLABS_SENHA           (NOVOS — nenhum workflow os tinha)
-# Sem INLABS_*, o job falha no login e nao ha o que ingerir.
+#   INLABS_EMAIL / INLABS_SENHA           (OPCIONAIS agora — so para --fonte=inlabs)
+#   ALERT_WEBHOOK_URL                     (opcional; sem ele o alarme so loga)
+#
+# A fonte PUBLICA (in.gov.br) e primaria e nao precisa de credencial nenhuma. Medido no
+# mesmo dia: 225 atos contra 114 do INLABS (+97%), 0 agencias zeradas contra 4.
 #
 # A IA fica DESLIGADA: analyzeAto e uma chamada Claude por ato e multiplicaria o
 # tempo por ~50. Os resumos entram depois por scripts/backfill-ai.js.
@@ -32,6 +35,11 @@ on:
         description: "Gerar resumo por IA (lento: 1 chamada Claude por ato)"
         type: boolean
         default: false
+      fonte:
+        description: "Fonte da coleta"
+        type: choice
+        options: [publico, inlabs]
+        default: publico
 
 concurrency:
   # Duas ingestoes do mesmo dia em paralelo brigariam pelo dedupe. Nao cancela a
@@ -73,6 +81,15 @@ jobs:
 
       - name: Ingerir DOU
         run: |
-          FLAGS=""
-          if [ "${{ inputs.com_ia }}" = "true" ]; then FLAGS="--ia"; fi
+          FLAGS="--fonte=${{ inputs.fonte || 'publico' }}"
+          if [ "${{ inputs.com_ia }}" = "true" ]; then FLAGS="$FLAGS --ia"; fi
           node scripts/backfill-dou.js "${{ steps.intervalo.outputs.de }}" "${{ steps.intervalo.outputs.ate }}" $FLAGS
+
+      # Alarme de ausencia. A causa raiz do furo do acervo foi job falhando em silencio:
+      # 34 dias uteis com ZERO atos, sem nenhum aviso, por meses. Este passo compara o
+      # acervo com o total publicado no DOU e QUEBRA o job se algum dia util fechou vazio
+      # — "sem edicao" (feriado) nao conta, porque o script checa o denominador.
+      # Roda sempre, mesmo se a ingestao acima falhar: e justamente ai que ele importa.
+      - name: Checar ausencia de ingestao
+        if: always()
+        run: node scripts/checar-ingestao.js --dias=7

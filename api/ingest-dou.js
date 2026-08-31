@@ -1,8 +1,14 @@
 // Endpoint de ingestao do DOU (chamado pelo Vercel Cron 1x/dia ou manualmente).
-// GET /api/ingest-dou?date=YYYY-MM-DD  (default: hoje)
+// GET /api/ingest-dou?date=YYYY-MM-DD&fonte=auto|publico|inlabs   (default: hoje, auto)
 // Protegido por CRON_SECRET: header "authorization: Bearer <CRON_SECRET>".
+//
+// A fonte PUBLICA (in.gov.br) e primaria; o INLABS e secundario. Medido no mesmo dia
+// com o mesmo matchAgency: publica 225 atos contra 114 do INLABS (+97%), 0 agencias
+// zeradas contra 4, sem credencial, e com source_url que abre (o do INLABS da 404).
+// Ver o cabecalho de lib/dou-publico.js para a comparacao completa.
 const { getSupabase } = require("../lib/supabase");
 const { collectDou } = require("../lib/dou");
+const { collectDouPublico } = require("../lib/dou-publico");
 const { analyzeAto } = require("../lib/anthropic");
 const { persistDou } = require("../lib/dou-persist");
 const { loadActiveMonitors, flushMonitorAlerts } = require("../lib/ingest");
@@ -15,6 +21,33 @@ function authorized(req) {
   // Em preview/dev, libera (conveniencia). A Vercel injeta o secret nos crons.
   if (!secret) return process.env.VERCEL_ENV !== "production";
   return timingSafeEqualStr(req.headers.authorization, `Bearer ${secret}`);
+}
+
+// Cascata de fontes. `auto` tenta a publica e so cai para o INLABS se ela falhar —
+// nunca o contrario, porque a publica e mais completa e nao depende de credencial.
+async function coletar(date, agencies, fonte) {
+  const tentativas = fonte === "auto" ? ["publico", "inlabs"] : [fonte];
+  const erros = [];
+  for (const alvo of tentativas) {
+    try {
+      const records = alvo === "publico"
+        ? await collectDouPublico(date, agencies)
+        : await collectDou(date, agencies);
+      // Sem edicao e um resultado VALIDO: nao justifica cair para a outra fonte
+      // (o INLABS tambem nao teria nada) e nao e erro.
+      if (records.semEdicao) return { ok: true, fonte: alvo, records };
+      if (records.length > 0 || alvo === tentativas[tentativas.length - 1]) {
+        return { ok: true, fonte: alvo, records };
+      }
+      erros.push(`${alvo}: 0 atos de agencia (publicados: ${records.totalPublicados ?? "?"})`);
+    } catch (e) {
+      erros.push(`${alvo}: ${e.message}`);
+    }
+  }
+  return {
+    ok: false,
+    detalhe: { error: erros.join(" | "), tentativas: erros }
+  };
 }
 
 module.exports = async function handler(req, res) {
@@ -36,7 +69,34 @@ module.exports = async function handler(req, res) {
       return res.status(412).json({ ok: false, error: "Nenhuma agencia cadastrada. Rode o seed." });
     }
 
-    const records = await collectDou(date, agencies);
+    const fonte = ["auto", "publico", "inlabs"].includes(req.query.fonte) ? req.query.fonte : "auto";
+    const coleta = await coletar(date, agencies, fonte);
+    if (!coleta.ok) {
+      // Erro das DUAS tentativas, nunca de uma so: sem isso o operador conserta a
+      // fonte errada.
+      return res.status(502).json({ ok: false, date, fonte_tentada: fonte, ...coleta.detalhe });
+    }
+    const records = coleta.records;
+
+    // Dia sem edicao (domingo, feriado, data futura) NAO e falha. Distinguir isso de
+    // "ingestao quebrada" exige um denominador independente — o total publicado no dia,
+    // antes de qualquer filtro. Confundir os dois foi o que deixou a ingestao parada
+    // por 20 dias sem ninguem perceber.
+    if (records.semEdicao) {
+      return res.status(200).json({
+        ok: true, date, sem_edicao: true, fonte_usada: coleta.fonte,
+        found: 0, inserted: 0, skipped: 0,
+        aviso: "Nenhum ato publicado nesta data (fim de semana, feriado ou data futura)."
+      });
+    }
+    // Publicou e nada casou: o matcher quebrou. Falha RUIDOSA, nao "0 atos".
+    if (records.matcherSuspeito) {
+      return res.status(502).json({
+        ok: false, date, fonte_usada: coleta.fonte,
+        error: `Fonte publicou ${records.totalPublicados} atos e NENHUM casou com agencia — matcher quebrado ou lista de agencias vazia.`,
+        total_publicados: records.totalPublicados
+      });
+    }
     if (records.discarded) console.log(`[ingest-dou ${date}] ${records.discarded}/${records.totalXml} atos sem match de agencia (descartados)`);
 
     // A rota HTTP tem 60s (vercel.json). Duas coisas nao cabem nela e por isso
@@ -76,6 +136,9 @@ module.exports = async function handler(req, res) {
       directors,
       alerts: r.alerts,
       monitor_alerts: monitorAlerts.length,
+      fonte_usada: coleta.fonte,
+      total_publicados: records.totalPublicados ?? null,
+      so_preview: records.parcial ?? 0,
       // Declara o que NAO foi feito nesta rota, em vez de deixar o numero de
       // resumos vazios aparecer semanas depois como "a IA nao funciona".
       ia: comIA ? "aplicada" : `pulada (${r.pendentesDeIA} ato(s) sem resumo — use backfill:ai)`,
