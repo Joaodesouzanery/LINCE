@@ -18,6 +18,7 @@
     "backfill:ai": "node scripts/backfill-ai.js",
     "backfill:themes": "node scripts/backfill-themes.js",
     "load:agenda": "node scripts/load-agenda.js",
+    "load:agenda-seed": "node scripts/load-agenda-seed.js",
     "load:proposicoes": "node scripts/load-proposicoes.js",
     "load:parlamentares": "node scripts/load-parlamentares.js",
     "backfill:proposicao-detalhe": "node scripts/backfill-proposicao-detalhe.js",
