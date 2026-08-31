@@ -5,7 +5,7 @@ puro — sem hooks, sem scripts, sem chamadas de rede, sem chave de API), adapta
 stack do usuário: **JS/TS · Node/serverless · Vercel · Supabase/Postgres · Frontend/React**,
 mais uma base de meta/fluxo/qualidade/segurança portável a qualquer projeto.
 
-- **18 skills** em `.claude/skills/<nome>/SKILL.md` — disparam automaticamente por
+- **22 skills** em `.claude/skills/<nome>/SKILL.md` — disparam automaticamente por
   intenção (o Claude lê a `description` de cada uma e usa quando o pedido bate).
 - **12 agents** em `.claude/agents/<nome>.md` — subagentes com escopo/tools restritos
   que o Claude delega automaticamente (ou você força: "use o security-reviewer em api/").
@@ -33,6 +33,12 @@ mais uma base de meta/fluxo/qualidade/segurança portável a qualquer projeto.
 - `postgres-supabase-patterns` — SQL, índices, N+1, RLS, service role, storage
 - `database-migrations` — aditivas, idempotentes, reversíveis, sem downtime
 - `frontend-and-react-patterns` — estados, a11y, escape/XSS, performance
+
+**Regras invioláveis do LINCE** (nasceram de bugs reais deste repo — ver `CLAUDE.md`)
+- `supabase-error-contract` — tratar `error`, paginar >1000, sem embed sem FK, fonte fora do ar ≠ sem dado
+- `metrica-honesta` — janela, denominador, truncamento e composição em todo número exibido
+- `lgpd-e-proveniencia` — CPF nunca persistido, match fraco com selo na tela e no PDF, proveniência sempre
+- `revisor-de-ingestao` — idempotência com chave not-null, a armadilha do `NULL != NULL`, falha honesta
 
 ## Agents
 

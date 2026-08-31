@@ -35,10 +35,48 @@ Plataforma de inteligência regulatória/investigação (DOU, screening PEP/san�
 - **LGPD**: **não persistir CPF**. Mascarar com `maskCpf` (`api/external.js`). Patrimônio/vínculos guardam `person_id`, não CPF; `match_method` = `cpf`|`name` com flag de homônimo (`weak_match`).
 - Comentários em PT-BR marcam módulos (`M3`, `M6`…). Manter esse estilo.
 
+## Regras invioláveis deste repositório
+
+Valem **por padrão, em todo trabalho**, sem depender de skill disparar.
+
+### Dados pessoais e LGPD
+- CPF NUNCA é persistido em claro (banco ou log). Minimize e descarte.
+- Todo casamento entre entidades tem força declarada: **forte** (documento/id) ou **fraco** (só por
+  nome). Match fraco NÃO é afirmável como fato e exige selo de incerteza visível na **TELA e no PDF**
+  exportado — o PDF é o que chega ao cliente.
+- Toda afirmação de relatório carrega fonte primária + método + data. Sem proveniência, não entra
+  (ou entra explicitamente como hipótese não verificada).
+
+### Números e métricas
+- Nenhum número vai à tela/PDF sem: **janela, denominador, truncamento e composição**.
+- "Score"/"risco" não pode ser volume renomeado — normalize por base/exposição.
+- Ranking sempre declara o critério e se está normalizado.
+- Lote de dados no tamanho exato do limite (ex.: 1000) é suspeito de truncamento.
+
+### Acesso a dados (Supabase)
+- Nunca desestruturar resposta do Supabase sem tratar `error`.
+- Toda falha é fatal (propaga) ou degrada (visível/logada) — **nunca sucesso vazio silencioso**.
+- Pagine acima de 1000 linhas. Não use embed em tabelas sem FK (ex.: `relationships` → `PGRST200`).
+
+### Ingestão
+- Todo pipeline é idempotente com **chave de identidade not-null**. Re-run é no-op ou update, nunca
+  duplicata. (Em Postgres `NULL != NULL`: índice único com coluna nula não deduplica.)
+- Queda/manutenção de fonte é **falha honesta**, não "sem dados".
+
+### Conflito de interesse
+- Não construir produto que sirva simultaneamente ao **regulado** e ao **regulador** no mesmo eixo
+  (ex.: radar defensivo para a empresa + triagem de contribuições para a agência). Separação por
+  produto ou por setor; na dúvida, não fazer.
+
+### Processo
+- **Revisão adversarial antes de cada commit** — é o que pega a maior parte dos defeitos.
+
 ## Dívida técnica (preferir não piorar)
 
 - `app.js` é monolítico e `api/intelligence.js` já é grande. **Preferir criar novo arquivo** em `api/`/`lib/` a inchar esses. Novas telas: manter blocos bem marcados no `app.js`.
 
 ## Skills/agents deste repo
 
-Há 12 agents e 18 skills em `.claude/` (ver `.claude/PACK.md`). Algumas skills falam de React/TS/Jest — **isto NÃO se aplica aqui** (JS vanilla, sem testes). Usá-las como referência de princípio (segurança, error-handling, degradação), não como exigência de stack.
+Há 12 agents e 22 skills em `.claude/` (ver `.claude/PACK.md`). As quatro mais recentes —
+`supabase-error-contract`, `metrica-honesta`, `lgpd-e-proveniencia` e `revisor-de-ingestao` —
+detalham as regras invioláveis acima e nasceram de bugs reais deste repo. Algumas skills falam de React/TS/Jest — **isto NÃO se aplica aqui** (JS vanilla, sem testes). Usá-las como referência de princípio (segurança, error-handling, degradação), não como exigência de stack.

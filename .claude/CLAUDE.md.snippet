@@ -1,0 +1,36 @@
+# >>> Cole este bloco no CLAUDE.md do seu projeto <<<
+# Estas regras valem POR PADRÃO, em todo trabalho, sem depender de skill disparar.
+# É a maior alavanca: skill é sugerida por intenção; CLAUDE.md é sempre lido.
+
+## Regras invioláveis deste repositório
+
+### Dados pessoais e LGPD
+- CPF NUNCA é persistido em claro (banco ou log). Minimize e descarte.
+- Todo casamento entre entidades tem força declarada: forte (documento/id) ou
+  fraco (só por nome). Match fraco NÃO é afirmável como fato e exige selo de
+  incerteza visível na TELA e no PDF exportado — o PDF é o que chega ao cliente.
+- Toda afirmação de relatório carrega fonte primária + método + data. Sem
+  proveniência, não entra (ou entra explicitamente como hipótese não verificada).
+
+### Números e métricas
+- Nenhum número vai à tela/PDF sem: janela, denominador, truncamento e composição.
+- "Score"/"risco" não pode ser volume renomeado — normalize por base/exposição.
+- Ranking sempre declara o critério e se está normalizado.
+- Lote de dados no tamanho exato do limite (ex.: 1000) é suspeito de truncamento.
+
+### Acesso a dados (Supabase)
+- Nunca desestruturar resposta do Supabase sem tratar `error`.
+- Toda falha é fatal (propaga) ou degrada (visível/logada) — nunca sucesso vazio
+  silencioso.
+- Pagine acima de 1000 linhas. Não use embed em tabelas sem FK (ex.: relationships → PGRST200).
+
+### Ingestão
+- Todo pipeline é idempotente com chave de identidade not-null. Re-run é no-op ou
+  update, nunca duplicata.
+- Queda/manutenção de fonte é falha honesta, não "sem dados".
+
+### Processo
+- Revisão adversarial antes de cada commit (é o que já pega a maior parte dos
+  defeitos — mantenha).
+
+# >>> fim do bloco <<<
