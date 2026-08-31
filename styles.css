@@ -2207,6 +2207,17 @@ button.entity-pill:hover {
 }
 .data-status .ds-text { color: var(--muted); font-size: 12.5px; font-family: var(--font-mono); min-width: 0; }
 
+/* Carimbo de curadoria da Agenda Regulatória. Fica logo abaixo do cabeçalho do
+   card, discreto — mas vermelho quando a revisão venceu, porque agenda vencida o
+   cliente tem de ver antes de nós. */
+.agreg-carimbo {
+  margin: 0 16px 8px;
+  font-size: 11px;
+  opacity: 0.7;
+  line-height: 1.4;
+}
+.agreg-carimbo.vencida { color: var(--red); opacity: 1; }
+
 /* ── Menu de usuário na topbar ─────────────────────────────────────────────── */
 /* Compacto por necessidade: a topbar já tem 4 elementos à direita. Só o avatar
    fica visível; o resto abre em dropdown. */

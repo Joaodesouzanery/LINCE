@@ -4316,6 +4316,21 @@ function agregLane(title, items, kind) {
   return `<div class="agreg-lane"><h4>${escapeHtml(title)}</h4><ul class="ger-recent">${li}</ul></div>`;
 }
 
+// Carimbo de curadoria. A agenda e um documento curado a mao, entao a tela precisa
+// dizer de quando e a curadoria e ate quando ela vale — senao, em oito meses, ninguem
+// sabe se o que esta ali ainda esta vigente. Regra da skill lgpd-e-proveniencia.
+function carimboAgenda(a) {
+  const t = (a.temas || []).find((x) => x.curated_at || x.ato);
+  if (!t) return "";
+  const vencida = t.review_due && t.review_due < new Date().toISOString().slice(0, 10);
+  const partes = [];
+  if (t.ato) partes.push(escapeHtml(t.ato));
+  if (t.curated_at) partes.push(`curadoria de ${escapeHtml(t.curated_at)}`);
+  if (t.review_due) partes.push(vencida ? `<strong>revisão vencida em ${escapeHtml(t.review_due)}</strong>` : `revisar até ${escapeHtml(t.review_due)}`);
+  if (a.temas_truncados) partes.push(`<strong>exibindo ${a.temas.length} de ${a.temas_total}</strong>`);
+  return `<p class="card-sub agreg-carimbo${vencida ? " vencida" : ""}">${partes.join(" · ")}</p>`;
+}
+
 function renderAgregAgency(a) {
   return `
   <section class="panel agreg-card">
@@ -4323,8 +4338,9 @@ function renderAgregAgency(a) {
       <div><h3 class="agreg-ag">${escapeHtml(a.agency)}</h3><p class="kicker">${escapeHtml(a.agency_name || "")}</p></div>
       <button type="button" class="ghost-button" data-agreg-news="${escapeHtml(a.agency)}" data-agreg-name="${escapeHtml(a.agency_name || a.agency)}">Notícias</button>
     </div>
+    ${carimboAgenda(a)}
     <div class="agreg-lanes">
-      ${agregLane("Agenda formal — temas", a.temas, "tema")}
+      ${agregLane(`Agenda formal — temas${a.temas_truncados ? ` (${a.temas.length} de ${a.temas_total})` : ""}`, a.temas, "tema")}
       ${agregLane("Atos de Agenda Regulatória", a.agenda, "ato")}
       ${agregLane("Consultas / audiências abertas", a.consultas, "ato")}
       ${agregLane("Pautas / deliberações", a.pautas, "ato")}

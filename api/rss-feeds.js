@@ -189,7 +189,7 @@ module.exports = async function handler(req, res) {
         supabase.from("documents").select(cols).eq("source_name", "DOU")
           .or(pautasOr).order("published_at", { ascending: false }).order("collected_at", { ascending: false }).limit(80),
         supabase.from("regulatory_agenda")
-          .select("biennium, theme_title, status, area, source_url, agencies(acronym, name)")
+          .select("biennium, theme_title, status, area, source_url, metadata, agencies(acronym, name)")
           .order("biennium", { ascending: false }).limit(500)
       ]);
 
@@ -217,11 +217,30 @@ module.exports = async function handler(req, res) {
         const acr = t.agencies?.acronym;
         if (!acr || (acronymSet.size && !acronymSet.has(acr))) continue;
         const b = ensure(acr);
-        if (b.temas.length < 20) b.temas.push({ theme_title: t.theme_title, status: t.status, area: t.area, biennium: t.biennium, link: t.source_url });
+        // Teto de 20 por agencia. Antes o corte era silencioso: a ANM tem 27 temas e a
+        // tela mostrava 20 sem dizer, o que faz o cliente contar errado a agenda dele.
+        b.temas_total = (b.temas_total || 0) + 1;
+        if (b.temas.length < 20) {
+          b.temas.push({
+            theme_title: t.theme_title, status: t.status, area: t.area,
+            biennium: t.biennium, link: t.source_url,
+            // Proveniencia por tema: a agenda e curada a mao, entao a tela precisa
+            // poder mostrar de quando e a curadoria e ate quando ela vale.
+            eixo: t.metadata?.eixo ?? null,
+            ato: t.metadata?.ato ?? null,
+            curated_at: t.metadata?.curated_at ?? null,
+            review_due: t.metadata?.review_due ?? null
+          });
+        }
       }
 
       const boardArr = Object.values(board)
-        .map((b) => ({ ...b, total: b.temas.length + b.agenda.length + b.consultas.length + b.pautas.length }))
+        .map((b) => ({
+          ...b,
+          temas_total: b.temas_total || 0,
+          temas_truncados: (b.temas_total || 0) > b.temas.length,
+          total: b.temas.length + b.agenda.length + b.consultas.length + b.pautas.length
+        }))
         .filter((b) => b.total > 0)
         .sort((a, b) => b.total - a.total);
 

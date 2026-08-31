@@ -1,0 +1,90 @@
+{
+  "_meta": {
+    "agencia": "ANM",
+    "biennium": "2025/2026",
+    "ato_aprovador": "Resolução ANM nº 191, de 18 de dezembro de 2024",
+    "ato_dou": "DOU 20/12/2024, Seção 1",
+    "ato_vigencia": "2025-01-02",
+    "ato_processo_sei": "48051.005733/2024-47",
+    "alterado_por": "Resolução ANM nº 227, de 1º de dezembro de 2025 (DOU 02/12/2025, Seção 1) — primeira Revisão Extraordinária, aprovada por unanimidade na ROP de 26/11/2025",
+    "versao_do_texto": "compilado pós-Res. 227/2025",
+    "source_url": "https://anmlegis.datalegis.net/action/ActionDatalegis.php?acao=detalharAto&tipo=RES&numeroAto=00000191&seqAto=000&valorAno=2024&orgao=DC%2FANM%2FMME&cod_menu=8014&cod_modulo=351&pesquisa=true",
+    "source_doc": "Texto compilado da Res. ANM nº 191/2024 na base oficial de legislação da ANM (ANMlegis/DataLegis, órgão DC/ANM/MME)",
+    "curated_at": "2026-08-31",
+    "curated_by": "claude-opus-5 (extração do texto integral da fonte primária)",
+    "review_due": "2026-11-30",
+
+    "ATENCAO_CONTAGEM": "O total de temas DEPENDE DA VERSÃO e essa é a principal armadilha deste dado. São três números legítimos e diferentes: 24 (22 prioritários + 2 indicativos) no texto ORIGINAL de dez/2024 e na Nota Técnica SEI nº 3863/2025; 27 (22 + 5) no texto COMPILADO vigente, que é o desta carga; e 30 (25 + 5) segundo a medida '# Projetos' do painel Power BI oficial consultado em 31/08/2026. Qualquer número exibido ao cliente precisa vir com a versão e a data do snapshot.",
+    "total_prioritarios": 22,
+    "total_indicativos": 5,
+    "total": 27,
+
+    "DISTINCAO_NORMATIVA": "Parágrafo único do Art. 1º da Res. 191/2024 — Agenda Prioritária: 'temas terão atuação imediata da ANM, com equipe de trabalho e cronograma previamente definidos'. Agenda Indicativa: 'temas serão desenvolvidos diante da disponibilidade de recursos humanos'.",
+
+    "NAO_COLETADO": "Status/fase por tema e janelas trimestrais previstas vivem no painel Power BI (app.powerbi.com), que carrega via JS e não foi raspado. Este seed traz o que o ATO define: nome, eixo, superintendência e classificação prioritária/indicativa. Status precisa de curadoria manual ou do painel."
+  },
+
+  "eixos": [
+    { "numero": 1, "nome": "Economia Mineral e Geoinformação", "superintendencia": "SEG", "artigo": "art. 2º",
+      "nota": "No texto ORIGINAL era 'Transversal', sob a SRG (Superintendência de Regulação Econômica e Monitoramento de Mercado)." },
+    { "numero": 2, "nome": "Outorga Mineral", "superintendencia": "SOT — Superintendência de Outorga de Títulos Minerários", "artigo": "art. 3º" },
+    { "numero": 3, "nome": "Fiscalização das Atividades de Mineração", "superintendencia": "SFI — Superintendência de Fiscalização", "artigo": "art. 4º" },
+    { "numero": 4, "nome": "Água Mineral", "superintendencia": "SFI", "artigo": "art. 5º" },
+    { "numero": 5, "nome": "Arrecadação e Fiscalização de Receitas", "superintendencia": "SAR", "artigo": "art. 6º" },
+    { "numero": 6, "nome": "Segurança de Barragens e Pilhas de Mineração", "superintendencia": "SBP", "artigo": "art. 7º",
+      "nota": "No texto ORIGINAL era 'Segurança de Barragens de Mineração', sob a SBM." }
+  ],
+
+  "temas": [
+    { "eixo": 1, "inciso": "I", "classe": "prioritaria", "titulo": "Estabelecimento de quadrículas", "alteracao": "Redação dada pela Res. 227/2025" },
+    { "eixo": 1, "inciso": "PU", "classe": "indicativa", "titulo": "Revisão da Resolução nº 1, de 25 de janeiro de 2019", "alteracao": "Acrescentado pela Res. 227/2025" },
+
+    { "eixo": 2, "inciso": "I", "classe": "prioritaria", "titulo": "Consulta Prévia, Livre e Informada (CPLI) - Comunidades Quilombolas e Tradicionais", "alteracao": "Redação dada pela Res. 227/2025" },
+    { "eixo": 2, "inciso": "II", "classe": "prioritaria", "titulo": "Desistência de requerimentos de outorga mineral e renúncia de títulos minerários" },
+    { "eixo": 2, "inciso": "III", "classe": "prioritaria", "titulo": "Simplificação dos processos de outorga para Registro de Extração: revisão da Resolução nº 1, de 10 de dezembro de 2018" },
+    { "eixo": 2, "inciso": "IV", "classe": "prioritaria", "titulo": "Simplificação dos processos de outorga para o Regime de Licenciamento: revisão e consolidação normativa" },
+    { "eixo": 2, "inciso": "V", "classe": "prioritaria", "titulo": "Revisão dos processos de outorga do Regime de Permissão de Lavra Garimpeira (PLG): consolidação normativa" },
+    { "eixo": 2, "inciso": "VI", "classe": "prioritaria", "titulo": "Simplificação dos processos de outorga para o Regime de Concessão de Lavra: Plano de Aproveitamento Econômico (PAE) para agregados (art. 38, VII do Código de Mineração)", "alteracao": "Redação dada pela Res. 227/2025" },
+    { "eixo": 2, "inciso": "VII", "classe": "prioritaria", "titulo": "Revisão e atualização normativa da Portaria DNPM nº 155, de 12 de maio de 2016, relacionada à cessão e arrendamento de direitos minerais", "alteracao": "Redação dada pela Res. 227/2025" },
+    { "eixo": 2, "inciso": "VIII", "classe": "prioritaria", "titulo": "Declaração de Utilidade Pública (DUP): servidão minerária e desapropriação" },
+    { "eixo": 2, "inciso": "IX", "classe": "prioritaria", "titulo": "Consolidação da regulamentação da Guia de Utilização", "alteracao": "Redação dada pela Res. 227/2025" },
+    { "eixo": 2, "inciso": "X", "classe": "prioritaria", "titulo": "Uso de títulos minerários como garantias para fins de financiamento", "alteracao": "Redação dada pela Res. 227/2025" },
+    { "eixo": 2, "inciso": "XI", "classe": "prioritaria", "titulo": "Relatório Final de Pesquisa Mineral: conteúdo mínimo e regras para apresentação de relatório final de pesquisa para agregados, rochas ornamentais e de revestimento", "alteracao": "Acrescentado pela Res. 227/2025" },
+    { "eixo": 2, "inciso": "PU-I", "classe": "indicativa", "titulo": "Atualização das normas e procedimentos de outorga aos minerais nucleares, para alinhamento à Lei nº 14.514, de 2022", "alteracao": "Redação dada pela Res. 227/2025" },
+    { "eixo": 2, "inciso": "PU-II", "classe": "indicativa", "titulo": "Regulamentação do prazo de pesquisa de 4 (quatro) anos, conforme alteração introduzida pela Lei nº 14.514, de 2022", "alteracao": "Redação dada pela Res. 227/2025" },
+    { "eixo": 2, "inciso": "PU-III", "classe": "indicativa", "titulo": "Conflitos decorrentes da mineração: bloqueios e zoneamentos, patrimônio natural e cultural, conflitos ambientais e terras indígenas", "alteracao": "Acrescentado pela Res. 227/2025" },
+    { "eixo": 2, "inciso": "PU-IV", "classe": "indicativa", "titulo": "Revisão das normas e procedimentos que regem a Mudança de Regime", "alteracao": "Acrescentado pela Res. 227/2025" },
+
+    { "eixo": 3, "inciso": "II", "classe": "prioritaria", "titulo": "Revisão e modernização da Resolução ANM nº 68, de 30 de abril de 2021, que dispõe sobre regulamentação do Plano de Fechamento de Mina" },
+    { "eixo": 3, "inciso": "III", "classe": "prioritaria", "titulo": "Atualização e aperfeiçoamento das Normas Reguladoras de Mineração (NRM)" },
+    { "eixo": 3, "inciso": "IV", "classe": "prioritaria", "titulo": "Apreensão e leilão de substâncias e equipamentos provenientes de lavra ilegal" },
+    { "eixo": 3, "inciso": "V", "classe": "prioritaria", "titulo": "Garantias financeiras e seguros para cobrir os riscos advindos das atividades de mineração" },
+    { "eixo": 3, "inciso": "VI", "classe": "prioritaria", "titulo": "Revisão da Resolução ANM nº 122/2022" },
+
+    { "eixo": 4, "inciso": "I", "classe": "prioritaria", "titulo": "Conformidade em sistemas de telemetria para acompanhar a lavra da água mineral" },
+    { "eixo": 4, "inciso": "II", "classe": "prioritaria", "titulo": "Construção de captações e avaliação da capacidade de produção de fontes de água mineral ou potável de mesa" },
+
+    { "eixo": 5, "inciso": "I", "classe": "prioritaria", "titulo": "Regulamentação da Lei nº 13.540, de 2017: Preço Corrente, Valor de Referência e Nova Espécie" },
+
+    { "eixo": 6, "inciso": "I", "classe": "prioritaria", "titulo": "Atualização da Resolução ANM nº 95, de 7 de fevereiro de 2022, para alinhamento à Lei nº 14.514, de 2022", "alteracao": "Acrescentado pela Res. 227/2025" },
+    { "eixo": 6, "inciso": "II", "classe": "prioritaria", "titulo": "Regulamentação dos critérios de segurança relacionados a pilhas de mineração", "alteracao": "Acrescentado pela Res. 227/2025" }
+  ],
+
+  "_revogados": [
+    { "eixo": 3, "inciso": "I", "titulo": "Relatório Final de Pesquisa Mineral para agregados, rochas ornamentais e de revestimento", "nota": "Revogado do Eixo 3 pela Res. 227/2025 e reinserido como inciso XI do Eixo 2." }
+  ],
+
+  "consultas_publicas_confirmadas": [
+    { "id": "CP 1/2025", "tema": "NRM-1 (Normas Gerais)", "eixo": 3, "abertura": "2025-05-05", "encerramento": "2025-06-18",
+      "prorrogado_ate": "2025-07-09", "aviso_dou": "DOU 30/04/2025 (SEI 16557160); prorrogação DOU 12/06/2025 (SEI 16930333)",
+      "processo_sei": "48051.006217/2022-78", "procedencia": "Nota Técnica SEI nº 3863/2025/ANM/CORARE" },
+    { "id": "CP 2/2025", "tema": "NRM-22 (Proteção ao Trabalhador)", "eixo": 3, "procedencia": "Nota Técnica SEI nº 3863/2025/ANM/CORARE",
+      "_pendente": "datas de abertura/encerramento não capturadas nesta rodada" }
+  ],
+
+  "_pendencias": [
+    "Status/fase por tema: só no painel Power BI, não raspado.",
+    "CP 3/2025, CP 4/2025, AP 1/2025, TS 2/2026 e AP 1/2026 foram identificadas mas sem datas completas.",
+    "A data do DOU da Res. 227/2025 (02/12/2025) veio do ANMlegis e de fonte secundária — conferir direto no DOU Seção 1 antes de usar comercialmente."
+  ]
+}
