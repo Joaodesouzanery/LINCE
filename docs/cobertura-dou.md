@@ -50,8 +50,11 @@ e 31/07 (46) registraram algo.
 ## Conclusão
 
 - **O acervo global está em ~72%**, não em 14%. Os 14% são de julho, o pior mês.
-- **O período recente (mai–ago) está em ~56%** — e é ele que alimenta qualquer relatório atual.
-- Faltam **~13 mil atos**: ~6.800 em dias vazios + ~6.240 em dias parciais.
+- **O período recente (mai–ago) estava em ~56%** — e é ele que alimenta qualquer relatório atual.
+- Faltavam **~13 mil atos**: ~6.800 em dias vazios + ~6.240 em dias parciais.
+
+> **Atualização 31/08/2026:** a Fase A recuperou **7.610 atos** e mai–ago subiu para **76%**.
+> Restam os dias parciais (Fase B), bloqueada pela Camada 3.
 
 ## Causa
 
@@ -66,8 +69,35 @@ Não é fonte incompleta. É **ingestão que falhou em silêncio**:
 
 | Fase | Dias | Recupera | Mecanismo | Situação |
 |---|---|---|---|---|
-| **A — dias vazios** | 34 | ~6.800 atos | Camada 1 (particionamento temporal), risco zero | em andamento |
-| **B — dias parciais** | 93 | ~6.240 atos | Camada 3 (guarda textual) a 100% | **bloqueada** |
+| **A — dias vazios** | 45 (8 feriados) | **7.610 atos** | Camada 1 (particionamento temporal), risco zero | **CONCLUÍDA em 31/08/2026** |
+| **B — dias parciais** | 97 | ~6.200 atos | Camada 3 (guarda textual) a 100% | **bloqueada** |
+
+### Resultado da Fase A (31/08/2026)
+
+`node scripts/backfill-vazios.js` — 45 dias processados, 8 sem edição (feriados),
+**0 falhas, 7.610 atos inseridos**.
+
+**Aceite 1 — dias úteis vazios restantes: 8**, e todos são feriados confirmados:
+Carnaval (16–17/02), Sexta-feira Santa (03/04), Tiradentes (20–21/04), Dia do Trabalho
+(01/05), Corpus Christi (04–05/06). **Zero dias recuperáveis restantes.**
+
+**Aceite 2 — cobertura de mai–ago: 56% → 76%** (amostra de 8 dias).
+
+| Dia | Banco | Publicado | Cobertura | |
+|---|---|---|---|---|
+| 2026-05-14 | 73 | 128 | 57% | parcial (Fase B) |
+| 2026-06-11 | 132 | 236 | 56% | parcial (Fase B) |
+| 2026-07-21 | 178 | 224 | 79% | parcial (Fase B) |
+| 2026-07-27 | 125 | 218 | 57% | parcial (Fase B) |
+| 2026-08-05 | 98 | 174 | 56% | parcial (Fase B) |
+| **2026-08-13** | **194** | **194** | **100%** | **recuperado pela Fase A** |
+| **2026-08-19** | **171** | **171** | **100%** | **recuperado pela Fase A** |
+| **2026-08-25** | **220** | **220** | **100%** | **recuperado pela Fase A** |
+| **TOTAL** | **1.191** | **1.565** | **76%** | |
+
+O padrão confirma a separação das fases: **todo dia tocado pela Fase A está em 100%**;
+os que seguem em 56–57% são exatamente os dias parciais que a Fase B trata. Os 76% são
+a média entre os dois grupos — não um teto do método.
 
 A Fase B está bloqueada por um motivo medido: recolher um dia já servido pelo INLABS
 pela fonte pública reconhece **0 de 225** registros por `content_hash` (os ids são de

@@ -76,6 +76,12 @@ async function main() {
     if (publicados === 0) {
       semEdicao.push(iso);
       if (!quiet) console.log(`  ${iso}     0 atos  sem edicao (DOU nao circulou)`);
+    } else if (publicados < 40) {
+      // Feriado com edicao minima no DO1. Nao acusar: alarme falso repetido faz o
+      // alarme perder credibilidade, e foi a ausencia de alarme confiavel que deixou
+      // meses de ingestao quebrada passarem.
+      semEdicao.push(iso);
+      if (!quiet) console.log(`  ${iso}     0 atos  edicao minima (${publicados} atos no DO1 — feriado?)`);
     } else {
       quebrados.push({ iso, publicados });
       console.log(`  ${iso}     0 atos  QUEBRADO — o DOU publicou ${publicados ?? "?"} atos no DO1`);
