@@ -448,8 +448,20 @@
                   <h2>Diário Oficial da União</h2>
                 </div>
                 <div class="graph-tools">
+                  <!-- Presets de janela. O <input type=date> continua ao lado para o
+                       caso de querer um dia especifico. -->
+                  <div class="period-toggle" id="dou-period">
+                    <button type="button" data-days="1" class="active">Hoje</button>
+                    <button type="button" data-days="3">3d</button>
+                    <button type="button" data-days="7">7d</button>
+                    <button type="button" data-days="15">15d</button>
+                    <button type="button" data-days="30">30d</button>
+                    <button type="button" data-days="60">60d</button>
+                    <button type="button" data-days="90">90d</button>
+                  </div>
                   <select id="dou-agency" class="dou-date"><option value="">Todas as agências</option></select>
-                  <input id="dou-date" type="date" class="dou-date" />
+                  <input id="dou-date" type="date" class="dou-date" title="Dia específico (limpa o preset)" />
+                  <button type="button" class="ghost-button" id="dou-clear" title="Voltar ao período">Limpar data</button>
                 </div>
               </div>
               <div class="news-list" id="dou-list"></div>

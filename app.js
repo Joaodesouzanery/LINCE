@@ -1357,26 +1357,76 @@ function renderSources() {
 
 const DOU_TYPE_LABEL = { norma: "Norma", ato_pessoal: "Ato de pessoal", contrato: "Contrato", ato: "Ato" };
 
-async function loadDouFeed() {
+// Janela do Monitor DOU. Mesmo padrao da Visao Geral: whitelist + localStorage, para
+// um valor invalido no storage cair no default em vez de virar NaN na querystring.
+const DOU_PERIODOS = [1, 3, 7, 15, 30, 60, 90];
+let douSeq = 0; // token anti-corrida: clicar 90d e logo Hoje chegava fora de ordem
+
+function marcarPeriodoDou(days) {
+  const t = $("#dou-period");
+  if (t) t.querySelectorAll("button").forEach((b) => b.classList.toggle("active", Number(b.dataset.days) === days));
+}
+
+function periodoDou() {
+  const salvo = Number(localStorage.getItem("lince-dou-periodo"));
+  return DOU_PERIODOS.includes(salvo) ? salvo : 1; // default: Hoje
+}
+
+// Popula o select de agencias do Monitor DOU.
+//
+// Antes isso acontecia de CARONA dentro de populateGraphAgencies(), que so roda ao
+// abrir o Grafo Nacional — entao quem ia direto ao Monitor DOU via apenas "Todas as
+// agencias", e o erro era engolido num catch vazio. Agora usa ensureAgenciesList(),
+// que ja cacheia em state E registra a falha em state.agenciesErro.
+async function popularAgenciasDou() {
+  const sel = $("#dou-agency");
+  if (!sel || sel.dataset.populado === "1") return;
+  const lista = await ensureAgenciesList();
+  if (!lista.length) {
+    // Falha visivel, nao silenciosa: sem isso o usuario acha que so existe "Todas".
+    sel.innerHTML = `<option value="">Todas as agências</option>`
+      + `<option value="" disabled>(falha ao carregar: ${escapeHtml(state.agenciesErro || "desconhecida")})</option>`;
+    return;
+  }
+  sel.innerHTML = `<option value="">Todas as agências</option>`
+    + lista.map((a) => `<option value="${escapeHtml(a.acronym)}">${escapeHtml(a.acronym)} — ${escapeHtml(a.name || "")}</option>`).join("");
+  sel.dataset.populado = "1";
+}
+
+async function loadDouFeed(days = periodoDou()) {
   const list = $("#dou-list");
   if (!list) return;
+  const meu = ++douSeq;
+  popularAgenciasDou();
   list.innerHTML = emptyCard("Monitor DOU", "Carregando atos do Diario Oficial...");
   const date = $("#dou-date")?.value;
   const agency = $("#dou-agency")?.value;
   const params = new URLSearchParams();
+  // `date` explicito vence o preset: quem escolheu um dia quer aquele dia.
   if (date) params.set("date", date);
+  else params.set("days", String(days));
   if (agency) params.set("agency", agency);
-  const qs = params.toString();
-  const url = qs ? `/api/dou-feed?${qs}` : "/api/dou-feed";
+  const url = `/api/dou-feed?${params.toString()}`;
   try {
     const payload = await requestJson(url);
+    if (meu !== douSeq) return; // uma resposta mais nova ja pintou a lista
     const items = payload.items || [];
+    const per = payload.periodo || {};
+    const janela = per.de === per.ate ? per.de : `${per.de} a ${per.ate}`;
     if (!items.length) {
-      list.innerHTML = emptyCard("Monitor DOU", "Sem atos das agencias ingeridos para este periodo. Rode /api/ingest-dou.");
+      list.innerHTML = emptyCard("Monitor DOU",
+        `Nenhum ato de agência reguladora em ${escapeHtml(janela || "período selecionado")}.`
+        + (per.days === 1 ? " O DOU não circula em fim de semana e feriado; tente uma janela maior." : ""));
       return;
     }
+    // Carimbo de janela e truncamento. Sem ele, "90d" mostrando 500 de 9.970 seria
+    // lido como o total do periodo (regra metrica-honesta).
+    const cabecalho = `<p class="card-sub" style="opacity:.75;margin:0 0 4px">`
+      + `${items.length} ato(s) · ${escapeHtml(janela || "")}`
+      + (payload.truncated ? ` · <strong>lista truncada em ${payload.limite}</strong> — há mais no período` : "")
+      + `</p>`;
     const queueColor = (type) => ({ norma: "var(--blue)", ato_pessoal: "var(--purple)", contrato: "var(--yellow)" }[type] || "var(--muted)");
-    list.innerHTML = items
+    list.innerHTML = cabecalho + items
       .map((entry) => `
         <article class="news-card target-card">
           <div class="card-body">
@@ -3625,11 +3675,8 @@ async function populateGraphAgencies() {
       (sc.scores || []).map((s) => `<option value="${escapeHtml(s.agency)}">${escapeHtml(s.agency)}</option>`).join("");
     sel.innerHTML = opts;
     natAgenciesLoaded = true;
-    const douSel = $("#dou-agency");
-    if (douSel && douSel.options.length <= 1) {
-      douSel.innerHTML = `<option value="">Todas as agencias</option>` +
-        (sc.scores || []).map((s) => `<option value="${escapeHtml(s.agency)}">${escapeHtml(s.agency)}</option>`).join("");
-    }
+    // A carona que populava #dou-agency daqui saiu: o Monitor DOU so tinha agencias
+    // se o usuario tivesse aberto o Grafo antes. Agora ele chama popularAgenciasDou().
   } catch { /* silencioso */ }
 }
 
@@ -4529,8 +4576,30 @@ function wireEvents() {
     }
   });
 
-  $("#dou-date")?.addEventListener("change", () => loadDouFeed());
+  $("#dou-date")?.addEventListener("change", () => {
+    // Escolher um dia especifico desativa visualmente o preset — os dois filtros
+    // competem, e deixar ambos acesos faria a tela mentir sobre o que esta mostrando.
+    const t = $("#dou-period");
+    if (t && $("#dou-date").value) t.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+    loadDouFeed();
+  });
   $("#dou-agency")?.addEventListener("change", () => loadDouFeed());
+  $("#dou-clear")?.addEventListener("click", () => {
+    const d = $("#dou-date"); if (d) d.value = "";
+    marcarPeriodoDou(periodoDou());
+    loadDouFeed();
+  });
+  $("#dou-period")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-days]");
+    if (!btn) return;
+    const days = Number(btn.dataset.days);
+    if (!DOU_PERIODOS.includes(days)) return;
+    localStorage.setItem("lince-dou-periodo", String(days));
+    const d = $("#dou-date"); if (d) d.value = ""; // preset e data sao exclusivos
+    marcarPeriodoDou(days);
+    loadDouFeed(days);
+  });
+  marcarPeriodoDou(periodoDou());
   $("#director-search")?.addEventListener("input", debounce(() => loadDirectors(), 300));
   wireNatGraph();
 
