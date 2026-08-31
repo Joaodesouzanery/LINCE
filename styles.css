@@ -196,10 +196,6 @@ a {
   justify-content: flex-start;
   padding: 0 10px;
 }
-.sidebar.expanded .mini-status {
-  justify-content: flex-start;
-  gap: 8px;
-}
 
 .nav-sep {
   border: none;
@@ -207,14 +203,6 @@ a {
   margin: 6px 4px;
 }
 
-.sidebar-bottom {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  border-top: 1px solid var(--line);
-  padding-top: 10px;
-}
 
 .nav-icon {
   width: 18px;
@@ -227,8 +215,6 @@ a {
 .top-left,
 .top-actions,
 .nav-item,
-.mini-status,
-.user-card,
 .panel-header,
 .graph-tools {
   align-items: center;
@@ -256,9 +242,7 @@ a {
 }
 
 .brand small,
-.user-card small,
 .metric-card small,
-.mini-status,
 .dossier-summary,
 .status-help {
   color: var(--muted);
@@ -319,44 +303,12 @@ a {
   color: var(--text);
 }
 
-.sidebar-section {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 0;
-  align-items: center;
-}
 
-.mini-status {
-  gap: 0;
-  justify-content: center;
-  padding: 0;
-}
 
-.mini-status i {
-  border-radius: 50%;
-  display: block;
-  height: 7px;
-  width: 7px;
-}
 
-.ok {
-  background: var(--green);
-}
 
-.warn {
-  background: var(--yellow);
-}
 
-.wait {
-  background: var(--faint);
-}
 
-.user-card {
-  justify-content: center;
-  padding: 8px 0 2px;
-  margin-top: 4px;
-}
 
 .avatar {
   flex: 0 0 auto;
@@ -515,27 +467,7 @@ h1 {
   white-space: nowrap;
 }
 
-.class-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  color: var(--blue-bright);
-  border: 1px solid var(--blue-line);
-  border-radius: 2px;
-  padding: 4px 8px;
-  white-space: nowrap;
-}
 
-.class-chip svg {
-  width: 11px;
-  height: 11px;
-  stroke: currentColor;
-  flex-shrink: 0;
-}
 
 .ghost-button {
   background: transparent;
@@ -1857,25 +1789,8 @@ button.entity-pill:hover {
     margin: 0 4px;
   }
 
-  .sidebar-bottom {
-    margin: 0 0 0 auto;
-    flex-direction: row;
-    align-items: center;
-    border-top: 0;
-    padding-top: 0;
-    gap: 8px;
-  }
 
-  .sidebar-section {
-    flex-direction: row;
-    padding: 0;
-    gap: 5px;
-  }
 
-  .user-card {
-    padding: 0;
-    margin: 0;
-  }
 
   .topbar {
     grid-template-columns: 1fr;
@@ -2291,6 +2206,43 @@ button.entity-pill:hover {
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
 }
 .data-status .ds-text { color: var(--muted); font-size: 12.5px; font-family: var(--font-mono); min-width: 0; }
+
+/* ── Menu de usuário na topbar ─────────────────────────────────────────────── */
+/* Compacto por necessidade: a topbar já tem 4 elementos à direita. Só o avatar
+   fica visível; o resto abre em dropdown. */
+.user-menu { position: relative; display: flex; align-items: center; }
+.avatar-btn {
+  border: 1px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.12s;
+}
+.avatar-btn:hover, .avatar-btn[aria-expanded="true"] { border-color: var(--olive); }
+.user-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 208px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  padding: 10px;
+  z-index: 60;
+  display: grid;
+  gap: 8px;
+}
+.user-dropdown[hidden] { display: none; }
+.user-dropdown-head { display: grid; gap: 2px; min-width: 0; }
+.user-dropdown-head strong {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-dropdown-head small { font-size: 11px; color: var(--muted); }
+.user-dropdown .logout-btn { margin-left: 0; width: 100%; }
 
 /* ── Visão Geral (M31) ────────────────────────────────────────────────────── */
 /* A barra de contexto agrupa período, janela e ação: o filtro vale para a tela

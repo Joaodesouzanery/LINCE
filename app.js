@@ -4471,6 +4471,24 @@ function wireEvents() {
     setView(button.dataset.view);
   });
 
+  // Menu de usuário na topbar: abre/fecha, fecha ao clicar fora e no Esc.
+  const menuBtn = $("#user-menu-btn");
+  const dropdown = $("#user-dropdown");
+  if (menuBtn && dropdown) {
+    const fechar = () => { dropdown.hidden = true; menuBtn.setAttribute("aria-expanded", "false"); };
+    menuBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const abrir = dropdown.hidden;
+      dropdown.hidden = !abrir;
+      menuBtn.setAttribute("aria-expanded", String(abrir));
+    });
+    // Clique fora e Esc fecham — sem isso o menu fica presilhado na tela.
+    document.addEventListener("click", (e) => {
+      if (!dropdown.hidden && !e.target.closest("#user-menu")) fechar();
+    });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") fechar(); });
+  }
+
   // Sidebar recolhível: restaura a preferência e liga o toggle.
   const sidebar = $("#sidebar");
   if (sidebar && localStorage.getItem("lince-sidebar") === "expanded") sidebar.classList.add("expanded");
@@ -4973,6 +4991,14 @@ function showApp(user) {
   if (overlay) overlay.hidden = true;
   const em = $("#user-email");
   if (em && user?.email) em.textContent = user.email;
+  // Iniciais no avatar do menu da topbar (era "RI" fixo na sidebar antiga).
+  const av = $("#user-menu-btn");
+  if (av && user?.email) {
+    av.textContent = user.email.slice(0, 2).toUpperCase();
+    av.title = user.email;
+  }
+  const sub = $("#user-sub");
+  if (sub && user) sub.textContent = "Sessão ativa";
   const logout = $("#logout-btn");
   // (#16/#17) "Sair" só aparece quando há usuário autenticado (não no fail-open).
   if (logout && user) {

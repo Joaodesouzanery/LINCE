@@ -108,25 +108,6 @@
           </button>
         </nav>
 
-        <div class="sidebar-bottom">
-          <div class="sidebar-section">
-            <div class="mini-status" title="DOU / INLABS"><i class="ok"></i><span class="nav-text">DOU / INLABS</span></div>
-            <div class="mini-status" title="PNCP Contratos"><i class="ok"></i><span class="nav-text">PNCP Contratos</span></div>
-            <div class="mini-status" title="Portal Transparência"><i class="ok"></i><span class="nav-text">Portal Transparência</span></div>
-            <div class="mini-status" title="CNPJ.ws + RDAP"><i class="ok"></i><span class="nav-text">CNPJ.ws + RDAP</span></div>
-            <div class="mini-status" title="DataJud (chave necessária)"><i class="warn"></i><span class="nav-text">DataJud (chave)</span></div>
-            <div class="mini-status" title="TCU (CSV manual)"><i class="warn"></i><span class="nav-text">TCU (CSV manual)</span></div>
-          </div>
-
-          <div class="user-card">
-            <span class="avatar">RI</span>
-            <span class="nav-text user-info">
-              <strong id="user-email">Real-only mode</strong>
-              <small>Sem dados fictícios</small>
-            </span>
-            <button type="button" class="logout-btn nav-text" id="logout-btn" title="Sair" hidden>Sair</button>
-          </div>
-        </div>
       </aside>
 
       <main class="workspace">
@@ -157,10 +138,22 @@
             <button class="ghost-button" type="button" id="test-cnpjs" title="Fornecedores reais na base LINCE (dado rico p/ testar)">CNPJs de teste</button>
             <button class="ghost-button" type="button" id="center-graph">Centralizar</button>
             <button class="primary-button" type="button" id="open-dossier">Gerar dossiê</button>
-            <span class="class-chip">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-              LINCE//NACIONAL
-            </span>
+
+            <!-- Menu de usuario. Compacto de proposito: a topbar ja tem 4 elementos a
+                 direita e aperta abaixo de 1400px. Nenhum filho leva a classe
+                 `nav-text` — ela e `display:none` global (styles.css) e so e revertida
+                 dentro de `.sidebar.expanded`; aqui fora, deixaria tudo invisivel. -->
+            <div class="user-menu" id="user-menu">
+              <button type="button" class="avatar avatar-btn" id="user-menu-btn"
+                      aria-haspopup="true" aria-expanded="false" title="Conta">RI</button>
+              <div class="user-dropdown" id="user-dropdown" hidden>
+                <div class="user-dropdown-head">
+                  <strong id="user-email">Real-only mode</strong>
+                  <small id="user-sub">Sem dados fictícios</small>
+                </div>
+                <button type="button" class="logout-btn" id="logout-btn" hidden>Sair</button>
+              </div>
+            </div>
           </div>
         </header>
 
