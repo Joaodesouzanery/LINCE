@@ -121,11 +121,14 @@ async function persistir(supabase, date, records, monitors) {
   inserted = r.inserted;
   skipped = r.skipped;
   directors = r.directors;
+  if (r.falhas) console.error(`  [${date}] ${r.falhas} falha(s) de escrita: ${(r.erros || []).join(" | ")}`);
   if (r.monitorAlerts.length) {
     await flushMonitorAlerts(supabase, r.monitorAlerts, r.monitorHits).catch(() => {});
     monitorHitsN = r.monitorAlerts.length;
   }
-  return { inserted, skipped, directors, monitorHits: monitorHitsN };
+  // Falha de escrita conta como falha da data: senao o dia entra no relatorio como
+  // "0 novos" e o exit code segue 0, que e o padrao que escondeu meses de quebra.
+  return { inserted, skipped, directors, monitorHits: monitorHitsN, falhou: r.falhas > 0 && inserted === 0 };
 }
 
 async function main() {

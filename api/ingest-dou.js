@@ -117,6 +117,15 @@ module.exports = async function handler(req, res) {
     });
     const { inserted, skipped, directors, monitorAlerts, monitorHits } = r;
 
+    // Se TUDO que era novo falhou ao gravar, isso e 502 — nao 200 com inserted:0.
+    // "nao consegui gravar" e "nao havia o que gravar" precisam ser distinguiveis.
+    if (r.falhas > 0 && inserted === 0) {
+      return res.status(502).json({
+        ok: false, date, fonte_usada: coleta.fonte, found: records.length,
+        error: `Nenhum ato gravado: ${r.falhas} falha(s) de escrita.`, erros: r.erros
+      });
+    }
+
     await flushMonitorAlerts(supabase, monitorAlerts, monitorHits);
 
     // F2 — notificação externa (best-effort, gated por ALERT_WEBHOOK_URL): empurra
@@ -139,6 +148,8 @@ module.exports = async function handler(req, res) {
       fonte_usada: coleta.fonte,
       total_publicados: records.totalPublicados ?? null,
       so_preview: records.parcial ?? 0,
+      falhas_escrita: r.falhas || 0,
+      ...(r.falhas ? { erros: r.erros } : {}),
       // Declara o que NAO foi feito nesta rota, em vez de deixar o numero de
       // resumos vazios aparecer semanas depois como "a IA nao funciona".
       ia: comIA ? "aplicada" : `pulada (${r.pendentesDeIA} ato(s) sem resumo — use backfill:ai)`,

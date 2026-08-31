@@ -4716,7 +4716,7 @@ async function loadOverview(days = periodoOverview(), opcoes = {}) {
   renderSparkline(d.series);
   renderRecentActs(d.recentes);
   renderOvAlertas(d.alertas);
-  renderOvPrazos(d.prazos);
+  renderOvPrazos(d.prazos, d);
 
 }
 
@@ -4773,9 +4773,11 @@ function renderOvKpis(d, opcoes = {}) {
     const p = k.atos?.delta_pct;
     if (p == null) {
       // null tem três causas distintas e o usuário precisa saber qual é a dele.
-      delta.textContent = d.frescor?.dias_parado > 2
-        ? "sem comparação — ingestão parada"
-        : (k.atos?.truncado ? "janela truncada" : "sem base anterior");
+      delta.textContent = (d.erros || []).length
+        ? "sem comparação — falha de leitura"
+        : d.frescor?.dias_parado > 2
+          ? "sem comparação — ingestão parada"
+          : (k.atos?.truncado ? "janela truncada" : "sem base anterior");
       delta.className = "ov-delta neutro";
     } else {
       delta.textContent = `${p > 0 ? "+" : ""}${p}% vs. período anterior`;
@@ -4806,6 +4808,22 @@ function renderOvKpis(d, opcoes = {}) {
       : "sem ingestão";
     chip.className = "status-pill " + (f.estado === "ok" ? "status-ok" : f.estado === "atencao" ? "status-key" : "status-error");
   }
+  // Ressalvas: o backend sempre produziu `erros` e `limites`, e o front nunca leu
+  // nenhum dos dois — o canal existia e estava desligado. Enquanto isso, uma consulta
+  // que falhava era exibida como "nao ha dado", em verde.
+  const av = $("#ov-avisos");
+  if (av) {
+    const itens = [];
+    for (const e of d.erros || []) itens.push(`Falha ao ler ${escapeHtml(e)} — os números abaixo estão incompletos.`);
+    if (d.limites?.janela_truncada) itens.push("Janela truncada: o período é maior do que cabe numa leitura, os totais são um piso.");
+    if (d.limites?.comparacao_por_agencia === false) itens.push("Sem comparação por agência nesta janela (90d não carrega o período anterior).");
+    if (d.kpis?.contratos_90d?.truncado) itens.push("Lista de contratos truncada em 500 — há mais vencendo do que o exibido.");
+    av.innerHTML = itens.length
+      ? itens.map((t) => `<li class="ov-b alerta">${t}</li>`).join("")
+      : "";
+    av.hidden = !itens.length;
+  }
+
   const ds = $("#ds-text");
   if (ds && !opcoes.manterStatus) ds.textContent = `${d.periodo?.de || ""} a ${d.periodo?.ate || ""}`;
 }
@@ -4852,7 +4870,7 @@ function renderOvAlertas(items) {
   });
 }
 
-function renderOvPrazos(prazos) {
+function renderOvPrazos(prazos, d) {
   const el = $("#overview-prazos");
   if (!el) return;
   if (!prazos?.length) {
@@ -4860,7 +4878,12 @@ function renderOvPrazos(prazos) {
     return;
   }
   el.innerHTML = prazos.map((p) => {
-    const dias = Math.round((Date.parse(`${p.data}T00:00:00Z`) - Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`)) / 86400000);
+    // "hoje" vem do backend (ja em America/Sao_Paulo). Usar toISOString() aqui — a
+    // unica ocorrencia no app.js — reintroduzia em 3h/dia (21h-00h BRT) o mesmo bug de
+    // fuso que lib/overview.js documenta ter resolvido: contrato vencendo hoje
+    // renderizava "-1 dias" e a faixa de urgencia deslocava junto.
+    const hojeRef = d?.periodo?.ate || new Date().toISOString().slice(0, 10);
+    const dias = Math.round((Date.parse(`${p.data}T00:00:00Z`) - Date.parse(`${hojeRef}T00:00:00Z`)) / 86400000);
     const urgente = dias <= 15;
     return `<div class="ov-prazo${urgente ? " urgente" : ""}">
       <div class="ov-prazo-dias"><strong>${dias}</strong><span>dias</span></div>
