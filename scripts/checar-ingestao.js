@@ -48,17 +48,30 @@ async function main() {
     return;
   }
 
-  const { data, error } = await supabase
-    .from("documents")
-    .select("published_at")
-    .eq("source_name", "DOU")
-    .in("published_at", janela);
-  if (error) {
-    console.error(`ERRO ao consultar o acervo: ${error.message}`);
-    process.exit(1);
-  }
+  // COUNT por dia, nao SELECT de linhas.
+  //
+  // A versao anterior fazia .in("published_at", janela) e contava as linhas devolvidas.
+  // Isso e o bug que a skill supabase-error-contract descreve: o PostgREST corta em
+  // 1000 linhas e a consulta nao paginava. Com 10 dias x ~200 atos, os dias alem do
+  // corte apareciam como ZERO — e o alarme acusava "QUEBRADO" cinco dias que tinham
+  // acabado de ser ingeridos.
+  //
+  // Num alarme, falso positivo e pior que falso negativo: alarme que grita a toa e
+  // desligado, e alarme desligado foi a causa raiz do furo que este script existe para
+  // impedir. head:true nao traz linha nenhuma, entao nao ha teto para estourar.
   const porDia = {};
-  for (const d of data || []) porDia[d.published_at] = (porDia[d.published_at] || 0) + 1;
+  for (const iso of janela) {
+    const { count, error } = await supabase
+      .from("documents")
+      .select("id", { count: "exact", head: true })
+      .eq("source_name", "DOU")
+      .eq("published_at", iso);
+    if (error) {
+      console.error(`ERRO ao consultar o acervo em ${iso}: ${error.message}`);
+      process.exit(1);
+    }
+    porDia[iso] = count ?? 0;
+  }
 
   const quebrados = [];
   const semEdicao = [];
