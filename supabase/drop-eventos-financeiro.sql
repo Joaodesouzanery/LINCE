@@ -1,12 +1,19 @@
 -- ============================================================================
 -- REMOÇÃO dos módulos Eventos (M25-M29) e Financeiro (M30)
--- Os módulos migraram para outro sistema. Este script apaga as tabelas, a função
--- de merge do checklist e o bucket das notas fiscais.
+-- Os módulos migraram para outro sistema. Este script apaga as tabelas e a função
+-- de merge do checklist.
 --
 -- IRREVERSÍVEL. Backup das linhas existentes foi feito antes de rodar
 -- (2 eventos, 46 itens de checklist, 1 rubrica — nenhum dado financeiro).
 --
 -- Ordem: dependentes primeiro; o CASCADE cobre o resto.
+--
+-- O BUCKET 'financeiro-nf' NÃO É TRATADO AQUI, de propósito. A tabela
+-- storage.objects tem o trigger storage.protect_delete(), que recusa DELETE
+-- direto (42501) e manda usar a Storage API. Como o SQL Editor roda o script
+-- inteiro numa transação, aquela linha abortava e REVERTIA todos os drops
+-- acima — o script parecia ter falhado "só no bucket" e na verdade não tinha
+-- efeito nenhum. O bucket é removido por scripts/drop-bucket-financeiro.js.
 -- ============================================================================
 
 -- Score de Patrocinador (M27-M28) — dependem de evt_eventos/evt_patrocinadores
@@ -34,7 +41,3 @@ drop table if exists evt_eventos         cascade;
 -- Financeiro (M30)
 drop table if exists fin_lancamentos cascade;
 drop table if exists fin_balancetes  cascade;
-
--- Bucket privado das Notas Fiscais (apaga os objetos antes, senão o delete falha)
-delete from storage.objects where bucket_id = 'financeiro-nf';
-delete from storage.buckets where id = 'financeiro-nf';
